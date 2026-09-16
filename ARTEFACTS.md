@@ -68,29 +68,97 @@ are what makes a model findable. "Which sheet had the RTO targets" has to work.
 made, get nothing, and stop trusting recall generally. That is worse than not
 having artefacts at all.
 
+### Indexing the raw JSON instead does not work
+
+Measured with bge-m3 on two unrelated sheets, an infrastructure cost model and
+an apple cultivar table:
+
+| | as raw JSON | as snapshot |
+|---|---|---|
+| separation between the right and wrong sheet | **0.046** | **0.199** |
+| the two unrelated sheets against each other | **0.848** | 0.362 |
+| characters embedded | 1,272 | 119 |
+
+0.848 between a cost model and a planting table means they are very nearly
+indistinguishable. Around 85% of a workbook's JSON is scaffolding that every
+sheet shares — `styleId`, `formatId`, `rowCount`, `frozenRows`, `"key":"0:0"` —
+so the vector encodes "this is a Spindle workbook" and the content is noise on
+top of it. A separation of 0.046 is not a ranking.
+
+Three further reasons beyond the vectors:
+
+- FTS would index JSON keys, so a keyword search for `format` returns every
+  sheet in the account.
+- The chunker splits on paragraphs and sentences. JSON has neither, so passages
+  would cut through `{"key":"3:2","cell":{"value":`.
+- `recall` prints the matched passage. A fragment of raw JSON is not an answer.
+
 ---
 
 ## 3. Storage
 
-No new tables. `nodes.type` is already open and `nodes.data` is already JSON.
+Three stores, each holding the thing it is good at.
 
 ```
-type      'sheet' | 'doc' | 'deck'      alongside card | note | image | stroke
-data      the Spindle *Data payload
-body      derived text snapshot
-title     the artefact's name, same column cards use
+D1   nodes.data   {"r2":"artefacts/<nodeId>","kind":"sheet","sheets":2,"cells":412}
+     nodes.body   derived text snapshot            -> FTS + node_chunks
+R2   artefacts/<nodeId>     the WorkbookData JSON, fetched only by the editor
+Vectorize                   passage vectors, exactly as for cards today
 ```
 
-Retrieval currently filters `type IN ('card','note')` in six places
-(`mcp.ts` ×4, `index.ts` ×2). Those become `IN ('card','note','sheet','doc','deck')`.
-Chunking needs no change: it splits `body`, which is text either way.
+### Why the payload goes to R2, not a D1 column
 
-**Open question.** `WorkbookData` for a large model could be hundreds of
-kilobytes in a D1 row. Cards are ~2 kB. Worth measuring a realistic sheet before
-committing to the column; R2 with a pointer in `data` is the fallback, at the
-cost of a second fetch on open.
+Not the size ceiling. D1 allows 2 MB per row or string, and the 100 KB SQL
+statement cap applies to statement text rather than bound parameters, so a
+realistic sheet would fit.
 
----
+The reason is **structural separation**. The board load is:
+
+```sql
+SELECT n.* FROM nodes n WHERE n.board_id = ?
+```
+
+Every column of every node. With the payload in D1, keeping megabytes of
+spreadsheet out of a board load depends on nobody ever writing `SELECT *` —
+and that line is already in the codebase. With the payload in R2 it cannot be
+loaded by accident: the board gets a pointer, the editor route fetches the
+object.
+
+R2 is not a new dependency either; images already use it.
+
+**The cost, which must be paid this time.** `IMAGES` objects are never deleted
+when their node is deleted, so there is an orphan leak in production today.
+Artefacts must delete `artefacts/<nodeId>` in the node DELETE path, next to the
+existing `removeCards` call that clears Vectorize.
+
+**Write order: R2 first, then D1.** A failed D1 write leaves an orphan object
+that the next save overwrites. The reverse leaves a pointer to nothing.
+
+`data` keeps a small summary so a collapsed node can render "2 sheets · 412
+cells" without a round trip to R2.
+
+### Why the snapshot cannot live in Vectorize
+
+Vectorize stores vectors and returns ids and scores. It is not a text store.
+A snapshot that lives only there loses:
+
+- **FTS.** bm25 needs the text in SQLite, so artefacts would be findable by
+  meaning but never by wording.
+- **Rank fusion.** RRF needs every retriever ranking the same candidates.
+  Artefacts would appear in one list out of five.
+- **The fresh window.** The exact-cosine pass that covers Vectorize's write lag
+  reads `node_chunks.embedding` out of D1.
+- **The passage.** `recall` prints the matched text from `node_chunks.text`.
+
+So the snapshot is text in `nodes.body`, chunked into `node_chunks` exactly as a
+card is, and its vectors go to Vectorize. That is not a change; it is the
+existing pipeline, and artefacts simply have to enter it.
+
+### Retrieval
+
+Six queries filter `type IN ('card','note')` (`mcp.ts` x4, `index.ts` x2).
+Those widen to include the artefact types. Chunking needs no change: it splits
+`body`, which is text either way.
 
 ## 4. Agent authoring
 
