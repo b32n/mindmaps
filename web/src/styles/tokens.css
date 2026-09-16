@@ -1,0 +1,180 @@
+/* =============================================================================
+   Mindmap — design tokens
+   =============================================================================
+
+   Direction: quiet, cool, precise. A thinking surface should recede so the
+   content on it doesn't compete with the chrome. One accent, used sparingly.
+
+   Neutrals carry a slight green-cyan bias rather than being pure grey, so they
+   sit under the accent without looking like a different system.
+   ========================================================================== */
+
+:root {
+  /* ---- surfaces ---------------------------------------------------------- */
+  --bg: #f6f8f7;          /* app background, behind everything */
+  --canvas: #fbfcfc;      /* the board itself, a touch lighter than bg */
+  --surface: #ffffff;     /* cards, panels, menus */
+  --surface-2: #f1f4f3;   /* inset wells, hover fills */
+  --scrim: rgb(14 22 20 / 0.32);
+
+  /* ---- lines ------------------------------------------------------------- */
+  --line: #e4e9e7;        /* default hairline */
+  --line-strong: #d2dad7; /* dividers that need to read */
+
+  /* ---- text -------------------------------------------------------------- */
+  --ink: #0d1513;
+  --ink-2: #414c49;       /* secondary text */
+  --muted: #6c7a75;       /* labels, captions, placeholders */
+  --faint: #97a29e;       /* the quietest legible text */
+
+  /* ---- accent ------------------------------------------------------------ */
+  --accent: #0f7a57;
+  --accent-hover: #0c6448;
+  --accent-soft: #e3f1ea; /* tinted fill behind accent text */
+  --accent-line: #b9dccb;
+
+  /* ---- semantic ---------------------------------------------------------- */
+  --danger: #b3261e;
+  --danger-soft: #fdecea;
+  --warn: #8a5a13;
+  --warn-soft: #fbf0dd;
+  --info: #17548f;
+  --info-soft: #e3eefb;
+
+  /* ---- radii ------------------------------------------------------------- */
+  --r-xs: 5px;
+  --r-sm: 7px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+  --r-pill: 999px;
+
+  /* ---- elevation --------------------------------------------------------- */
+  /* three levels only; more than that and nothing reads as "on top" */
+  --e1: 0 1px 2px rgb(13 21 19 / 0.05), 0 1px 1px rgb(13 21 19 / 0.03);
+  --e2: 0 4px 14px rgb(13 21 19 / 0.08), 0 1px 3px rgb(13 21 19 / 0.05);
+  --e3: 0 18px 48px rgb(13 21 19 / 0.16), 0 2px 8px rgb(13 21 19 / 0.07);
+
+  /* ---- type -------------------------------------------------------------- */
+  --font: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --t-xs: 11px;
+  --t-sm: 12.5px;
+  --t-base: 14px;
+  --t-md: 15px;
+  --t-lg: 18px;
+  --t-xl: 22px;
+  --t-2xl: 30px;
+
+  /* ---- spacing ----------------------------------------------------------- */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+
+  /* ---- motion ------------------------------------------------------------ */
+  /* one curve everywhere, so the whole app decelerates the same way */
+  --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --fast: 120ms;
+  --base: 200ms;
+  --slow: 280ms;
+
+  color-scheme: light;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* =============================================================================
+   Primitives
+   ========================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  padding: 8px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+.btn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--muted); }
+.btn:active:not(:disabled) { transform: translateY(0.5px); }
+.btn:disabled { opacity: 0.42; cursor: default; }
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.btn-ghost { border-color: transparent; background: transparent; }
+.btn-ghost:hover:not(:disabled) { background: var(--surface-2); border-color: transparent; }
+
+.btn-danger { color: var(--danger); border-color: transparent; background: transparent; }
+.btn-danger:hover:not(:disabled) { background: var(--danger-soft); border-color: transparent; }
+
+/* focus: one visible ring for everything keyboard-reachable */
+:where(button, a, input, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > label {
+  font-size: var(--t-xs);
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.input {
+  font: inherit;
+  font-size: var(--t-base);
+  padding: 10px 12px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.input::placeholder { color: var(--faint); }
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  color: var(--muted);
+  white-space: nowrap;
+}

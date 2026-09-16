@@ -1,0 +1,543 @@
+/* =============================================================================
+   Landing — the public pages (/ and /brain)
+   =============================================================================
+
+   A deliberately different register from the app. `tokens.css` is written to
+   recede so the board's content can carry the page; a landing page has the
+   opposite job — nothing is on it yet, so the page itself has to hold
+   attention. Dark, large, with the product's own motif (cards joined by
+   labelled links) as the hero rather than an abstract illustration.
+
+   Scoped under `.lp` so none of it can leak into the board. The accent is the
+   app's green lifted for a dark ground, so the two still read as one product.
+   ========================================================================== */
+
+.lp {
+  /* ---- ground ---------------------------------------------------------- */
+  --lp-bg: #070d0c;
+  --lp-bg-2: #0b1413;
+  --lp-panel: #0f1a18;
+  --lp-line: #1c2b28;
+  --lp-line-2: #2a3d39;
+
+  /* ---- text ------------------------------------------------------------ */
+  --lp-ink: #eaf2ef;
+  --lp-ink-2: #a8b8b3;
+  --lp-muted: #74867f;
+
+  /* ---- accent: the app's #0f7a57, lifted to carry on black ------------- */
+  --lp-accent: #34d399;
+  --lp-accent-2: #6ee7c0;
+  --lp-accent-dim: rgb(52 211 153 / 0.12);
+  --lp-accent-line: rgb(52 211 153 / 0.28);
+
+  --lp-font: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --lp-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --lp-max: 1080px;
+
+  background: var(--lp-bg);
+  color: var(--lp-ink);
+  font-family: var(--lp-font);
+  min-height: 100%;
+  overflow-x: clip;
+  position: relative;
+}
+
+/* Grain. A flat dark page reads as cheap; a little noise gives it a surface.
+   Inline SVG so there is no network request and no asset to lose. */
+.lp::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.4;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+}
+
+.lp > * { position: relative; z-index: 1; }
+
+.lp-wrap { max-width: var(--lp-max); margin: 0 auto; padding: 0 24px; }
+
+/* =============================================================================
+   Nav
+   ========================================================================== */
+
+.lp-nav {
+  position: sticky; top: 0; z-index: 20;
+  border-bottom: 1px solid transparent;
+  backdrop-filter: blur(12px);
+  transition: border-color 200ms ease, background 200ms ease;
+}
+.lp-nav.stuck {
+  border-bottom-color: var(--lp-line);
+  background: rgb(7 13 12 / 0.72);
+}
+.lp-nav-inner {
+  max-width: var(--lp-max); margin: 0 auto; padding: 16px 24px;
+  display: flex; align-items: center; gap: 28px;
+}
+.lp-brand {
+  display: flex; align-items: center; gap: 9px;
+  font-weight: 600; font-size: 15px; letter-spacing: -0.02em;
+  color: var(--lp-ink); text-decoration: none;
+}
+.lp-brand-mark { display: block; }
+.lp-nav-links { display: flex; align-items: center; gap: 24px; margin-left: auto; }
+.lp-nav-links a {
+  color: var(--lp-ink-2); text-decoration: none;
+  font-size: 13.5px; font-weight: 450;
+  transition: color 150ms ease;
+}
+.lp-nav-links a:hover { color: var(--lp-ink); }
+
+/* Nav items must never wrap: a two-line "Sign in" next to a pill button is the
+   one thing that makes a header look broken rather than dense. */
+.lp-nav-links a { white-space: nowrap; }
+@media (max-width: 560px) {
+  .lp-nav-inner { gap: 12px; padding: 14px 18px; }
+  .lp-nav-links { gap: 16px; }
+  .lp-nav-secondary { display: none; }
+  .lp-btn { padding: 10px 15px; font-size: 13.5px; }
+}
+
+/* =============================================================================
+   Buttons
+   ========================================================================== */
+
+.lp-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 11px 18px; border-radius: 9px;
+  font-size: 14px; font-weight: 550; letter-spacing: -0.01em;
+  text-decoration: none; border: 1px solid transparent;
+  cursor: pointer; white-space: nowrap;
+  transition: transform 150ms ease, background 150ms ease, border-color 150ms ease;
+}
+.lp-btn:active { transform: translateY(1px); }
+
+.lp-btn-primary {
+  background: var(--lp-accent); color: #04140e;
+  box-shadow: 0 0 0 1px rgb(52 211 153 / 0.35), 0 8px 30px -8px rgb(52 211 153 / 0.5);
+}
+.lp-btn-primary:hover { background: var(--lp-accent-2); }
+
+.lp-btn-ghost {
+  background: rgb(255 255 255 / 0.03);
+  border-color: var(--lp-line-2); color: var(--lp-ink);
+}
+.lp-btn-ghost:hover { border-color: var(--lp-muted); background: rgb(255 255 255 / 0.06); }
+
+.lp-btn-lg { padding: 14px 24px; font-size: 15px; border-radius: 11px; }
+
+/* =============================================================================
+   Hero
+   ========================================================================== */
+
+.lp-hero { position: relative; padding: 88px 0 40px; }
+
+/* The glow. Two offset radial washes rather than one, so the falloff isn't a
+   perfect circle — a single radial-gradient always looks like a spotlight. */
+.lp-hero::before {
+  content: "";
+  position: absolute; inset: -20% -10% auto -10%; height: 680px;
+  pointer-events: none;
+  background:
+    radial-gradient(48% 46% at 28% 18%, rgb(52 211 153 / 0.16), transparent 70%),
+    radial-gradient(42% 52% at 76% 6%, rgb(23 84 143 / 0.16), transparent 72%);
+  filter: blur(6px);
+}
+
+.lp-eyebrow {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px 6px 8px; border-radius: 999px;
+  background: var(--lp-accent-dim); border: 1px solid var(--lp-accent-line);
+  color: var(--lp-accent-2);
+  font-size: 12.5px; font-weight: 500; letter-spacing: -0.005em;
+  margin-bottom: 26px;
+}
+.lp-eyebrow-dot {
+  width: 6px; height: 6px; border-radius: 999px; background: var(--lp-accent);
+  box-shadow: 0 0 0 3px rgb(52 211 153 / 0.18);
+}
+
+.lp-h1 {
+  font-size: clamp(40px, 7vw, 76px);
+  line-height: 1.02; letter-spacing: -0.042em; font-weight: 600;
+  margin: 0 0 22px; max-width: 16ch;
+}
+.lp-h1 em {
+  font-style: normal;
+  background: linear-gradient(103deg, var(--lp-accent) 8%, var(--lp-accent-2) 52%, #7dd3fc 96%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+.lp-lede {
+  font-size: clamp(16px, 1.6vw, 19px); line-height: 1.55;
+  color: var(--lp-ink-2); max-width: 54ch; margin: 0 0 32px;
+}
+
+.lp-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+
+/* =============================================================================
+   Terminal
+   ========================================================================== */
+
+.lp-term {
+  margin-top: 34px; max-width: 560px;
+  border: 1px solid var(--lp-line); border-radius: 12px;
+  background: linear-gradient(180deg, var(--lp-panel), var(--lp-bg-2));
+  overflow: hidden;
+}
+/* One tab per harness. Horizontally scrollable rather than wrapped, so the row
+   keeps its shape on a phone instead of becoming two ragged lines. */
+.lp-term-tabs {
+  display: flex; gap: 2px; padding: 6px 6px 0;
+  border-bottom: 1px solid var(--lp-line);
+  overflow-x: auto; scrollbar-width: none;
+}
+.lp-term-tabs::-webkit-scrollbar { display: none; }
+.lp-term-tab {
+  background: none; border: 0; cursor: pointer; white-space: nowrap;
+  padding: 9px 13px; border-radius: 8px 8px 0 0;
+  font-size: 12.5px; font-weight: 500; font-family: var(--lp-font);
+  color: var(--lp-muted); border-bottom: 2px solid transparent;
+  transition: color 150ms ease, background 150ms ease, border-color 150ms ease;
+}
+.lp-term-tab:hover { color: var(--lp-ink); background: rgb(255 255 255 / 0.04); }
+.lp-term-tab.on {
+  color: var(--lp-accent); border-bottom-color: var(--lp-accent);
+  background: var(--lp-accent-dim);
+}
+
+.lp-term-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 13px; border-bottom: 1px solid var(--lp-line);
+}
+.lp-term-label {
+  font-size: 11.5px; color: var(--lp-muted);
+  font-family: var(--lp-mono); letter-spacing: -0.01em;
+}
+.lp-term-copy {
+  margin-left: auto; background: none; border: 0; cursor: pointer;
+  color: var(--lp-muted); font-size: 11.5px; font-family: var(--lp-mono);
+  padding: 3px 7px; border-radius: 6px;
+  transition: color 150ms ease, background 150ms ease;
+}
+.lp-term-copy:hover { color: var(--lp-ink); background: rgb(255 255 255 / 0.06); }
+.lp-term-copy.done { color: var(--lp-accent); }
+.lp-term-body {
+  padding: 15px 16px 17px; font-family: var(--lp-mono);
+  font-size: 13px; line-height: 1.7;
+}
+/* The JSON tab is the widest and must not stretch the panel. Wrapping the
+   command tabs keeps a long origin readable without a scrollbar. */
+.lp-term-body pre {
+  margin: 0; font: inherit; white-space: pre-wrap; word-break: break-word;
+}
+.lp-term-body .p { color: var(--lp-accent); user-select: none; }
+.lp-term-body .c { color: var(--lp-ink); }
+.lp-term-note { display: block; margin-top: 8px; color: var(--lp-muted); font-size: 12.5px; }
+
+
+.lp-hero-grid {
+  display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 56px; align-items: center;
+}
+@media (max-width: 900px) {
+  .lp-hero-grid { grid-template-columns: 1fr; gap: 40px; }
+  .lp-hero { padding-top: 56px; }
+}
+
+/* =============================================================================
+   Hero board — the real app, inset in the page
+   =============================================================================
+
+   The cards here are the app's own `CardNode`, styled by `tokens.css`, which is
+   a light theme. Rather than fight that, the panel is the app's own canvas
+   colour: a window onto the real product sitting in the dark page. Restyling
+   the cards dark would make this a mock-up again, which is the whole thing it
+   is not.
+   ========================================================================== */
+
+.lp-board {
+  position: relative;
+  height: 540px;
+  border: 1px solid var(--lp-line-2);
+  border-radius: 16px;
+  background: var(--canvas);
+  overflow: hidden;
+  /* Lifted, because a light panel on a dark page reads as floating or as a
+     hole depending entirely on whether it has a shadow. */
+  box-shadow: 0 24px 70px -20px rgb(0 0 0 / 0.75), 0 0 0 1px rgb(255 255 255 / 0.04);
+}
+
+/* Demo-only suppressions. Both controls work, and both are wrong here: delete
+   would let a visitor empty the hero, and the research thread is the one part
+   of a card that needs an account. */
+.lp-board .node-x,
+.lp-board .thread-toggle,
+.lp-board .thread-inner { display: none; }
+
+.lp-board .react-flow__attribution { display: none; }
+.lp-board .react-flow__pane { cursor: default; }
+
+.lp-board-hint {
+  position: absolute; left: 14px; bottom: 12px; z-index: 5; pointer-events: none;
+  font-family: var(--lp-mono); font-size: 11px; color: var(--muted);
+  background: rgb(255 255 255 / 0.82); padding: 4px 9px; border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  transition: opacity 400ms ease;
+}
+/* Once they have dragged something the instruction has done its job. */
+.lp-board-hint.gone { opacity: 0; }
+
+@media (max-width: 900px) { .lp-board { height: 420px; } }
+
+/* =============================================================================
+   Sections
+   ========================================================================== */
+
+.lp-section { padding: 88px 0; }
+.lp-section + .lp-section { border-top: 1px solid var(--lp-line); }
+
+.lp-kicker {
+  font-family: var(--lp-mono); font-size: 12px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--lp-accent); margin: 0 0 14px;
+}
+.lp-h2 {
+  font-size: clamp(26px, 3.6vw, 40px); line-height: 1.12;
+  letter-spacing: -0.032em; font-weight: 600; margin: 0 0 16px; max-width: 20ch;
+}
+.lp-sub { font-size: 16px; line-height: 1.6; color: var(--lp-ink-2); max-width: 58ch; margin: 0; }
+
+.lp-section-head { margin-bottom: 44px; }
+
+/* ---- the three-beat problem strip --------------------------------------- */
+
+.lp-beats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--lp-line); border: 1px solid var(--lp-line); border-radius: 14px; overflow: hidden; }
+.lp-beat { background: var(--lp-bg); padding: 28px 26px; }
+.lp-beat-n {
+  font-family: var(--lp-mono); font-size: 11.5px; color: var(--lp-accent);
+  margin-bottom: 12px; display: block;
+}
+.lp-beat h3 { font-size: 16px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 8px; }
+.lp-beat p { font-size: 14px; line-height: 1.6; color: var(--lp-ink-2); margin: 0; }
+@media (max-width: 800px) { .lp-beats { grid-template-columns: 1fr; } }
+
+/* ---- feature cards ------------------------------------------------------ */
+
+.lp-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.lp-card {
+  border: 1px solid var(--lp-line); border-radius: 14px; padding: 24px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.022), transparent);
+  transition: border-color 200ms ease, transform 200ms ease;
+}
+.lp-card:hover { border-color: var(--lp-line-2); transform: translateY(-2px); }
+.lp-card-icon {
+  width: 32px; height: 32px; border-radius: 9px; margin-bottom: 16px;
+  display: grid; place-items: center;
+  background: var(--lp-accent-dim); border: 1px solid var(--lp-accent-line);
+  color: var(--lp-accent);
+}
+.lp-card h3 { font-size: 15.5px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 8px; }
+.lp-card p { font-size: 14px; line-height: 1.62; color: var(--lp-ink-2); margin: 0; }
+.lp-card code {
+  font-family: var(--lp-mono); font-size: 12.5px;
+  color: var(--lp-accent-2); background: var(--lp-accent-dim);
+  padding: 1px 5px; border-radius: 5px;
+}
+
+/* ---- reveal on scroll --------------------------------------------------- */
+
+/* Visible by default; only JS that is definitely about to observe the element
+   adds `.armed` to hide it. Hiding in the stylesheet instead would mean any
+   failure — no IntersectionObserver, a thrown effect, a screenshot tool that
+   never scrolls — leaves a blank page with the content still in the DOM. */
+@media (prefers-reduced-motion: no-preference) {
+  .lp-reveal.armed { opacity: 0; transform: translateY(14px); }
+  .lp-reveal.armed.in {
+    opacity: 1; transform: none;
+    transition: opacity 600ms cubic-bezier(.22,.61,.36,1), transform 600ms cubic-bezier(.22,.61,.36,1);
+  }
+}
+
+/* =============================================================================
+   Closing CTA + footer
+   ========================================================================== */
+
+.lp-cta {
+  text-align: center; padding: 96px 24px;
+  border-top: 1px solid var(--lp-line);
+  background: radial-gradient(60% 120% at 50% 0%, rgb(52 211 153 / 0.08), transparent 70%);
+}
+.lp-cta h2 {
+  font-size: clamp(28px, 4vw, 44px); letter-spacing: -0.035em;
+  font-weight: 600; margin: 0 0 14px; line-height: 1.1;
+}
+.lp-cta p { color: var(--lp-ink-2); font-size: 16px; margin: 0 0 28px; }
+.lp-cta .lp-actions { justify-content: center; }
+
+.lp-foot {
+  border-top: 1px solid var(--lp-line); padding: 28px 24px;
+  display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+  max-width: var(--lp-max); margin: 0 auto;
+  color: var(--lp-muted); font-size: 13px;
+}
+.lp-foot nav { margin-left: auto; display: flex; gap: 20px; }
+.lp-foot a { color: var(--lp-muted); text-decoration: none; }
+.lp-foot a:hover { color: var(--lp-ink); }
+
+/* =============================================================================
+   /brain — long-form
+   ========================================================================== */
+
+.lp-prose { max-width: 720px; }
+.lp-prose h2 { font-size: 27px; letter-spacing: -0.03em; font-weight: 600; margin: 0 0 14px; }
+.lp-prose h3 { font-size: 17px; letter-spacing: -0.02em; font-weight: 600; margin: 32px 0 8px; }
+.lp-prose p { font-size: 15.5px; line-height: 1.68; color: var(--lp-ink-2); margin: 0 0 16px; }
+.lp-prose strong { color: var(--lp-ink); font-weight: 600; }
+.lp-prose code {
+  font-family: var(--lp-mono); font-size: 13px;
+  color: var(--lp-accent-2); background: var(--lp-accent-dim);
+  padding: 1.5px 6px; border-radius: 5px;
+}
+
+/* A two-column split that stacks: sticky rail of section links beside prose. */
+.lp-split { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 56px; align-items: start; }
+.lp-rail { position: sticky; top: 92px; display: flex; flex-direction: column; gap: 3px; }
+.lp-rail a {
+  color: var(--lp-muted); text-decoration: none; font-size: 13.5px;
+  padding: 7px 11px; border-radius: 8px; border-left: 2px solid transparent;
+  transition: color 150ms ease, background 150ms ease, border-color 150ms ease;
+}
+.lp-rail a:hover { color: var(--lp-ink); background: rgb(255 255 255 / 0.04); }
+.lp-rail a.on { color: var(--lp-accent); border-left-color: var(--lp-accent); background: var(--lp-accent-dim); }
+/* `minmax(0, 1fr)`, never a bare `1fr`. A grid item's automatic minimum is its
+   min-content width, so one wide table inside makes the whole column wider than
+   the screen — and `overflow-x: clip` on `.lp` then hides the damage from
+   `scrollWidth`, so it does not even show up as a horizontal scrollbar. It was
+   622px inside a 390px viewport before this. */
+@media (max-width: 860px) {
+  .lp-split { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+  .lp-rail { position: static; flex-direction: row; flex-wrap: wrap; }
+}
+.lp-rail, .lp-prose { min-width: 0; }
+
+/* ---- the tool table ----------------------------------------------------- */
+
+.lp-table-wrap { overflow-x: auto; border: 1px solid var(--lp-line); border-radius: 12px; }
+/* min-width keeps the two columns from collapsing into unreadable slivers; the
+   wrapper's overflow-x carries the rest, so this scrolls inside its own box
+   rather than pushing the page sideways. */
+.lp-table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 420px; }
+.lp-table th {
+  text-align: left; padding: 12px 16px; font-weight: 550; color: var(--lp-muted);
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  font-family: var(--lp-mono); border-bottom: 1px solid var(--lp-line);
+  background: rgb(255 255 255 / 0.018);
+}
+.lp-table td { padding: 12px 16px; border-bottom: 1px solid var(--lp-line); color: var(--lp-ink-2); vertical-align: top; }
+.lp-table tr:last-child td { border-bottom: 0; }
+.lp-table td:first-child {
+  font-family: var(--lp-mono); color: var(--lp-accent-2); white-space: nowrap;
+}
+
+/* ---- pipeline diagram --------------------------------------------------- */
+
+/* ---- spec list: the actual constants, not prose about them -------------- */
+
+.lp-spec {
+  border: 1px solid var(--lp-line); border-radius: 12px;
+  background: rgb(255 255 255 / 0.015);
+  margin: 0 0 18px; padding: 4px 0;
+}
+.lp-spec div {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px;
+  padding: 10px 18px; align-items: baseline;
+}
+.lp-spec div + div { border-top: 1px solid var(--lp-line); }
+.lp-spec dt { font-size: 14px; color: var(--lp-ink-2); margin: 0; }
+.lp-spec dd {
+  margin: 0; font-family: var(--lp-mono); font-size: 12.5px;
+  color: var(--lp-accent-2); text-align: right; white-space: nowrap;
+}
+/* The nowrap keeps values on one line against the label on a wide screen, and
+   is exactly what pushes the page past a phone's width — the longest value
+   here is 459px on its own. Stack and let it wrap instead. */
+@media (max-width: 620px) {
+  .lp-spec div { grid-template-columns: minmax(0, 1fr); gap: 3px; padding: 11px 15px; }
+  .lp-spec dd { text-align: left; white-space: normal; }
+}
+
+/* ---- comparison: this vs. the alternatives ------------------------------ */
+
+.lp-compare { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 620px; }
+.lp-compare th, .lp-compare td {
+  padding: 12px 14px; text-align: left; vertical-align: top;
+  border-bottom: 1px solid var(--lp-line);
+}
+.lp-compare thead th {
+  font-family: var(--lp-mono); font-size: 11px; font-weight: 550;
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--lp-muted);
+  background: rgb(255 255 255 / 0.018);
+}
+/* The last column is ours, so it gets the accent — the comparison should be
+   readable at a glance without reading a single cell. */
+.lp-compare th:last-child { color: var(--lp-accent); }
+.lp-compare td:last-child { color: var(--lp-ink); background: rgb(52 211 153 / 0.045); }
+.lp-compare tbody th {
+  font-weight: 550; color: var(--lp-ink-2); font-size: 12.5px;
+  width: 132px; background: rgb(255 255 255 / 0.012);
+}
+.lp-compare td { color: var(--lp-muted); }
+.lp-compare tr:last-child th, .lp-compare tr:last-child td { border-bottom: 0; }
+
+/* On a phone a five-column comparison scrolls sideways, which puts the column
+   about *this* product — the only one a reader actually needs — off the screen
+   behind a gesture nobody makes. Stacked into one labelled block per dimension
+   instead, so every row is readable in place and ours reads last, as intended. */
+@media (max-width: 720px) {
+  .lp-compare { min-width: 0; display: block; }
+  .lp-compare thead { display: none; }
+  .lp-compare tbody, .lp-compare tr, .lp-compare th, .lp-compare td { display: block; width: auto; }
+  .lp-compare tr {
+    border: 1px solid var(--lp-line); border-radius: 11px;
+    margin-bottom: 10px; overflow: hidden;
+  }
+  .lp-compare tbody th {
+    width: auto; background: rgb(255 255 255 / 0.03); color: var(--lp-ink);
+    font-size: 14px; padding: 11px 14px; border-bottom: 1px solid var(--lp-line);
+  }
+  .lp-compare td { border-bottom: 1px solid var(--lp-line); padding: 11px 14px; }
+  .lp-compare td::before {
+    content: attr(data-label); display: block;
+    font-family: var(--lp-mono); font-size: 10.5px; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--lp-muted); margin-bottom: 4px;
+  }
+  .lp-compare td:last-child::before { color: var(--lp-accent); }
+  .lp-compare tr td:last-child { border-bottom: 0; }
+  .lp-table-wrap:has(.lp-compare) { border: 0; border-radius: 0; overflow: visible; }
+}
+
+/* ---- an honest caveat block --------------------------------------------- */
+
+.lp-note {
+  border: 1px solid var(--lp-line); border-left: 2px solid var(--lp-accent-line);
+  border-radius: 0 12px 12px 0; padding: 18px 20px; margin: 0 0 18px;
+  background: rgb(255 255 255 / 0.015);
+}
+.lp-note h4 {
+  margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--lp-ink);
+  letter-spacing: -0.015em;
+}
+.lp-note p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--lp-ink-2); }
+.lp-note + .lp-note { margin-top: -6px; }
+
+.lp-pipe {
+  border: 1px solid var(--lp-line); border-radius: 12px; padding: 22px;
+  background: var(--lp-bg-2); font-family: var(--lp-mono);
+  font-size: clamp(10.5px, 1.15vw, 12.5px);
+  line-height: 1.9; color: var(--lp-ink-2);
+  overflow-x: auto; white-space: pre; margin: 0 0 16px;
+}

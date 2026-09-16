@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.wrangler/
+worker-configuration.d.ts
+
+# secrets — never commit
+.dev.vars
+.env
+.env.*
+!.env.example
+
+.DS_Store
+*.log
