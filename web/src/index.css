@@ -533,12 +533,21 @@ h1, h2, h3 { letter-spacing: -0.02em; text-wrap: balance; }
   flex: 0 0 auto; width: 26px; height: 26px;
   display: grid; place-items: center;
   border-radius: var(--r-xs);
-  background: var(--k-soft); color: var(--k-ink);
+  /* Fallbacks, so a kind added without a colour reads as neutral rather than
+     as an invisible icon on no background. An undefined custom property makes
+     the whole declaration invalid, which is how a new kind goes unstyled
+     without anyone noticing — the same way `html` once shipped as a default
+     React Flow node. */
+  background: var(--k-soft, var(--surface-2)); color: var(--k-ink, var(--ink-2));
 }
-.arte-tr.sheet { --k-soft: #e3f1ea; --k-ink: #0f7a57; }
-.arte-tr.doc   { --k-soft: #e3eefb; --k-ink: #17548f; }
-.arte-tr.deck  { --k-soft: #fbf0dd; --k-ink: #8a5a13; }
-.arte-tr.html  { --k-soft: #efe8fa; --k-ink: #5b3ea8; }
+.arte-tr.sheet  { --k-soft: #e3f1ea; --k-ink: #0f7a57; }
+.arte-tr.doc    { --k-soft: #e3eefb; --k-ink: #17548f; }
+.arte-tr.deck   { --k-soft: #fbf0dd; --k-ink: #8a5a13; }
+.arte-tr.html   { --k-soft: #efe8fa; --k-ink: #5b3ea8; }
+/* Neutral for a file, because its icon says more than a hue would; teal for a
+   folder, which is the one remaining hue not already spoken for. */
+.arte-tr.file   { --k-soft: #eaeded; --k-ink: #4a5654; }
+.arte-tr.folder { --k-soft: #ddf0f0; --k-ink: #0f6b70; }
 
 .arte-label {
   min-width: 0; font-size: var(--t-sm); font-weight: 500; color: var(--ink);
@@ -1735,112 +1744,166 @@ a.card-open { display: block; box-sizing: border-box; text-align: center; text-d
 
 /* --- files and folders ---------------------------------------------------
  *
- * A list and a form, not an editor. Nothing here is a canvas or a document, so
- * it borrows the artefact page's chrome and adds only what a file row needs:
- * the name to recognise it by, the line that says what it is, and a way out to
- * the bytes.
+ * A list and a way to add to it, not an editor. It borrows the artefacts
+ * table's shape on purpose — same glyph tile, same column rhythm, same hover —
+ * so a file and a sheet read as the same kind of object in two places rather
+ * than as two unrelated screens.
  */
 
 .files {
   flex: 1;
   overflow: auto;
-  padding: var(--s5) clamp(1rem, 6vw, 4rem);
+  padding: var(--s5) clamp(1rem, 5vw, 3.5rem) var(--s7);
   display: flex;
   flex-direction: column;
-  gap: var(--s5);
+  /* Centred by the flex container rather than by `margin-inline: auto` on the
+     children. The children reset their own margins — a list zeroes it, so does
+     the error paragraph — and at equal specificity the later rule wins, which
+     silently left-aligned the list under a centred drop zone. */
+  align-items: center;
+  gap: var(--s4);
 }
 
-.file-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
+.files > * { width: min(100%, 60rem); }
 
+.file-list { list-style: none; margin: 0; padding: 0; }
+
+/* One template for every row. Name takes the slack; size and age are fixed so
+   they line up down the list rather than drifting with the filenames. */
 .file-row {
-  display: flex;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 72px 84px auto;
+  align-items: center;
   gap: var(--s3);
-  padding: var(--s3) var(--s2);
+  padding: var(--s2) var(--s2);
+  border-bottom: 1px solid var(--line);
   border-radius: var(--r-sm);
-  border: 1px solid transparent;
 }
 
-.file-row:hover { background: var(--surface-2); border-color: var(--line); }
+.file-row:hover { background: var(--surface-2); }
 
-.file-main { flex: 1; min-width: 0; }
+/* Same tile as `.arte-icon`, same fallback for a category added without a
+   colour: an undefined custom property invalidates the whole declaration, so
+   without this a new category is an invisible mark on no background. */
+.file-glyph {
+  flex: 0 0 auto; width: 26px; height: 26px;
+  display: grid; place-items: center;
+  border-radius: var(--r-xs);
+  background: var(--k-soft, var(--surface-2)); color: var(--k-ink, var(--ink-2));
+}
+.file-row.text    { --k-soft: #eaeded; --k-ink: #4a5654; }
+.file-row.sheet   { --k-soft: #e3f1ea; --k-ink: #0f7a57; }
+.file-row.image   { --k-soft: #efe8fa; --k-ink: #5b3ea8; }
+.file-row.pdf     { --k-soft: #fbe8e6; --k-ink: #a33028; }
+.file-row.archive { --k-soft: #fbf0dd; --k-ink: #8a5a13; }
+.file-row.other   { --k-soft: #eaeded; --k-ink: #4a5654; }
+
+.file-main { min-width: 0; }
 
 .file-name {
   display: block;
-  font-size: var(--t-sm);
-  font-weight: 500;
-  /* A filename is the one string here that must not be reflowed into
-   * something unrecognisable — it is how the file is identified. */
-  word-break: break-all;
-}
-
-.file-meta {
-  display: block;
-  margin-top: 2px;
-  font-size: var(--t-xs);
-  color: var(--muted);
+  font-size: var(--t-sm); font-weight: 500; color: var(--ink);
+  /* A filename is how the file is identified, so it must not be reflowed into
+     something unrecognisable — but it must not blow the column open either. */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 .file-desc {
-  margin: 6px 0 0;
-  font-size: var(--t-sm);
-  color: var(--ink-2);
+  margin: 2px 0 0;
+  font-size: var(--t-xs); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-.file-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  flex-shrink: 0;
+.file-meta { font-size: var(--t-xs); color: var(--muted); }
+
+.file-actions { display: flex; align-items: center; gap: var(--s1); }
+
+.file-open {
+  padding: 3px 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--muted);
+  font-size: var(--t-xs); text-decoration: none;
 }
+.file-open:hover { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
 
 .file-x {
-  border: 0;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 1.1rem;
-  line-height: 1;
-  padding: 2px 6px;
-  border-radius: var(--r-sm);
+  border: 0; background: none; color: var(--faint);
+  font-size: 1.05rem; line-height: 1; cursor: pointer;
+  padding: 3px 7px; border-radius: var(--r-sm);
 }
-
 .file-x:hover { color: var(--danger); background: var(--danger-soft); }
 
-.file-upload {
-  display: flex;
-  flex-direction: column;
+/* The drop target, which is also the picker. The native input is hidden rather
+   than restyled: its shadow DOM button cannot be themed to match anything, and
+   wrapping it in a label gives both gestures one hit area. */
+.file-drop {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px;
+  padding: var(--s6) var(--s4);
+  border: 1.5px dashed var(--line-strong); border-radius: var(--r-lg);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+.file-drop input[type="file"] { display: none; }
+.file-drop:hover { border-color: var(--accent-line); }
+.file-drop.over { border-color: var(--accent); background: var(--accent-soft); }
+
+.file-drop-main { font-size: var(--t-sm); font-weight: 500; color: var(--ink-2); }
+.file-drop-sub { font-size: var(--t-xs); color: var(--muted); }
+
+/* Staged: chosen but not yet uploaded, waiting on the one line that will find
+   it again. Tinted rather than bordered, so it reads as pending rather than as
+   another row in the list above. */
+.file-stage {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: start;
   gap: var(--s3);
-  align-items: flex-start;
-  padding-top: var(--s5);
-  border-top: 1px solid var(--line);
+  padding: var(--s3);
+  border: 1px solid var(--accent-line); border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--e1);
 }
 
-.file-desc-label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: min(100%, 34rem);
-  font-size: var(--t-xs);
-  color: var(--muted);
-}
+.file-stage-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 
 .file-desc-input {
+  margin-top: var(--s1);
   width: 100%;
-  padding: var(--s2) var(--s3);
-  font: inherit;
-  font-size: var(--t-sm);
-  color: var(--ink);
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
+  padding: 6px var(--s2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--ink);
+  font: inherit; font-size: var(--t-sm);
+  outline: none;
 }
+.file-desc-input:focus { border-color: var(--accent-line); background: var(--surface); }
 
-.file-desc-input:focus { outline: none; border-color: var(--accent-line); }
+.file-hint { font-size: var(--t-xs); color: var(--muted); }
+
+/* A refusal, not a measurement. The size of an over-limit file is the reason
+   it cannot be uploaded, so it must not read like the neutral size on every
+   other row. */
+.file-refused { font-size: var(--t-xs); color: var(--danger); }
+
+.file-cancel,
+.file-upload-go {
+  padding: 5px 12px;
+  border-radius: var(--r-sm);
+  font: inherit; font-size: var(--t-sm);
+  cursor: pointer;
+}
+.file-cancel { border: 1px solid var(--line); background: var(--surface); color: var(--muted); }
+.file-cancel:hover { color: var(--ink); }
+.file-upload-go { border: 1px solid var(--accent); background: var(--accent); color: #fff; }
+.file-upload-go:hover:not(:disabled) { background: var(--accent-hover); }
+.file-upload-go:disabled,
+.file-cancel:disabled { opacity: 0.45; cursor: default; }
+
+.file-error {
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft); color: var(--danger);
+  font-size: var(--t-sm);
+}

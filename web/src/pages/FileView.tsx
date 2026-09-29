@@ -3,7 +3,7 @@
  *
  * Not an editor. The other four artefact kinds are authored here and saved
  * back; these are bytes we did not write and cannot change, so the page is a
- * list, an upload control and a set of download links. There is no autosave
+ * list, a way to add to it and a way out to the contents. There is no autosave
  * and nothing to flush, which is why this uses `ArtefactFrame` directly rather
  * than `useArtefactEditor`.
  *
@@ -11,10 +11,12 @@
  * signed and expire, so they are fetched with the listing rather than built
  * here — the server mints them only after checking what the viewer may see.
  *
- * The description field is required for anything we cannot read text out of,
- * and the form says so before the upload rather than after. It is the only
- * thing that makes a zip or a spreadsheet findable by meaning later, which is
- * the entire reason for keeping files here instead of on a disk somewhere.
+ * **Staging is the whole shape of this page.** A file is chosen or dropped, and
+ * then sits there while its description is written, and only then uploads.
+ * That order is what makes drag-and-drop possible at all: anything we cannot
+ * read text out of needs a line saying what it is, and a drop has nowhere to
+ * ask. Uploading on drop and refusing afterwards would mean the gesture fails
+ * for exactly the files that most need to be kept.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,6 +24,7 @@ import { useParams } from "react-router-dom";
 import { api, type StoredFile } from "../api";
 import { ArtefactFrame } from "./ArtefactFrame";
 import { ShareMenu } from "../ShareMenu";
+import { FileIcon, categorise } from "../ui/FileIcon";
 
 /** Mirrors `isTextual` in the Worker, for the hint shown beside the field. */
 const TEXT_EXTENSIONS = new Set([
@@ -34,11 +37,12 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 
 const TEXT_SNAPSHOT_MAX = 256_000;
+const MAX_FILE_BYTES = 50_000_000;
 
+/** Whether the server will read this file's text, and so not insist on a line. */
 const readable = (name: string, type: string, size: number) => {
   const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
-  const textual = type.startsWith("text/") || TEXT_EXTENSIONS.has(ext);
-  return textual && size <= TEXT_SNAPSHOT_MAX;
+  return (type.startsWith("text/") || TEXT_EXTENSIONS.has(ext)) && size <= TEXT_SNAPSHOT_MAX;
 };
 
 const size = (bytes: number) =>
@@ -46,8 +50,13 @@ const size = (bytes: number) =>
     ? `${(bytes / 1_000_000).toFixed(1)} MB`
     : `${Math.max(1, Math.round(bytes / 1000))} kB`;
 
-const when = (ms: number) =>
-  new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+const when = (ms: number) => {
+  const mins = Math.floor((Date.now() - ms) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
+  return new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+};
 
 export function FileView() {
   const { nodeId = "" } = useParams();
@@ -61,7 +70,9 @@ export function FileView() {
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [over, setOver] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
+  const descField = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -86,10 +97,28 @@ export function FileView() {
     [nodeId],
   );
 
-  // A `file` node holds one file, so once it has one the upload form is not an
-  // option that happens to fail — it should not be there.
+  // A `file` node holds one file, so once it has one the upload control is not
+  // an option that happens to fail — it should not be on the page.
   const full = kind === "file" && !!files?.length;
   const needsDescription = staged ? !readable(staged.name, staged.type, staged.size) : false;
+  const tooBig = staged ? staged.size > MAX_FILE_BYTES : false;
+
+  /** Take a file from either gesture and put it in the same staging state. */
+  const stage = useCallback((f: File | null) => {
+    setStaged(f);
+    setUploadError(null);
+    setDescription("");
+    // The description is the one thing that needs typing, so put the caret
+    // there rather than making someone reach for it after every drop.
+    if (f) setTimeout(() => descField.current?.focus(), 0);
+  }, []);
+
+  const clear = () => {
+    setStaged(null);
+    setDescription("");
+    setUploadError(null);
+    if (picker.current) picker.current.value = "";
+  };
 
   const upload = async () => {
     if (!staged) return;
@@ -97,9 +126,7 @@ export function FileView() {
     setUploadError(null);
     try {
       await api.uploadFile(nodeId, staged, description);
-      setStaged(null);
-      setDescription("");
-      if (picker.current) picker.current.value = "";
+      clear();
       await load();
     } catch (e) {
       setUploadError((e as Error).message);
@@ -132,80 +159,131 @@ export function FileView() {
     >
       {() => (
         <div className="files">
-          <ul className="file-list">
-            {files!.map((f) => (
-              <li key={f.id} className="file-row">
-                <div className="file-main">
-                  <span className="file-name">{f.name}</span>
-                  <span className="file-meta">
-                    {size(f.size)} · {f.contentType} · {when(f.uploadedAt)}
+          {files!.length ? (
+            <ul className="file-list">
+              {files!.map((f) => (
+                <li key={f.id} className={`file-row ${categorise(f.name, f.contentType)}`}>
+                  <span className="file-glyph">
+                    <FileIcon category={categorise(f.name, f.contentType)} size={16} />
                   </span>
-                  {f.description ? <p className="file-desc">{f.description}</p> : null}
-                </div>
-                <div className="file-actions">
-                  {f.url ? (
-                    <a
-                      className="card-open"
-                      href={f.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      Open
-                    </a>
-                  ) : (
-                    // No signing key configured. Saying so beats an Open link
-                    // that 503s, and beats serving the bytes from this origin.
-                    <span className="file-meta">Downloads unavailable</span>
-                  )}
-                  <button className="file-x" onClick={() => void remove(f)} title="Delete">
-                    ×
-                  </button>
-                </div>
-              </li>
-            ))}
-            {!files!.length ? <li className="sheet-msg">Nothing here yet.</li> : null}
-          </ul>
 
-          {full ? null : (
-            <div className="file-upload">
-              <input
-                ref={picker}
-                type="file"
-                onChange={(e) => {
-                  setStaged(e.target.files?.[0] ?? null);
-                  setUploadError(null);
-                }}
-              />
+                  <div className="file-main">
+                    <span className="file-name">{f.name}</span>
+                    {f.description ? <p className="file-desc">{f.description}</p> : null}
+                  </div>
 
-              {staged ? (
-                <>
-                  <label className="file-desc-label">
-                    {needsDescription ? "What is this? (required)" : "What is this? (optional)"}
+                  <span className="file-meta">{size(f.size)}</span>
+                  <span className="file-meta">{when(f.uploadedAt)}</span>
+
+                  <div className="file-actions">
+                    {f.url ? (
+                      <a className="file-open" href={f.url} target="_blank" rel="noopener noreferrer">
+                        Open
+                      </a>
+                    ) : (
+                      // No signing key configured. Saying so beats an Open link
+                      // that 503s, and beats serving bytes from the app origin.
+                      <span className="file-meta">No downloads</span>
+                    )}
+                    <button className="file-x" onClick={() => void remove(f)} title="Delete">
+                      ×
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          {full ? null : staged ? (
+            /* Staged: the file is chosen, and the only thing left is the line
+               that will find it again. */
+            <div className="file-stage">
+              <span className="file-glyph">
+                <FileIcon category={categorise(staged.name, staged.type)} size={16} />
+              </span>
+              <div className="file-stage-main">
+                <span className="file-name">{staged.name}</span>
+                <span className={tooBig ? "file-refused" : "file-meta"}>
+                  {size(staged.size)}
+                  {tooBig ? ` — over the ${MAX_FILE_BYTES / 1_000_000} MB limit` : ""}
+                </span>
+
+                {/* Nothing below is worth showing for a file that cannot be
+                    uploaded at all. Asking someone to describe it first and
+                    refusing afterwards is wasted typing. */}
+                {tooBig ? null : (
+                  <>
                     <input
+                      ref={descField}
                       className="file-desc-input"
                       value={description}
                       placeholder={
                         needsDescription
-                          ? "One line — this is what makes it findable later"
-                          : "Its text is indexed, so this is only for context"
+                          ? "What is this? One line — it is what will find it again"
+                          : "What is this? Optional — its text is already indexed"
                       }
                       onChange={(e) => setDescription(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !(needsDescription && !description.trim()))
+                          void upload();
+                        if (e.key === "Escape") clear();
+                      }}
                     />
-                  </label>
+                    {needsDescription ? (
+                      <span className="file-hint">
+                        We cannot read text out of this one, so this line is the only thing that
+                        will find it later.
+                      </span>
+                    ) : null}
+                  </>
+                )}
+              </div>
 
-                  <button
-                    className="card-open"
-                    disabled={busy || (needsDescription && !description.trim())}
-                    onClick={() => void upload()}
-                  >
-                    {busy ? "Uploading…" : `Upload ${staged.name}`}
-                  </button>
-                </>
-              ) : null}
-
-              {uploadError ? <p className="sheet-msg sheet-err">{uploadError}</p> : null}
+              <div className="file-actions">
+                <button className="file-cancel" onClick={clear} disabled={busy}>
+                  Cancel
+                </button>
+                <button
+                  className="file-upload-go"
+                  disabled={busy || tooBig || (needsDescription && !description.trim())}
+                  onClick={() => void upload()}
+                >
+                  {busy ? "Uploading…" : "Upload"}
+                </button>
+              </div>
             </div>
+          ) : (
+            /* Idle: the drop target, which is also the picker. */
+            <label
+              className={`file-drop${over ? " over" : ""}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setOver(true);
+              }}
+              onDragLeave={() => setOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setOver(false);
+                // One at a time: each file needs its own description, and a
+                // queue of them is a different page than this one.
+                stage(e.dataTransfer?.files?.[0] ?? null);
+              }}
+            >
+              <input
+                ref={picker}
+                type="file"
+                onChange={(e) => stage(e.target.files?.[0] ?? null)}
+              />
+              <span className="file-drop-main">
+                {files!.length ? "Add another file" : "Drop a file here"}
+              </span>
+              <span className="file-drop-sub">
+                or click to choose · up to {MAX_FILE_BYTES / 1_000_000} MB
+              </span>
+            </label>
           )}
+
+          {uploadError ? <p className="file-error">{uploadError}</p> : null}
         </div>
       )}
     </ArtefactFrame>

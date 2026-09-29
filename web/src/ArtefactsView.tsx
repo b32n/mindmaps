@@ -25,6 +25,8 @@ const FILTERS: Array<{ key: "all" | ArtefactKind; label: string }> = [
   { key: "doc", label: "Docs" },
   { key: "deck", label: "Decks" },
   { key: "html", label: "Pages" },
+  { key: "file", label: "Files" },
+  { key: "folder", label: "Folders" },
 ];
 
 function whenChanged(at: number): string {
@@ -107,7 +109,7 @@ export function ArtefactsView({
     <div className="arte-view">
       <header className="arte-head">
         <h1>Artefacts</h1>
-        <p>Sheets, documents, decks and pages across every mindmap.</p>
+        <p>Sheets, documents, decks, pages and files across every mindmap.</p>
       </header>
 
       {error && <p className="trash-error">{error}</p>}
