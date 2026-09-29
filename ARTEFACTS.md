@@ -236,17 +236,67 @@ Bundle discipline learned from the Milkdown swap, which applies directly here:
 
 **v0 — artefacts, no sharing.**
 
-- [ ] `sheet` node type end to end: schema, minimal authoring format, snapshot,
+- [x] `sheet` node type end to end: schema, minimal authoring format, snapshot,
       graph links, lazy editor route
-- [ ] retrieval filters widened, snapshot regenerated on write
-- [ ] `create_artefact`, `update_artefact`, `get_artefact_schema`
-- [ ] then `doc` and `deck`, which should be mostly repetition
+- [x] retrieval filters widened, snapshot regenerated on write
+- [x] `create_artefact`, `update_artefact`, `get_artefact_schema`
+- [x] then `doc` and `deck`, which were mostly repetition — the parts that were
+      not are noted below
 
 Sheets first, not because they matter most, but because they are the thinnest
 slice that proves every hard part: agent authorship of structured content,
 retrieval over a derived snapshot, and the lazy editor route. If an agent writes
 a sheet that recall then finds and links to the card that motivated it, the
 pattern is proven.
+
+Three things `doc` and `deck` forced that `sheet` had not:
+
+- The authoring format is per kind, so the three tools became one table keyed by
+  kind rather than three branches. A fourth kind is a row.
+- `INDEXABLE_SQL` replaced the type list that six queries each spelled out by
+  hand. Widening it for `sheet` meant finding all six; a missed one is a kind
+  that is silently unsearchable.
+- Renaming now writes the payload too. A document and a deck carry a title of
+  their own and render it, so a rename that only touched the node left the page
+  header and the document disagreeing — and left the artefact findable under its
+  old name, since the title heads the snapshot.
+
+The Worker still contains no Spindle code. It was tempting for decks, whose
+format is much richer than a sheet's, but `spindle-*-core` depends on
+`y-indexeddb`, which has no business in a Worker. The payloads stay hand-rolled
+and deliberately partial: `normalizeDeckData` fills in ids, z-order indices, the
+theme and the slide size on load, so the Worker never reimplements fractional
+indexing or pins a theme the library is entitled to change.
+
+**v0.5 — arbitrary files.** `file` and `folder`, for bytes we did not author.
+
+The reason is continuity rather than storage. Memory already survives a session
+ending because it lives in D1 and Vectorize; files do not, because they live on
+whichever machine an agent happened to run on, and the next agent cannot see
+them. This is the last thing an agent has to leave behind.
+
+- [x] `files` table, one row per file, `files/<nodeId>/<uploadId>` in R2
+- [x] streamed uploads — the bytes are never whole in the isolate, which is what
+      keeps the 50 MB cap a constant rather than an architecture
+- [x] text extracted where we can read it; a required one-line description where
+      we cannot
+- [x] downloads on the mindbox origin, signed and expiring
+- [x] `put_file`, `list_files`, `read_file` over MCP
+
+Three things this forced that the authored kinds had not:
+
+- **The snapshot cannot be derived.** Every other kind earns its way into
+  `recall` by deriving text from its own payload. A zip derives nothing, so the
+  uploader supplies the one line that will find it, and the field is required
+  rather than optional because §7 already names the failure mode.
+- **The files are not nodes.** A folder's members live in their own table. As
+  nodes under a parent id they would need filtering out of every query that
+  lists a board, which is the hazard 0021 rejected `deleted_at` over — there a
+  missed filter surfaced a deleted card, here it would spill a folder's contents
+  across the canvas.
+- **Membership is in D1, not an R2 manifest.** A manifest is one object, so two
+  agents uploading to one folder is a read-modify-write race that drops an
+  entry. Concurrent agents are the use case, not an edge case.
 
 **v1 — publishing.** Share links, print, download as xlsx/docx/pptx.
 

@@ -14,6 +14,21 @@ compatibility_date = "2026-09-01"
 pattern = "mindmaps.b32n.io"
 custom_domain = true
 
+# The mindbox: HTML artefacts run here and nowhere else.
+#
+# Not tidiness: the app origin holds the session cookie, and `HttpOnly` does
+# nothing to stop same-origin script doing `fetch("/api/boards", {credentials:
+# "include"})`. An author-written page running on mindmaps.b32n.io could read
+# every card its owner has. On its own hostname there is no session to borrow.
+#
+# Same Worker, because the code and the R2 binding are the same; the isolation
+# the browser enforces comes from the hostname, not from the process. The /s/*
+# route is the only thing that answers here, and it authenticates with a signed
+# URL rather than a cookie. See src/mindbox.ts.
+[[routes]]
+pattern = "mindbox.b32n.io"
+custom_domain = true
+
 [assets]
 directory = "../web/dist"
 # Unknown paths are client-side routes (/app, /login), so serve the SPA shell
@@ -29,6 +44,12 @@ run_worker_first = [
   "/mcp",
   "/oauth/*",
   "/.well-known/*",
+  # The mindbox. Without this the SPA fallback answers with index.html and an
+  # HTML artefact renders as a copy of the app inside its own frame.
+  "/s/*",
+  # File downloads, same trap: without it every download is a copy of the app
+  # saved under the file's name.
+  "/f/*",
 ]
 
 [[d1_databases]]
@@ -40,6 +61,14 @@ migrations_dir = "migrations"
 # Pasted/dropped images. Locally wrangler simulates this with no real bucket.
 [[r2_buckets]]
 binding = "IMAGES"
+bucket_name = "mindmaps-images"
+
+# Artefact payloads (sheets, later docs and decks). A second binding onto the
+# same bucket rather than a second bucket: the `artefacts/` key prefix already
+# keeps them apart, and this needs no new production resource. Splitting them
+# later is a bucket_name change plus a copy.
+[[r2_buckets]]
+binding = "ARTEFACTS"
 bucket_name = "mindmaps-images"
 
 # Semantic recall. Both optional: without them `recall` falls back to keyword
@@ -77,6 +106,7 @@ crons = ["* * * * *"]
 PUBLIC_ORIGIN = "https://mindmaps.b32n.io"
 ALLOWED_ORIGIN = "https://mindmaps.b32n.io"
 APP_ORIGIN = "https://mindmaps.b32n.io"
+MINDBOX_ORIGIN = "https://mindbox.b32n.io"
 
 # Local development overrides these via `worker/.dev.vars`, which wrangler reads
 # automatically. A `[env.dev]` block would NOT work: named environments are only
@@ -85,6 +115,9 @@ APP_ORIGIN = "https://mindmaps.b32n.io"
 # Secrets — set with `npx wrangler secret put <NAME>`, never committed:
 #   GOOGLE_CLIENT_ID       (Google Cloud Console -> OAuth 2.0 Client ID)
 #   GOOGLE_CLIENT_SECRET
+#   MINDBOX_SECRET         (any long random string; signs mindbox frame URLs)
+# Without MINDBOX_SECRET the HTML artefact type is unavailable rather than
+# insecure: minting a frame URL 503s and /s/* refuses to serve.
 # Google sign-in hides itself when these are absent; email + password works
 # without them. The redirect URI to register is:
 #   https://mindmaps.b32n.io/api/auth/google/callback

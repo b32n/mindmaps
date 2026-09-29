@@ -54,6 +54,68 @@ export const IconNote = ({ size }: P) => (
   </svg>
 );
 
+export const IconSheet = ({ size }: P) => (
+  <svg {...base(size)}>
+    <rect x="3" y="4" width="14" height="12" rx="1.5" />
+    <path d="M3 8h14M8 8v8M13 8v8" />
+  </svg>
+);
+
+export const IconDoc = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M4.5 2.5h6l3.5 3.5v11h-9.5z" />
+    <path d="M10.5 2.5V6H14M7 9.5h5M7 12.5h5" />
+  </svg>
+);
+
+export const IconDeck = ({ size }: P) => (
+  <svg {...base(size)}>
+    <rect x="2.5" y="3.5" width="15" height="10.5" rx="1.5" />
+    <path d="M7.5 17h5" />
+  </svg>
+);
+
+export const IconLayers = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M10 2.5 3 6l7 3.5L17 6z" />
+    <path d="M3 10l7 3.5L17 10M3 14l7 3.5L17 14" />
+  </svg>
+);
+
+export const IconCheck = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M4 10.5l3.5 3.5L16 5.5" />
+  </svg>
+);
+
+export const IconPeople = ({ size }: P) => (
+  <svg {...base(size)}>
+    <circle cx="7.5" cy="6.5" r="2.8" />
+    <path d="M2.5 16c0-2.8 2.2-4.5 5-4.5s5 1.7 5 4.5" />
+    <path d="M13 4.2a2.8 2.8 0 0 1 0 5.4M14 11.8c2.1.4 3.5 1.9 3.5 4.2" />
+  </svg>
+);
+
+export const IconPage = ({ size }: P) => (
+  <svg {...base(size)}>
+    <rect x="2.5" y="3.5" width="15" height="13" rx="1.5" />
+    <path d="M2.5 7.5h15M5.5 5.5h.01M8 5.5h.01" />
+  </svg>
+);
+
+export const IconFile = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M5 2.5h6l4 4v11H5z" />
+    <path d="M11 2.5v4h4" />
+  </svg>
+);
+
+export const IconFolder = ({ size }: P) => (
+  <svg {...base(size)}>
+    <path d="M2.5 5.2a1.7 1.7 0 0 1 1.7-1.7h3.4l1.8 2.2h6.4a1.7 1.7 0 0 1 1.7 1.7v7.4a1.7 1.7 0 0 1-1.7 1.7H4.2a1.7 1.7 0 0 1-1.7-1.7z" />
+  </svg>
+);
+
 export const IconImage = ({ size }: P) => (
   <svg {...base(size)}>
     <rect x="3" y="4.5" width="14" height="11" rx="2" />

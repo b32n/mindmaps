@@ -86,8 +86,8 @@ export function ThreadSection({ node }: { node: BoardNode }) {
           ) : (
             <p className="thread-empty">
               Runs in a remote Claude session with this workstream's repos
-              mounted read&#8209;only. Durable — every later question resumes the
-              same session.
+              mounted read&#8209;only. It is durable: every later question resumes
+              the same session.
             </p>
           )}
 

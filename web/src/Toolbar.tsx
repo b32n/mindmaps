@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { InkTool } from "./InkLayer";
 import {
-  IconCard, IconCursor, IconEraser, IconNote, IconPen, IconRedo, IconUndo,
+  IconCard, IconCursor, IconDeck, IconDoc, IconEraser, IconNote, IconPen, IconRedo,
+  IconFile, IconFolder, IconPage, IconSheet, IconUndo,
 } from "./ui/Icons";
 
 const SWATCHES = ["#0d1513", "#0f7a57", "#17548f", "#b3261e", "#8a5a13", "#7b3fa0"];
@@ -16,6 +17,12 @@ interface Props {
   setSize: (n: number) => void;
   onAddCard: () => void;
   onAddNote: () => void;
+  onAddSheet: () => void;
+  onAddDoc: () => void;
+  onAddDeck: () => void;
+  onAddPage: () => void;
+  onAddFile: () => void;
+  onAddFolder: () => void;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -60,6 +67,12 @@ export function Toolbar(p: Props) {
       else if (k === "p") p.setTool("pen");
       else if (k === "e") p.setTool("eraser");
       else if (k === "c") p.onAddCard();
+      else if (k === "s") p.onAddSheet();
+      else if (k === "d") p.onAddDoc();
+      else if (k === "k") p.onAddDeck();
+      else if (k === "h") p.onAddPage();
+      else if (k === "f") p.onAddFile();
+      else if (k === "o") p.onAddFolder();
       else if (k === "n") p.onAddNote();
     };
     window.addEventListener("keydown", onKey);
@@ -147,6 +160,29 @@ export function Toolbar(p: Props) {
         </button>
         <button className="dock-btn" onClick={p.onAddNote} data-tip="Note · N" aria-label="Add note">
           <IconNote />
+        </button>
+        <button className="dock-btn" onClick={p.onAddSheet} data-tip="Sheet · S" aria-label="Add sheet">
+          <IconSheet />
+        </button>
+        <button className="dock-btn" onClick={p.onAddDoc} data-tip="Doc · D" aria-label="Add document">
+          <IconDoc />
+        </button>
+        <button className="dock-btn" onClick={p.onAddDeck} data-tip="Deck · K" aria-label="Add deck">
+          <IconDeck />
+        </button>
+        <button className="dock-btn" onClick={p.onAddPage} data-tip="Page · H" aria-label="Add page">
+          <IconPage />
+        </button>
+        <button className="dock-btn" onClick={p.onAddFile} data-tip="File · F" aria-label="Add file">
+          <IconFile />
+        </button>
+        <button
+          className="dock-btn"
+          onClick={p.onAddFolder}
+          data-tip="Folder · O"
+          aria-label="Add folder"
+        >
+          <IconFolder />
         </button>
 
         <span className="dock-sep" />

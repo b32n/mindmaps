@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { api, type Board as BoardT } from "./api";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { api, type Board as BoardT, type Workspace } from "./api";
 import { useAuth } from "./AuthContext";
 import { Board } from "./Board";
 import { Modal } from "./ui/Modal";
 import { SettingsDialog } from "./SettingsDialog";
+import { TrashDialog } from "./TrashDialog";
+import { ArtefactsView } from "./ArtefactsView";
+import { MembersPanel } from "./MembersPanel";
+import { WorkspaceMenu } from "./WorkspaceMenu";
 import { Recall } from "./Recall";
-import { IconGear, IconGrip, IconLogout, IconMap, IconMore, IconPlus } from "./ui/Icons";
+import { IconGear, IconLayers, IconPeople, IconTrash, IconGrip, IconLogout, IconMap, IconMore, IconPlus } from "./ui/Icons";
 
 export function BoardApp() {
   const { user, signOut } = useAuth();
@@ -25,7 +29,16 @@ export function BoardApp() {
    */
   const { boardId } = useParams();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const current = boardId ?? null;
+
+  /**
+   * Artefacts is a sibling of the mindmaps, not one of them.
+   *
+   * It shares this shell because it shares the rail, but it has no board id, so
+   * every piece of board-resolution below has to step aside for it.
+   */
+  const onArtefacts = pathname === "/artefacts";
 
   const open = useCallback(
     (id: string, opts: { replace?: boolean; card?: string } = {}) =>
@@ -43,16 +56,42 @@ export function BoardApp() {
    * rather than push, so Back does not bounce off the dead address.
    */
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || onArtefacts) return;
     if (current && boards.some((b) => b.id === current)) return;
     if (boards.length) open(boards[0].id, { replace: true });
     else if (current) navigate("/app", { replace: true });
-  }, [loaded, current, boards, open, navigate]);
+  }, [loaded, onArtefacts, current, boards, open, navigate]);
 
   /** null = closed, "new" = creating, otherwise the id being edited */
   const [dialog, setDialog] = useState<null | "new" | string>(null);
 
+  /*
+   * Which workspace you are in.
+   *
+   * Kept in localStorage rather than the URL: it is a lens on everything rather
+   * than a place, and a board's address should not change because of which
+   * workspace you happened to have selected when you copied the link.
+   */
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [wsId, setWsId] = useState<string | null>(
+    () => localStorage.getItem("mindmaps.workspace"),
+  );
+  useEffect(() => {
+    api.workspaces().then((ws) => {
+      setWorkspaces(ws);
+      // Fall back to the personal one if the remembered workspace is gone —
+      // someone can be removed from a team between visits.
+      setWsId((cur) => (cur && ws.some((w) => w.id === cur) ? cur : (ws[0]?.id ?? null)));
+    });
+  }, []);
+  useEffect(() => {
+    if (wsId) localStorage.setItem("mindmaps.workspace", wsId);
+  }, [wsId]);
+
+  /** null = closed, otherwise the workspace being managed. */
+  const [wsDialog, setWsDialog] = useState<Workspace | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
 
   /** id being dragged, and the row it would drop above */
   const [dragging, setDragging] = useState<string | null>(null);
@@ -90,7 +129,11 @@ export function BoardApp() {
   }, []);
 
   async function create(name: string, description: string) {
-    const b = await api.createBoard({ name, description: description || null });
+    const b = await api.createBoard({
+      name,
+      description: description || null,
+      workspace_id: wsId ?? undefined,
+    });
     setBoards((bs) => [b, ...bs]);
     open(b.id);
     setDialog(null);
@@ -156,6 +199,17 @@ export function BoardApp() {
       </div>
     );
 
+  /*
+   * The mindmaps of the workspace you are in, plus any shared directly with you
+   * from elsewhere — those belong to no workspace you are a member of, so they
+   * would otherwise be invisible from every one of them.
+   */
+  const wsIds = new Set(workspaces.map((w) => w.id));
+  const current2 = workspaces.find((w) => w.id === wsId) ?? null;
+  const shown = wsId
+    ? boards.filter((b) => b.workspace_id === wsId || !wsIds.has(b.workspace_id ?? ""))
+    : boards;
+
   const editing = boards.find((b) => b.id === dialog) ?? null;
   /** the id in the URL, but only once we know it is one of ours */
   const resolved = boards.some((b) => b.id === current) ? current : null;
@@ -190,8 +244,19 @@ export function BoardApp() {
           <kbd>⌘K</kbd>
         </button>
 
+        <WorkspaceMenu
+          workspaces={workspaces}
+          currentId={wsId}
+          onSwitch={setWsId}
+          onCreated={(w) => {
+            setWorkspaces((xs) => [...xs, w]);
+            setWsId(w.id);
+          }}
+          onManage={setWsDialog}
+        />
+
         <div className="rail-list">
-          {boards.map((b) => (
+          {shown.map((b) => (
             <div
               key={b.id}
               className={[
@@ -237,6 +302,15 @@ export function BoardApp() {
               <button className="rail-open" onClick={() => open(b.id)} title={b.description || undefined}>
                 <span className="dot" data-status={b.status} />
                 <span className="rail-name">{b.name}</span>
+                {/* Only when this mindmap has been given to someone directly —
+                    see `shared_with`. Silent otherwise, so the badge means
+                    something when it does appear. */}
+                {!!b.shared_with && (
+                  <span className="rail-shared" title={`Shared with ${b.shared_with} ${b.shared_with === 1 ? "person" : "people"}`}>
+                    <IconPeople size={12} />
+                    {b.shared_with}
+                  </span>
+                )}
               </button>
               {/* Always rendered, not only when pinned: a control that appears
                   on hover is undiscoverable, and one that appears only once
@@ -267,10 +341,23 @@ export function BoardApp() {
             </div>
           ))}
 
-          {boards.length === 0 && (
+          {shown.length === 0 && (
             <p className="rail-empty">Nothing here yet.</p>
           )}
         </div>
+
+        {/* Two flat lists that cut across mindmaps: the things you made, and
+            the things you removed. Both below the list of places, because
+            neither is a place you spend time in. */}
+        <button
+          className={`rail-trash${onArtefacts ? " active" : ""}`}
+          onClick={() => navigate("/artefacts")}
+        >
+          <IconLayers size={15} /> Artefacts
+        </button>
+        <button className="rail-trash" onClick={() => setTrashOpen(true)}>
+          <IconTrash size={15} /> Trash
+        </button>
 
         <div className="rail-account">
           <div className="who" title={user?.email}>
@@ -296,7 +383,9 @@ export function BoardApp() {
           input now — anyone can type one — and handing an unknown id to Board
           means a fetch that 404s and an uncaught error on the way to the
           redirect that was going to fix it anyway. */}
-      {resolved ? (
+      {onArtefacts ? (
+        <ArtefactsView onJump={(id: string) => open(id)} />
+      ) : resolved ? (
         <Board key={resolved} boardId={resolved} revision={revision} onNavigate={open} />
       ) : loaded && !boards.length ? (
         <div className="empty">
@@ -309,7 +398,36 @@ export function BoardApp() {
         </div>
       ) : null}
 
+      <Modal
+        open={!!wsDialog}
+        title={wsDialog?.name ?? "Workspace"}
+        description="Everyone here can see every mindmap in this workspace."
+        onClose={() => setWsDialog(null)}
+        width={520}
+      >
+        {wsDialog && <MembersPanel kind="workspaces" id={wsDialog.id} ownerId={wsDialog.owner_id} />}
+      </Modal>
+
       <SettingsDialog open={settingsOpen} user={user} onClose={() => setSettingsOpen(false)} />
+
+      <TrashDialog
+        open={trashOpen}
+        onClose={() => setTrashOpen(false)}
+        onRestored={(id) => {
+          // A restore can bring back a mindmap or a card on one, so refresh the
+          // rail either way and bump the board so it re-reads its contents.
+          //
+          // Navigate only once the new list has landed. The redirect guard above
+          // sends you to the first mindmap whenever the open id is not in
+          // `boards`, so navigating first means arriving at a restored mindmap
+          // and being bounced straight off it again.
+          void api.listBoards().then((bs) => {
+            setBoards(bs);
+            setRevision((r) => r + 1);
+            if (id && bs.some((b) => b.id === id)) open(id);
+          });
+        }}
+      />
 
       <MindmapDialog
         mode={dialog === "new" ? "new" : editing ? "edit" : null}
@@ -472,14 +590,20 @@ function MindmapDialog({
                 onBlur={addLabel}
               />
             </div>
+
+            {/* Sharing lives here rather than behind its own button: the
+                settings dialog is already "everything about this mindmap", and
+                who can see it belongs in that list. */}
+            <label>People</label>
+            <MembersPanel kind="boards" id={board!.id} ownerId={board!.id} />
           </>
         )}
       </form>
 
       {!creating && confirming && (
         <p className="modal-warn">
-          This deletes the mindmap and everything on it — cards, documents, links and
-          ink. It can't be undone.
+          This removes the mindmap and everything on it: cards, documents, links and
+          ink. It goes to the trash, where you can put it back for 7 days.
         </p>
       )}
     </Modal>

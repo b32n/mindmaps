@@ -29,6 +29,7 @@
  * good. That is why nothing calls these without checking.
  */
 
+import { BOARD_READABLE } from "./access";
 import { chunksFor, embeddableChunk, MAX_CHUNKS } from "./chunk";
 
 export interface SemanticEnv {
@@ -238,7 +239,13 @@ export async function rerankScores(
  */
 export async function indexCard(
   env: SemanticEnv,
-  card: { id: string; title: string; body: string; userId: string; boardId: string },
+  /**
+   * `namespace` is the workspace the card belongs to, not the person indexing
+   * it. Vectors partition by workspace: a card shared into your view still
+   * belongs to its owner's, and filing it under yours would leave a copy that
+   * revoking your access could not reach.
+   */
+  card: { id: string; title: string; body: string; namespace: string; boardId: string },
 ): Promise<void> {
   if (!semanticReady(env)) return;
 
@@ -291,8 +298,8 @@ export async function indexCard(
       rows.map((r) => ({
         id: r.id,
         values: r.values,
-        namespace: card.userId,
-        metadata: { user: card.userId, board: card.boardId, card: card.id },
+        namespace: card.namespace,
+        metadata: { workspace: card.namespace, board: card.boardId, card: card.id },
       })),
     );
   } catch (err) {
@@ -365,6 +372,42 @@ export interface SimilarResult {
  * approximate index earns its keep over a whole corpus, not over a tail this
  * short — and the tail is the only part Vectorize cannot answer for yet.
  */
+/**
+ * Score the chunks of specific nodes directly, by exact cosine.
+ *
+ * Used for artefacts granted to someone one at a time. Those live in their
+ * owner's Vectorize namespace, which a grantee cannot query — but a grant names
+ * the nodes, so there is nothing to search *for*. Reading their vectors out of
+ * `node_chunks` and comparing them here is cheaper than another namespace query
+ * and exact rather than approximate.
+ *
+ * Bounded by how many artefacts have been handed to one person, which is small
+ * by the nature of the thing.
+ */
+async function grantedHits(
+  env: SemanticEnv,
+  nodeIds: string[],
+  values: number[],
+): Promise<ChunkHit[]> {
+  if (!nodeIds.length) return [];
+  const marks = nodeIds.map((_, i) => `?${i + 1}`).join(",");
+  const { results } = await env.DB.prepare(
+    `SELECT c.id, c.node_id, c.embedding
+       FROM node_chunks c
+      WHERE c.node_id IN (${marks}) AND c.embedding IS NOT NULL`,
+  )
+    .bind(...nodeIds)
+    .all<{ id: string; node_id: string; embedding: unknown }>();
+
+  const hits: ChunkHit[] = [];
+  for (const row of results ?? []) {
+    const vec = unpackVector(row.embedding);
+    if (!vec) continue;
+    hits.push({ cardId: row.node_id, chunkId: row.id, score: cosine(vec, values) });
+  }
+  return hits;
+}
+
 async function freshHits(
   env: SemanticEnv,
   userId: string,
@@ -378,14 +421,14 @@ async function freshHits(
   const { results } = await env.DB.prepare(
     `SELECT c.id, c.node_id, c.embedding
        FROM node_chunks c
-      WHERE c.embedded_at > ?
+      WHERE c.embedded_at > ?1
         AND c.embedding IS NOT NULL
         AND EXISTS (
           SELECT 1 FROM nodes n JOIN boards b ON b.id = n.board_id
-           WHERE n.id = c.node_id AND b.user_id = ?
+           WHERE n.id = c.node_id AND ${BOARD_READABLE("b", 2)}
         )
       ORDER BY c.embedded_at DESC
-      LIMIT ?`,
+      LIMIT ?3`,
   )
     .bind(since, userId, FRESH_SCAN_LIMIT)
     .all<{ id: string; node_id: string; embedding: unknown }>();
@@ -402,12 +445,24 @@ async function freshHits(
  * Passages most similar in meaning to a query, best first.
  *
  * Returns ids only. The caller reads the cards from D1, which is what actually
- * enforces ownership — a vector hit for a card you do not own simply does not
- * survive that join.
+ * enforces access — a vector hit for a card you cannot read does not survive
+ * that join.
+ *
+ * `scope` names the Vectorize namespaces to search and any nodes reachable only
+ * by a direct artefact grant. Namespaces are partitions, not filters: a query
+ * in one cannot see another, which is why a member's recall has to ask each
+ * relevant one rather than widening a WHERE clause. They run concurrently, so
+ * the wall clock is the slowest rather than the sum.
+ *
+ * Merging several namespaces is sound, not approximate: every query uses the
+ * same embedding, so the scores are the same cosine on the same scale, and
+ * anything in the global top-K is necessarily in the top-K of its own
+ * namespace. Taking the best K of the merged lists gives the same set a single
+ * global query would.
  */
 export async function similarChunks(
   env: SemanticEnv,
-  userId: string,
+  scope: { namespaces: string[]; grantedNodeIds?: string[]; userId: string },
   query: string,
   topK: number,
 ): Promise<SimilarResult> {
@@ -419,28 +474,44 @@ export async function similarChunks(
 
   // Both passes run against the same query vector, so their scores are the same
   // cosine on the same scale and merge without any reconciliation.
-  const [vectorised, fresh] = await Promise.all([
+  const [vectorised, granted, fresh] = await Promise.all([
     (async () => {
-      try {
-        const res = await env.VECTORS!.query(values, {
-          topK: want,
-          namespace: userId,
-          returnMetadata: "none",
-        } as never);
-        return {
-          hits: (res?.matches ?? []).map((m: { id: string; score: number }) => ({
-            cardId: cardIdOf(m.id),
-            chunkId: m.id,
-            score: m.score,
-          })),
-        };
-      } catch (err) {
-        const detail = String((err as Error)?.message ?? err).slice(0, 200);
-        console.error("vector query failed", detail);
-        return { hits: [] as ChunkHit[], degraded: `semantic lookup failed: ${detail}` };
-      }
+      const namespaces = scope.namespaces.length ? scope.namespaces : [scope.userId];
+      const runs = await Promise.all(
+        namespaces.map(async (ns) => {
+          try {
+            const res = await env.VECTORS!.query(values, {
+              topK: want,
+              namespace: ns,
+              returnMetadata: "none",
+            } as never);
+            return {
+              hits: (res?.matches ?? []).map((m: { id: string; score: number }) => ({
+                cardId: cardIdOf(m.id),
+                chunkId: m.id,
+                score: m.score,
+              })),
+              degraded: undefined as string | undefined,
+            };
+          } catch (err) {
+            const detail = String((err as Error)?.message ?? err).slice(0, 200);
+            console.error("vector query failed", ns, detail);
+            return { hits: [] as ChunkHit[], degraded: `semantic lookup failed: ${detail}` };
+          }
+        }),
+      );
+      return {
+        hits: runs.flatMap((r) => r.hits),
+        // One namespace failing is a partial result, not a failure: the others
+        // still answered, and saying nothing about it would hide a silent gap.
+        degraded: runs.find((r) => r.degraded)?.degraded,
+      };
     })(),
-    freshHits(env, userId, values).catch((err) => {
+    grantedHits(env, scope.grantedNodeIds ?? [], values).catch((err) => {
+      console.error("granted chunk scan failed", err);
+      return [] as ChunkHit[];
+    }),
+    freshHits(env, scope.userId, values).catch((err) => {
       // The fresh pass is an improvement on Vectorize, never a precondition for
       // it. If D1 fails here, the query still returns whatever is indexed.
       console.error("fresh chunk scan failed", err);

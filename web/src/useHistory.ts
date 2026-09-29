@@ -19,8 +19,14 @@ const LIMIT = 100;
  * Text inside a card's document is deliberately NOT covered — the markdown editor has its
  * own undo stack, and the keyboard handler steps aside whenever a text field or
  * the editor has focus, so ⌘Z there means "undo my typing", as expected.
+ *
+ * `onError` is not optional decoration. A command reverses itself by calling the
+ * server, and the server can refuse — restoring an artefact whose contents have
+ * passed the retention window is the case that exists today. Without somewhere
+ * to report that, the failure is invisible: the command leaves the stack, the
+ * board does not change, and ⌘Z looks like it did nothing at all.
  */
-export function useHistory() {
+export function useHistory(onError?: (message: string) => void) {
   const past = useRef<Command[]>([]);
   const future = useRef<Command[]>([]);
   const busy = useRef(false);
@@ -45,11 +51,16 @@ export function useHistory() {
     try {
       await cmd.undo();
       future.current.push(cmd);
+    } catch (e) {
+      // Put it back. The action was not reversed, so it is still the thing that
+      // would be undone next — dropping it would quietly eat a step.
+      past.current.push(cmd);
+      onError?.((e as Error).message || `Could not undo ${cmd.label}.`);
     } finally {
       busy.current = false;
       sync();
     }
-  }, []);
+  }, [onError]);
 
   const redo = useCallback(async () => {
     if (busy.current) return;
@@ -59,11 +70,14 @@ export function useHistory() {
     try {
       await cmd.redo();
       past.current.push(cmd);
+    } catch (e) {
+      future.current.push(cmd);
+      onError?.((e as Error).message || `Could not redo ${cmd.label}.`);
     } finally {
       busy.current = false;
       sync();
     }
-  }, []);
+  }, [onError]);
 
   const clear = useCallback(() => {
     past.current = [];

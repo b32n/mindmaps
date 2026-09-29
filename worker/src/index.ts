@@ -10,12 +10,39 @@ import {
   protectedResourceMetadata, registerClient, revoke, token as tokenEndpoint, unauthorized,
 } from "./oauth";
 import { removeCards } from "./semantic";
+import { reapTrash, untrashNode, type TrashEnv } from "./r2trash";
+import {
+  BOARD_READABLE, NODE_READABLE, boardRole, canAdmin, canWrite, ensurePersonalWorkspace,
+  nodeRole, workspaceRole, workspacesFor, type Role,
+} from "./access";
+import { fileUrl, frameUrl, serveFile, serveMindbox, type MindboxEnv } from "./mindbox";
+import {
+  FileError, fileById, filesOf, isFileKind, refreshFileNode, removeFile, storeFile, toMeta,
+  wantsSnippet,
+} from "./files";
+import {
+  canGrant, claimInvites, invite, membersOf, removeMember, revokeInvite, type Target,
+} from "./members";
+import {
+  createShare, noteView, resolveShare, revokeShare, sharesFor, type ShareEnv,
+} from "./shares";
+import {
+  archiveBoard, archiveNode, emptyTrash, listTrash, purgeTrash, restoreFileRows, restoreTrash,
+  sweepTrash,
+} from "./trash";
+import {
+  ARTEFACT_SQL, INDEXABLE_SQL, artefactKey, getArtefact, isArtefact, payloadFromInput,
+  putArtefact,
+  type ArtefactKind,
+} from "./artefacts";
 import { blocksToMarkdown, parseDoc } from "./markdown";
 import { createStarterBoard } from "./starter";
 
 export interface Env {
   DB: D1Database;
   IMAGES: R2Bucket;
+  /** artefact payloads, keyed `artefacts/<nodeId>` */
+  ARTEFACTS: R2Bucket;
   /** either of these authenticates to Anthropic; see README */
   ANTHROPIC_API_KEY?: string;
   ANTHROPIC_AUTH_TOKEN?: string;
@@ -29,6 +56,17 @@ export interface Env {
   APP_ORIGIN?: string;
   /** stable public origin; see issuerOf in oauth.ts */
   PUBLIC_ORIGIN?: string;
+  /**
+   * The mindbox: where HTML artefacts run, and the key their URLs are signed
+   * with.
+   *
+   * Both absent means the type is unavailable rather than insecure: the frame
+   * endpoint 503s and the mindbox refuses to serve. That is the correct failure —
+   * serving author-written script from the app's own origin would hand it the
+   * session cookie. See mindbox.ts.
+   */
+  MINDBOX_ORIGIN?: string;
+  MINDBOX_SECRET?: string;
   /** semantic recall; absent locally, where recall falls back to keywords */
   AI?: Ai;
   VECTORS?: VectorizeIndex;
@@ -95,18 +133,58 @@ const json = (env: Env, body: unknown, status = 200) =>
   });
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (req.method === "OPTIONS") return new Response(null, { headers: cors(env) });
 
     const url = new URL(req.url);
     const seg = url.pathname.split("/").filter(Boolean); // ["api", ...]
 
     try {
+      // HTML artefacts, served from the mindbox. Dispatched first and
+      // deliberately without a session: this path authenticates with a signed,
+      // expiring URL because the origin it answers on must never hold a cookie.
+      // See mindbox.ts for why.
+      const framed = await serveMindbox(req, env as unknown as MindboxEnv, url);
+      if (framed) return framed;
+
+      // Uploaded files leave by the same door and for the same reason: some of
+      // them are documents that can run script, and script must never run on
+      // the origin holding the session cookie.
+      const download = await serveFile(req, env as unknown as MindboxEnv, url);
+      if (download) return download;
+
       // The MCP surface sits at the root, outside /api, and authenticates with
       // an OAuth bearer token rather than the browser session cookie. It has to
       // be dispatched before the cookie gate below, which would 401 it.
       const mcp = await mcpSurface(req, env, url, seg);
       if (mcp) return mcp;
+
+      /*
+       * Shared artefacts, read without a session.
+       *
+       * Dispatched above the cookie gate on purpose: a share link has to work
+       * for someone who has no account, so it must not be reachable only by
+       * being signed in. Authorisation is the token itself, and the resolver
+       * returns one artefact and nothing around it.
+       */
+      if (seg[0] === "api" && seg[1] === "shared" && seg[2] && req.method === "GET") {
+        const token = seg[2];
+        const found = await resolveShare(env as unknown as ShareEnv, token, {
+          withPayload: true,
+        });
+        if (!found) return json(env, { error: "This link is not available." }, 404);
+        ctx.waitUntil(noteView(env as unknown as ShareEnv, token));
+        return json(env, {
+          kind: found.kind,
+          title: found.title,
+          payload: found.payload,
+          // The mindbox renders pages; the viewer only needs somewhere to point.
+          frame:
+            found.kind === "html"
+              ? `${env.MINDBOX_ORIGIN ?? ""}/s/${found.nodeId}?t=${encodeURIComponent(token)}`
+              : null,
+        });
+      }
 
       const user = await userForToken(env.DB, readCookie(req, SESSION_COOKIE));
 
@@ -139,6 +217,28 @@ export default {
           if (n) console.log(`reindexed ${n} edited card${n === 1 ? "" : "s"}`);
         },
         (err) => console.error("dirty sweep failed", err),
+      ),
+    );
+    // Deleted R2 objects, once past the retention window and still referenced by
+    // nothing. Independent of the reindex above: neither should be able to stop
+    // the other from running.
+    ctx.waitUntil(
+      reapTrash(env as unknown as TrashEnv).then(
+        (n) => {
+          if (n) console.log(`reaped ${n} expired object${n === 1 ? "" : "s"}`);
+        },
+        (err) => console.error("trash reap failed", err),
+      ),
+    );
+    // The archived rows themselves. Kept separate from the object reap above so
+    // a failure in either cannot strand the other: the row sweep is a plain
+    // delete, the object reap talks to R2 and can fail transiently.
+    ctx.waitUntil(
+      sweepTrash(env as unknown as TrashEnv).then(
+        (n) => {
+          if (n) console.log(`purged ${n} expired trash entr${n === 1 ? "y" : "ies"}`);
+        },
+        (err) => console.error("trash sweep failed", err),
       ),
     );
   },
@@ -233,7 +333,7 @@ async function mcpSurface(
 }
 
 async function route(req: Request, env: Env, seg: string[], user: SessionUser): Promise<Response> {
-  const [, a, b, c] = seg; // seg[0] === "api"
+  const [, a, b, c, d] = seg; // seg[0] === "api"
   const m = req.method;
 
   // --- boards --------------------------------------------------------------
@@ -244,8 +344,15 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     // something belongs, so it must not be undone by touching a card, and
     // pinning is a second such statement that outranks it.
     const { results } = await env.DB.prepare(
-      `SELECT * FROM boards WHERE parent_id IS NULL AND user_id = ?
-        ORDER BY pinned DESC, position IS NULL, position ASC, updated_at DESC`,
+      // `shared_with` counts people given this one mindmap directly. Workspace
+      // members are deliberately not counted: everything in a workspace is
+      // visible to everyone in it, so a badge on every board would say nothing.
+      // The signal worth showing is "this one has been handed to someone".
+      `SELECT b.*,
+              (SELECT COUNT(*) FROM board_shares bs WHERE bs.board_id = b.id) AS shared_with
+         FROM boards b
+        WHERE b.parent_id IS NULL AND ${BOARD_READABLE("b")}
+        ORDER BY b.pinned DESC, b.position IS NULL, b.position ASC, b.updated_at DESC`,
     )
       .bind(user.id)
       .all();
@@ -265,7 +372,11 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     const q = (url.searchParams.get("q") ?? "").trim();
     if (!q) return json(env, { hits: [], found: 0 });
     const scope = url.searchParams.get("mindmap_id");
-    const result = await rankRecall(env, user.id, q, scope || null, 1);
+    // The workspace the user is looking at, so recall stays one vector query
+    // and never mixes work with personal context. Absent means "everywhere",
+    // which is what an agent gets.
+    const ws = url.searchParams.get("workspace");
+    const result = await rankRecall(env, user.id, q, scope || null, 1, ws || null);
     return json(env, result);
   }
 
@@ -289,8 +400,8 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     const { results } = await env.DB.prepare(
       `SELECT n.id, n.doc, n.body
          FROM nodes n JOIN boards b ON b.id = n.board_id
-        WHERE b.user_id = ?
-          AND n.type IN ('card','note')
+        WHERE ${BOARD_READABLE("b")}
+          AND n.type IN (${INDEXABLE_SQL})
           AND n.doc IS NOT NULL AND n.doc != '' AND n.doc != '[]'
           AND (? IS NULL OR n.id > ?)
         ORDER BY n.id
@@ -345,6 +456,22 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     )
       .bind(user.id)
       .first<{ top: number }>();
+    /*
+     * Which workspace this lands in.
+     *
+     * The caller may name one, but only one they can write to — otherwise
+     * creating a mindmap would be a way to write into someone else's space.
+     * Anything unnamed or unauthorised falls back to the personal workspace,
+     * which every account has and whose id is the user's own.
+     */
+    let workspaceId = await ensurePersonalWorkspace(env.DB, user.id);
+    if (body.workspace_id && body.workspace_id !== workspaceId) {
+      const role = await workspaceRole(env.DB, user.id, String(body.workspace_id));
+      if (!canWrite(role))
+        return json(env, { error: "You cannot add mindmaps to that workspace." }, 403);
+      workspaceId = String(body.workspace_id);
+    }
+
     const board = {
       id: id(),
       name: body.name ?? "Untitled mindmap",
@@ -358,10 +485,11 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       description: body.description ?? null,
       labels: normaliseLabels(body.labels),
       pinned: body.pinned ? 1 : 0,
+      workspace_id: workspaceId,
     };
     await env.DB.prepare(
-      `INSERT INTO boards (id,name,status,parent_id,node_id,created_at,updated_at,user_id,position,description,labels,pinned)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO boards (id,name,status,parent_id,node_id,created_at,updated_at,user_id,position,description,labels,pinned,workspace_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
       .bind(...Object.values(board))
       .run();
@@ -377,12 +505,26 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
    * doesn't own are ignored rather than rejected, so a stale tab can't
    * renumber someone else's boards.
    */
+  /*
+   * Rail order.
+   *
+   * `position` and `pinned` are columns on the board, which was right when a
+   * board had exactly one reader. Shared, they are a shared preference: two
+   * people dragging the same mindmap fight over one column, and pinning it
+   * pins it for everyone.
+   *
+   * Left shared for now rather than quietly making a member's drag do nothing.
+   * The real fix is a `board_prefs(user_id, board_id, position, pinned)` table
+   * so ordering is per person, which is a migration and a merge rule, not a
+   * filter change — noted in TODO.md.
+   */
   if (a === "boards" && b === "reorder" && m === "POST") {
     const { ids } = await req.json<{ ids?: unknown }>();
     if (!Array.isArray(ids)) return json(env, { error: "ids must be an array" }, 400);
 
     const { results } = await env.DB.prepare(
-      `SELECT id FROM boards WHERE user_id = ? AND parent_id IS NULL`,
+      `SELECT b.id FROM boards b
+        WHERE b.parent_id IS NULL AND ${BOARD_READABLE("b")}`,
     )
       .bind(user.id)
       .all<{ id: string }>();
@@ -393,7 +535,13 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
 
     await env.DB.batch(
       ordered.map((id, i) =>
-        env.DB.prepare(`UPDATE boards SET position = ? WHERE id = ? AND user_id = ?`)
+        // Rail order is a shared column, not a per-user preference — see the
+        // note above this route. Restricted to boards you can write so a viewer
+        // cannot rearrange someone else's sidebar.
+        env.DB.prepare(
+          `UPDATE boards SET position = ?1
+            WHERE id = ?2 AND ${BOARD_READABLE("boards", 3)}`,
+        )
           .bind(i, id, user.id),
       ),
     );
@@ -421,7 +569,10 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     if (!sets.length) return json(env, { ok: true });
     sets.push("updated_at = ?");
     vals.push(now(), b);
-    if (!(await ownsBoard(env, user, b))) return json(env, { error: "not found" }, 404);
+    {
+      const deny = await requireBoardAdmin(env, user, b);
+      if (deny) return deny;
+    }
     await env.DB.prepare(`UPDATE boards SET ${sets.join(",")} WHERE id = ?`)
       .bind(...vals)
       .run();
@@ -432,11 +583,171 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
   }
 
   // ON DELETE CASCADE clears this board's nodes, edges, strokes and any
-  // sub-boards their cards owned.
+  // sub-boards their cards owned — which is exactly why it is archived first.
+  // This was the most destructive action in the app: it took every sheet on the
+  // mindmap with it and left their R2 objects orphaned, with no way back.
   if (a === "boards" && b && !c && m === "DELETE") {
-    if (!(await ownsBoard(env, user, b))) return json(env, { error: "not found" }, 404);
+    {
+      const deny = await requireBoardAdmin(env, user, b);
+      if (deny) return deny;
+    }
+    await archiveBoard(env, user.id, b);
+
+    // Vectors live in Vectorize and know nothing about this delete. Left
+    // behind, they keep returning cards that no longer exist.
+    const doomed = await env.DB.prepare(`SELECT id FROM nodes WHERE board_id = ?`)
+      .bind(b)
+      .all<{ id: string }>();
     await env.DB.prepare(`DELETE FROM boards WHERE id = ?`).bind(b).run();
+    const ids = (doomed.results ?? []).map((r) => r.id);
+    if (ids.length) await removeCards(env, ids);
     return json(env, { ok: true });
+  }
+
+  // --- trash ---------------------------------------------------------------
+
+  // --- workspaces and members ---------------------------------------------
+
+  if (a === "workspaces" && !b && m === "GET") {
+    await ensurePersonalWorkspace(env.DB, user.id);
+    return json(env, await workspacesFor(env.DB, user.id));
+  }
+
+  if (a === "workspaces" && !b && m === "POST") {
+    const body = await req.json<any>().catch(() => ({}));
+    const name = String(body?.name ?? "").trim() || "New workspace";
+    const wsId = id();
+    await env.DB.prepare(
+      `INSERT INTO workspaces (id, name, owner_id, personal, created_at) VALUES (?,?,?,0,?)`,
+    )
+      .bind(wsId, name, user.id, now())
+      .run();
+    return json(env, { id: wsId, name, owner_id: user.id, personal: 0, role: "owner" }, 201);
+  }
+
+  /*
+   * Members of a workspace, mindmap or artefact.
+   *
+   * One route shape for all three because the question is identical — who can
+   * see this — and only the table differs. `canGrant` is what encodes that
+   * workspaces and mindmaps are owner-only while an artefact can be passed on
+   * by anyone who may edit it.
+   */
+  if ((a === "workspaces" || a === "boards" || a === "artefacts") && b && c === "members") {
+    const target: Target = a === "workspaces" ? "workspace" : a === "boards" ? "board" : "node";
+
+    if (m === "GET") {
+      if (!(await canGrant(env, user.id, target, b)))
+        return json(env, { error: "not found" }, 404);
+      return json(env, await membersOf(env, target, b));
+    }
+
+    if (m === "POST") {
+      if (!(await canGrant(env, user.id, target, b)))
+        return json(env, { error: "You cannot share that." }, 403);
+      const body = await req.json<any>().catch(() => ({}));
+      const role = body?.role === "viewer" ? "viewer" : "editor";
+      const result = await invite(env, user.id, target, b, String(body?.email ?? ""), role);
+      if (!result) return json(env, { error: "That does not look like an email address." }, 400);
+      return json(env, result, 201);
+    }
+  }
+
+  if ((a === "workspaces" || a === "boards" || a === "artefacts") && b && c === "members" && d && m === "DELETE") {
+    const target: Target = a === "workspaces" ? "workspace" : a === "boards" ? "board" : "node";
+    // Leaving is always allowed; removing someone else needs the right to grant.
+    if (d !== user.id && !(await canGrant(env, user.id, target, b)))
+      return json(env, { error: "You cannot change who has access." }, 403);
+    const gone = await removeMember(env, target, b, d);
+    return gone ? json(env, { ok: true }) : json(env, { error: "not found" }, 404);
+  }
+
+  if (a === "invites" && b && m === "DELETE") {
+    const gone = await revokeInvite(env, user.id, b);
+    return gone ? json(env, { ok: true }) : json(env, { error: "not found" }, 404);
+  }
+
+  // --- shares -------------------------------------------------------------
+
+  if (a === "artefacts" && b && c === "share" && m === "POST") {
+    const body = await req.json<any>().catch(() => ({}));
+    const share = await createShare(env as unknown as ShareEnv, user.id, b, {
+      expiresAt: typeof body?.expires_at === "number" ? body.expires_at : null,
+    });
+    if (!share) return json(env, { error: "not found" }, 404);
+    return json(env, { ...share, url: `${appOrigin(env)}/v/${share.token}` }, 201);
+  }
+
+  if (a === "artefacts" && b && c === "share" && m === "GET") {
+    const rows = await sharesFor(env as unknown as ShareEnv, user.id, b);
+    return json(
+      env,
+      rows.map((r) => ({ ...r, url: `${appOrigin(env)}/v/${r.token}` })),
+    );
+  }
+
+  if (a === "shares" && b && m === "DELETE") {
+    const gone = await revokeShare(env as unknown as ShareEnv, user.id, b);
+    return gone ? json(env, { ok: true }) : json(env, { error: "not found" }, 404);
+  }
+
+  // Every artefact the user owns, newest first.
+  //
+  // Flat and across all mindmaps on purpose: an artefact is a thing you come
+  // back to, and the board it happens to sit on is often the part you have
+  // forgotten. `data` carries the counts, so the list describes each one
+  // without reading a single R2 object.
+  if (a === "artefacts" && !b && m === "GET") {
+    const rows = await env.DB.prepare(
+      `SELECT n.id, n.type, n.title, n.data, n.updated_at,
+              b.id AS board_id, b.name AS board_name
+         FROM nodes n
+         JOIN boards b ON b.id = n.board_id
+        WHERE ${NODE_READABLE("n", "b")} AND n.type IN (${ARTEFACT_SQL})
+        ORDER BY n.updated_at DESC
+        LIMIT 300`,
+    )
+      .bind(user.id)
+      .all<any>();
+    return json(
+      env,
+      (rows.results ?? []).map((r) => ({ ...r, data: JSON.parse(r.data || "{}") })),
+    );
+  }
+
+  // A signed URL for rendering an HTML artefact. Ownership is checked here,
+  // where there is a session; the mindbox has none and trusts only the
+  // signature this produces.
+  if (a === "artefacts" && b && c === "frame" && m === "GET") {
+    if (!(await canReadNode(env, user, b))) return json(env, { error: "not found" }, 404);
+    const href = await frameUrl(env as unknown as MindboxEnv, b);
+    if (!href)
+      return json(
+        env,
+        { error: "HTML artefacts are not configured on this deployment." },
+        503,
+      );
+    return json(env, { url: href });
+  }
+
+  if (a === "trash" && !b && m === "GET") {
+    return json(env, await listTrash(env, user.id));
+  }
+
+  if (a === "trash" && b && c === "restore" && m === "POST") {
+    const res = await restoreTrash(env, user.id, b);
+    if (!res.ok)
+      return json(env, { error: res.error ?? "not found" }, res.error === "not found" ? 404 : 409);
+    return json(env, { ok: true, board_id: res.boardId });
+  }
+
+  if (a === "trash" && b === "empty" && m === "POST") {
+    return json(env, { ok: true, removed: await emptyTrash(env, user.id) });
+  }
+
+  if (a === "trash" && b && !c && m === "DELETE") {
+    const gone = await purgeTrash(env, user.id, b);
+    return gone ? json(env, { ok: true }) : json(env, { error: "not found" }, 404);
   }
 
   /**
@@ -447,10 +758,10 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
    * of titles.
    */
   if (a === "boards" && b && c === "cards" && m === "GET") {
-    if (!(await ownsBoard(env, user, b))) return json(env, { error: "no such board" }, 404);
+    if (!(await canReadBoard(env, user, b))) return json(env, { error: "no such board" }, 404);
     const { results } = await env.DB.prepare(
       `SELECT id, title, type FROM nodes
-        WHERE board_id = ? AND type IN ('card','note')
+        WHERE board_id = ? AND type IN (${INDEXABLE_SQL})
         ORDER BY updated_at DESC`,
     )
       .bind(b)
@@ -460,9 +771,11 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
 
   // full board contents: nodes + edges + strokes
   if (a === "boards" && b && c === "contents" && m === "GET") {
-    if (!(await ownsBoard(env, user, b))) return json(env, { error: "no such board" }, 404);
+    if (!(await canReadBoard(env, user, b))) return json(env, { error: "no such board" }, 404);
     const [board, nodes, edges] = await Promise.all([
-      env.DB.prepare(`SELECT * FROM boards WHERE id = ?`).bind(b).first(),
+      env.DB.prepare(`SELECT b.*,
+                (SELECT COUNT(*) FROM board_shares bs WHERE bs.board_id = b.id) AS shared_with
+           FROM boards b WHERE b.id = ?`).bind(b).first(),
       // child_count and thread make a card's contents legible without opening it
       env.DB.prepare(NODES_WITH_STATE).bind(b).all(),
       // Either endpoint on this board. A link whose far end lives on another
@@ -496,7 +809,10 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
 
   if (a === "nodes" && !b && m === "POST") {
     const p = await req.json<any>();
-    if (!(await ownsBoard(env, user, p.board_id))) return json(env, { error: "not found" }, 404);
+    {
+      const deny = await requireBoardWrite(env, user, p.board_id);
+      if (deny) return deny;
+    }
     const node = {
       // caller may supply an id so undo/redo can restore the same node and
       // keep any edges that reference it valid
@@ -515,17 +831,84 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       created_at: now(),
       updated_at: now(),
     };
+    // An artefact's bytes go to R2 and the row keeps a pointer, a summary and
+    // the text snapshot the brain reads.
+    if (isArtefact(node.type)) {
+      // A create that carries a pointer and no payload is a *restore* — undo
+      // replays the node it captured, whose `data` is `{r2,kind,...}`. Treating
+      // that as "no payload given, make a blank one" is what used to overwrite
+      // the real workbook with an empty grid and call it a successful undo.
+      const authored = p.sheets ?? p.blocks ?? p.slides ?? p.html;
+      const restoring = !p.data?.workbook && !authored && typeof p.data?.r2 === "string";
+      if (restoring) await untrashNode(env, node.id);
+
+      const existing = restoring ? await getArtefact(env, node.id) : null;
+      if (restoring && !existing)
+        return json(
+          env,
+          { error: "That artefact's contents are gone and cannot be restored." },
+          410,
+        );
+
+      // Recompute the pointer and snapshot from the bytes rather than trusting
+      // the caller's copy, so a restored row can never describe something the
+      // object does not say.
+      const kind = node.type as ArtefactKind;
+      const payload =
+        existing ??
+        p.data?.workbook ??
+        payloadFromInput(kind, node.title, {
+          sheets: p.sheets,
+          blocks: p.blocks,
+          slides: p.slides,
+          html: p.html,
+        });
+      const stored = await putArtefact(env, node.id, kind, payload);
+      node.data = JSON.stringify(stored.data);
+      node.body = stored.body;
+    } else if (node.type === "image") {
+      // Same restore case, one bucket over.
+      await untrashNode(env, node.id);
+    } else if (isFileKind(node.type)) {
+      // Undo of a file or folder. The bytes were only filed, so un-filing them
+      // here is enough to save them. The rows that say what those bytes *are*
+      // cascaded with the node and have to wait until it is back — see below.
+      await untrashNode(env, node.id);
+    }
+
     await env.DB.prepare(
       `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at,index_dirty)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
       .bind(...Object.values(node), markIndex(node.type, node.title, node.body))
       .run();
+
+    /*
+     * A restored file node's rows, put back after the node itself.
+     *
+     * Strictly after the INSERT, because `files.node_id` is a foreign key: run
+     * before it and the whole restore fails with a constraint error, which is
+     * exactly what it did the first time this was written. The rows come from
+     * the archive rather than from the caller, so an undo cannot invent a file
+     * that was never there.
+     */
+    if (isFileKind(node.type)) {
+      const back = await restoreFileRows(env, node.id);
+      if (back) {
+        const refreshed = await refreshFileNode(env, node.id, node.type, node.title);
+        node.data = JSON.stringify(refreshed.data);
+        node.body = refreshed.body;
+      }
+    }
+
     return json(env, hydrateNode(node), 201);
   }
 
   if (a === "nodes" && b && m === "PATCH") {
-    if (!(await ownsNode(env, user, b))) return json(env, { error: "not found" }, 404);
+    {
+      const deny = await requireNodeWrite(env, user, b);
+      if (deny) return deny;
+    }
     const p = await req.json<any>();
     const allowed = ["title", "body", "doc", "x", "y", "w", "h", "type"];
     const sets: string[] = [];
@@ -566,11 +949,211 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     return json(env, { ok: true });
   }
 
+  // One node, for a route that opens a single artefact and needs its title
+  // without fetching the board it sits on.
+  if (a === "nodes" && b && !c && m === "GET") {
+    if (!(await canReadNode(env, user, b))) return json(env, { error: "not found" }, 404);
+    const row = await env.DB.prepare(`SELECT * FROM nodes WHERE id = ?`).bind(b).first();
+    return row ? json(env, hydrateNode(row)) : json(env, { error: "not found" }, 404);
+  }
+
+  /**
+   * The artefact payload, for the editor route.
+   *
+   * Deliberately not part of `/boards/:id/contents`. That query is
+   * `SELECT n.*`, so a board holding several sheets would ship all of them on
+   * open. The board gets a pointer and a summary; only the editor fetches
+   * bytes, and only for the one node it is showing.
+   */
+  if (a === "artefacts" && b && !c && m === "GET") {
+    if (!(await canReadNode(env, user, b))) return json(env, { error: "not found" }, 404);
+    const payload = await getArtefact(env, b);
+    if (!payload) return json(env, { error: "no payload" }, 404);
+    return json(env, payload);
+  }
+
+  if (a === "artefacts" && b && !c && m === "PUT") {
+    {
+      const deny = await requireNodeWrite(env, user, b);
+      if (deny) return deny;
+    }
+    const row = await env.DB.prepare(`SELECT type FROM nodes WHERE id = ?`)
+      .bind(b)
+      .first<{ type: string }>();
+    if (!row || !isArtefact(row.type)) return json(env, { error: "not an artefact" }, 400);
+
+    const payload = await req.json<unknown>();
+    try {
+      const stored = await putArtefact(env, b, row.type as ArtefactKind, payload);
+      await env.DB.prepare(
+        `UPDATE nodes SET data = ?, body = ?, index_dirty = ?, updated_at = ? WHERE id = ?`,
+      )
+        .bind(JSON.stringify(stored.data), stored.body, now(), now(), b)
+        .run();
+      return json(env, { ok: true, ...stored.data });
+    } catch (err: any) {
+      return json(env, { error: String(err?.message ?? err) }, 413);
+    }
+  }
+
+  // --- files: arbitrary uploads, singly and in folders ---------------------
+
+  /*
+   * Upload one file to a `file` or `folder` node.
+   *
+   * The metadata rides in headers rather than a multipart body so that the body
+   * stays pure bytes and can go to R2 as a stream. Multipart would mean parsing
+   * — and therefore buffering — the whole upload in the isolate, which is what
+   * caps the size at memory rather than at a number we choose.
+   *
+   * `x-file-name` is URL-encoded, because a header is Latin-1 and filenames are
+   * not.
+   */
+  if (a === "nodes" && b && c === "files" && m === "POST") {
+    {
+      const deny = await requireNodeWrite(env, user, b);
+      if (deny) return deny;
+    }
+    const node = await env.DB.prepare(`SELECT type, title FROM nodes WHERE id = ?`)
+      .bind(b)
+      .first<{ type: string; title: string }>();
+    if (!node || !isFileKind(node.type)) return json(env, { error: "not a file node" }, 400);
+
+    const decode = (raw: string | null) => {
+      if (!raw) return "";
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw;
+      }
+    };
+    const name = decode(req.headers.get("x-file-name"));
+    const description = decode(req.headers.get("x-file-description"));
+    const contentType = (req.headers.get("content-type") ?? "application/octet-stream")
+      .split(";")[0]
+      .trim();
+    const size = Number(req.headers.get("content-length") ?? 0);
+
+    if (!name) return json(env, { error: "x-file-name is required" }, 400);
+    if (!req.body) return json(env, { error: "no body" }, 400);
+
+    // A `file` node holds one file. Uploading a second is not a merge, it is
+    // almost certainly the wrong node — say so rather than quietly growing a
+    // shape the editor does not render.
+    if (node.type === "file" && (await filesOf(env, b)).length)
+      return json(
+        env,
+        { error: "That node already holds a file. Use a folder to keep several." },
+        409,
+      );
+
+    /*
+     * Buffer only what we mean to read.
+     *
+     * A stream can be consumed once, so whether to extract a text snippet has
+     * to be decided before the body is touched at all. Everything else goes
+     * straight through and is never whole in memory.
+     */
+    const buffered = wantsSnippet(name, contentType, size);
+    try {
+      const row = await storeFile(env, {
+        nodeId: b,
+        kind: node.type,
+        title: node.title,
+        name,
+        contentType,
+        description,
+        size,
+        uploadedBy: user.id,
+        source: buffered ? await req.arrayBuffer() : req.body,
+      });
+      const refreshed = await env.DB.prepare(`SELECT data, body FROM nodes WHERE id = ?`)
+        .bind(b)
+        .first<{ data: string; body: string }>();
+      return json(
+        env,
+        { file: toMeta(row), data: JSON.parse(refreshed?.data ?? "{}"), body: refreshed?.body ?? "" },
+        201,
+      );
+    } catch (err: any) {
+      if (err instanceof FileError) return json(env, { error: err.message }, err.status);
+      throw err;
+    }
+  }
+
+  /*
+   * List a node's files, each with a signed download URL.
+   *
+   * The URLs are minted here, where the session says who is asking and
+   * `nodeRole` says what they may do. The download origin has no session and
+   * re-checks only the signature — see mindbox.ts.
+   */
+  if (a === "nodes" && b && c === "files" && m === "GET") {
+    const role = await nodeRole(env.DB, user.id, b);
+    if (!role) return json(env, { error: "not found" }, 404);
+
+    const rows = await filesOf(env, b);
+    const files = await Promise.all(
+      rows.map(async (row) => ({ ...toMeta(row), url: await fileUrl(env, row.id) })),
+    );
+    return json(env, { files });
+  }
+
+  /* Remove one file. The bytes are filed, not destroyed — see r2trash.ts. */
+  if (a === "files" && b && m === "DELETE") {
+    const row = await fileById(env, b);
+    if (!row) return json(env, { error: "not found" }, 404);
+    {
+      const deny = await requireNodeWrite(env, user, row.node_id);
+      if (deny) return deny;
+    }
+    const node = await env.DB.prepare(`SELECT type, title FROM nodes WHERE id = ?`)
+      .bind(row.node_id)
+      .first<{ type: string; title: string }>();
+    if (!node || !isFileKind(node.type)) return json(env, { error: "not found" }, 404);
+
+    await removeFile(env, row, node.type, node.title);
+    return json(env, { ok: true });
+  }
+
+  /* Rename a file, or rewrite the one line that makes it findable. */
+  if (a === "files" && b && m === "PATCH") {
+    const row = await fileById(env, b);
+    if (!row) return json(env, { error: "not found" }, 404);
+    {
+      const deny = await requireNodeWrite(env, user, row.node_id);
+      if (deny) return deny;
+    }
+    const p = await req.json<any>();
+    const name = typeof p.name === "string" ? p.name.trim().slice(0, 300) : row.name;
+    const description =
+      typeof p.description === "string" ? p.description.trim().slice(0, 1_000) : row.description;
+    if (!name) return json(env, { error: "A file needs a name." }, 400);
+
+    await env.DB.prepare(`UPDATE files SET name = ?, description = ? WHERE id = ?`)
+      .bind(name, description, b)
+      .run();
+
+    const node = await env.DB.prepare(`SELECT type, title FROM nodes WHERE id = ?`)
+      .bind(row.node_id)
+      .first<{ type: string; title: string }>();
+    if (node && isFileKind(node.type))
+      await refreshFileNode(env, row.node_id, node.type, node.title);
+    return json(env, { ok: true });
+  }
+
   if (a === "nodes" && b && m === "DELETE") {
-    if (!(await ownsNode(env, user, b))) return json(env, { error: "not found" }, 404);
-    // Edges now carry ON DELETE CASCADE foreign keys on both endpoints
-    // (migration 0011), so removing the node takes its links with it — including
-    // any reaching onto another mindmap. Chunk rows go the same way (0017).
+    {
+      const deny = await requireNodeWrite(env, user, b);
+      if (deny) return deny;
+    }
+    // Archive before deleting, while the row and its edges still exist. Edges
+    // carry ON DELETE CASCADE on both endpoints (migration 0011), so removing
+    // the node takes its links with it — including any reaching onto another
+    // mindmap — and chunk rows go the same way (0017). The archive captures the
+    // edges so a restore brings back a connected card rather than a stranded
+    // one. R2 objects are filed in the same step; nothing cascades into R2.
+    await archiveNode(env, user.id, b);
     await env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(b).run();
     // Vectors do not cascade — they live in Vectorize, which knows nothing about
     // this delete. Left behind, they keep returning a card that no longer
@@ -592,6 +1175,26 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     return json(env, { key, url: `${issuerOf(req, env)}/api/images/${key}` }, 201);
   }
 
+  /*
+   * Serve an image.
+   *
+   * The two extra headers are not decoration. `image/*` includes
+   * `image/svg+xml`, and an SVG is a document: navigated to directly it runs
+   * its own script, on this origin, beside the `HttpOnly` session cookie that
+   * a same-origin `fetch("/api/boards", { credentials: "include" })` attaches
+   * by itself. Upload one to your own account, send the link to someone signed
+   * in, and it reads their mindmaps — there is no ownership check here, because
+   * the key is the capability.
+   *
+   * The CSP is what closes it: as a subresource in an `<img>` a document CSP is
+   * irrelevant and the image still renders, and as a navigated document it gets
+   * `default-src 'none'` and a sandbox, so nothing runs. `nosniff` stops the
+   * same trick via a mislabelled content type.
+   *
+   * Newly uploaded files avoid this entirely by going out through the mindbox
+   * origin. Images predate that and are still linked by URL from inside card
+   * documents, so they are fixed in place rather than moved.
+   */
   if (a === "images" && b && m === "GET") {
     const obj = await env.IMAGES.get(b);
     if (!obj) return new Response("not found", { status: 404, headers: cors(env) });
@@ -599,6 +1202,8 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       headers: {
         "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream",
         "cache-control": "public, max-age=31536000, immutable",
+        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        "x-content-type-options": "nosniff",
         ...cors(env),
       },
     });
@@ -610,7 +1215,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
   // ends, which is also what permits the two ends to be on different mindmaps.
   if (a === "edges" && !b && m === "POST") {
     const p = await req.json<any>();
-    if (!(await ownsNode(env, user, p.source_id)) || !(await ownsNode(env, user, p.target_id)))
+    if (!(await canWriteNode(env, user, p.source_id)) || !(await canWriteNode(env, user, p.target_id)))
       return json(env, { error: "not found" }, 404);
     const edge = {
       id: p.id ?? id(),
@@ -635,7 +1240,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
   // Endpoints and attachment sides are editable, not just the label — an edge
   // drawn the wrong way round used to be permanent.
   if (a === "edges" && b && m === "PATCH") {
-    if (!(await ownsEdge(env, user, b))) return json(env, { error: "not found" }, 404);
+    if (!(await canWriteEdge(env, user, b))) return json(env, { error: "not found" }, 404);
     const p = await req.json<any>();
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -660,7 +1265,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
   }
 
   if (a === "edges" && b && m === "DELETE") {
-    if (!(await ownsEdge(env, user, b))) return json(env, { error: "not found" }, 404);
+    if (!(await canWriteEdge(env, user, b))) return json(env, { error: "not found" }, 404);
     await env.DB.prepare(`DELETE FROM edges WHERE id = ?`).bind(b).run();
     return json(env, { ok: true });
   }
@@ -797,42 +1402,107 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
 
 
 
-/** Board ownership. Also true for a sub-board, via its parent chain. */
-async function ownsBoard(env: Env, user: SessionUser, boardId?: string): Promise<boolean> {
+/*
+ * Access checks.
+ *
+ * These used to answer one question — is this yours — and every caller treated
+ * the answer as permission to do anything. Now they answer "what role do you
+ * hold", and each caller has to say what it needs. The `canRead`/`canWrite`
+ * split is the whole point: a viewer on a shared mindmap passes the first and
+ * must fail the second.
+ *
+ * Kept as thin wrappers over `access.ts` rather than inlined, so a call site
+ * reads as an intent ("may this request write here") rather than as a role
+ * comparison every reader has to decode.
+ */
+
+/*
+ * Refusals that tell the truth.
+ *
+ * Returning "not found" for everything was right when the only question was
+ * ownership: you either owned it or it may as well not exist. Now a viewer on a
+ * shared mindmap can see the thing perfectly well, and answering "not found" to
+ * their edit would be a lie they can disprove by looking at the screen.
+ *
+ * So: 404 when you cannot see it at all, 403 with the reason when you can see
+ * it but may not do this. The 404 still reveals nothing, because it is returned
+ * exactly when there is nothing to reveal.
+ */
+async function requireBoardWrite(env: Env, user: SessionUser, boardId?: string) {
+  if (!boardId) return json(env, { error: "not found" }, 404);
+  const role = await boardRole(env.DB, user.id, boardId);
+  if (canWrite(role)) return null;
+  return role
+    ? json(env, { error: "You have view-only access to this mindmap." }, 403)
+    : json(env, { error: "not found" }, 404);
+}
+
+async function requireBoardAdmin(env: Env, user: SessionUser, boardId?: string) {
+  if (!boardId) return json(env, { error: "not found" }, 404);
+  const role = await boardRole(env.DB, user.id, boardId);
+  if (canAdmin(role)) return null;
+  return role
+    ? json(env, { error: "Only the owner can do that." }, 403)
+    : json(env, { error: "not found" }, 404);
+}
+
+async function requireNodeWrite(env: Env, user: SessionUser, nodeId: string) {
+  const role = await nodeRole(env.DB, user.id, nodeId);
+  if (canWrite(role)) return null;
+  return role
+    ? json(env, { error: "You have view-only access to this." }, 403)
+    : json(env, { error: "not found" }, 404);
+}
+
+/** May this user read this mindmap at all? */
+async function canReadBoard(env: Env, user: SessionUser, boardId?: string): Promise<boolean> {
   if (!boardId) return false;
-  const row = await env.DB.prepare(`SELECT user_id FROM boards WHERE id = ?`)
-    .bind(boardId)
-    .first<{ user_id: string | null }>();
-  return !!row && row.user_id === user.id;
+  return (await boardRole(env.DB, user.id, boardId)) !== null;
+}
+
+/** May this user change what is on this mindmap? */
+async function canWriteBoard(env: Env, user: SessionUser, boardId?: string): Promise<boolean> {
+  if (!boardId) return false;
+  return canWrite(await boardRole(env.DB, user.id, boardId));
+}
+
+/** May this user delete this mindmap, or manage who is on it? Owners only. */
+async function canAdminBoard(env: Env, user: SessionUser, boardId?: string): Promise<boolean> {
+  if (!boardId) return false;
+  return canAdmin(await boardRole(env.DB, user.id, boardId));
+}
+
+async function canReadNode(env: Env, user: SessionUser, nodeId: string): Promise<boolean> {
+  return (await nodeRole(env.DB, user.id, nodeId)) !== null;
+}
+
+async function canWriteNode(env: Env, user: SessionUser, nodeId: string): Promise<boolean> {
+  return canWrite(await nodeRole(env.DB, user.id, nodeId));
 }
 
 /**
- * Edge ownership, via its endpoints — edges no longer belong to a board.
- * Both ends are checked, so an edge spanning two mindmaps is only yours if you
- * own both of them.
+ * Edge access, via its endpoints — edges do not belong to a board.
+ *
+ * Both ends are checked, and an edge spanning two mindmaps needs the role on
+ * both. Writing an edge you can only half-see would let you discover what is on
+ * the other side by watching what succeeds.
  */
-async function ownsEdge(env: Env, user: SessionUser, edgeId: string): Promise<boolean> {
+async function canWriteEdge(env: Env, user: SessionUser, edgeId: string): Promise<boolean> {
   const row = await env.DB.prepare(
-    `SELECT COUNT(*) AS mine
+    `SELECT sn.id AS source_node, tn.id AS target_node
        FROM edges e
-       JOIN nodes  sn ON sn.id = e.source_id
-       JOIN boards sb ON sb.id = sn.board_id
-       JOIN nodes  tn ON tn.id = e.target_id
-       JOIN boards tb ON tb.id = tn.board_id
-      WHERE e.id = ? AND sb.user_id = ? AND tb.user_id = ?`,
+       JOIN nodes sn ON sn.id = e.source_id
+       JOIN nodes tn ON tn.id = e.target_id
+      WHERE e.id = ?`,
   )
-    .bind(edgeId, user.id, user.id)
-    .first<{ mine: number }>();
-  return (row?.mine ?? 0) > 0;
-}
-
-async function ownsNode(env: Env, user: SessionUser, nodeId: string): Promise<boolean> {
-  const row = await env.DB.prepare(
-    `SELECT b.user_id FROM nodes n JOIN boards b ON b.id = n.board_id WHERE n.id = ?`,
-  )
-    .bind(nodeId)
-    .first<{ user_id: string | null }>();
-  return !!row && row.user_id === user.id;
+    .bind(edgeId)
+    .first<{ source_node: string; target_node: string }>();
+  if (!row) return false;
+  const [a, b] = await Promise.all([
+    nodeRole(env.DB, user.id, row.source_node),
+    nodeRole(env.DB, user.id, row.target_node),
+  ]);
+  return canWrite(a) && canWrite(b);
 }
 
 // --- auth -------------------------------------------------------------------
@@ -874,6 +1544,10 @@ async function authRoute(
     )
       .bind(uid, addr, String(name ?? "").trim(), hash, salt, now(), now())
       .run();
+
+    // The workspace first: the starter board references it, and `signIn` only
+    // gets to creating one after this runs.
+    await ensurePersonalWorkspace(env.DB, uid);
 
     // Awaited, not fire-and-forget: the redirect lands on /app immediately and
     // a board that appears a beat later reads as a bug. It cannot throw.
@@ -1108,7 +1782,25 @@ async function signIn(req: Request, env: Env, userId: string): Promise<Response>
     `SELECT id,email,name,avatar_url FROM users WHERE id = ?`,
   )
     .bind(userId)
-    .first();
+    .first<{ id: string; email: string }>();
+
+  /*
+   * Everything an account needs to exist properly, done here because every way
+   * in goes through this function — register, password login, and Google.
+   *
+   * Invites are claimed on every sign-in rather than only at sign-up: someone
+   * may be invited after they already have an account but before they next log
+   * in, and an invite that fired only at registration would strand them
+   * permanently.
+   *
+   * Awaited rather than deferred. The response redirects straight to /app, and
+   * a workspace that appears a beat later reads as a bug.
+   */
+  if (user?.email) {
+    await ensurePersonalWorkspace(env.DB, userId);
+    await claimInvites(env, userId, user.email);
+  }
+
   return new Response(JSON.stringify({ user }), {
     status: 200,
     headers: {
@@ -1167,3 +1859,21 @@ const parseLabels = (v: unknown): string[] => {
 const hydrateBoard = (b: any) => ({ ...b, labels: parseLabels(b?.labels), pinned: !!b?.pinned });
 
 const hydrateNode = (n: any) => ({ ...n, data: JSON.parse(n.data || "{}") });
+
+/** Where share links live. The app, not the mindbox: the viewer is app chrome. */
+const appOrigin = (env: Env) => env.APP_ORIGIN || env.PUBLIC_ORIGIN || "";
+
+/**
+ * Parse a `nodes.data` blob without letting a bad one throw.
+ *
+ * The delete path reads this to find an image's R2 key. A row whose data is
+ * malformed should cost a leaked object, not a failed delete of the card the
+ * user actually asked to remove.
+ */
+const safeJson = (raw: string | null): any => {
+  try {
+    return JSON.parse(raw || "{}");
+  } catch {
+    return {};
+  }
+};

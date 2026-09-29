@@ -72,7 +72,13 @@ export function Recall() {
       setBusy(true);
       setError(null);
       try {
-        const r = await api.recall(query, ctrl.signal);
+        // Scoped to the workspace on screen, so a search never returns work
+        // context while you are looking at personal mindmaps.
+        const r = await api.recall(
+          query,
+          ctrl.signal,
+          localStorage.getItem("mindmaps.workspace"),
+        );
         if (!ctrl.signal.aborted) {
           setRes(r);
           setSel(0);

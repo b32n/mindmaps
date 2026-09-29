@@ -25,6 +25,17 @@ import {
   handlesFor, isDirection, layout, layoutBelow,
   type Direction, type LayoutEdge, type LayoutNode,
 } from "./layout";
+import {
+  ARTEFACT_SCHEMAS, INDEXABLE_SQL, isArtefact, payloadFromInput, putArtefact, type ArtefactKind,
+} from "./artefacts";
+import {
+  BOARD_READABLE, IN_WORKSPACE, NODE_READABLE, boardRole, canWrite, ensurePersonalWorkspace,
+  nodeRole, recallScope,
+} from "./access";
+import {
+  fileById, filesOf, isFileKind, isTextual, storeFile, type FileRow,
+} from "./files";
+import { fileUrl } from "./mindbox";
 import { isSupersedeLabel, neighbourhood, neighbourhoods, supersededSet, type Neighbour } from "./graph";
 import {
   indexCard, removeCards, rerankScores, semanticReady, similarChunks, type SemanticEnv,
@@ -354,6 +365,159 @@ const TOOLS = [
     },
   },
   {
+    name: "create_artefact",
+    description:
+      "Create a spreadsheet, document or deck on a mindmap. Reach for one when what you are recording has a shape a card cannot hold: a table that computes, a document that will be read end to end, a deck that will be presented. A card holds markdown and is the right answer for a note. Whichever kind you pick, write the labels — column headings, slide titles, headings — because the words are what make it findable later and the numbers are nearly invisible to search.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mindmap_id: { type: "string" },
+        type: {
+          type: "string",
+          enum: ["sheet", "doc", "deck", "html"],
+          description:
+            "sheet for figures that compute, doc for prose that will be read in order, deck for something presented, html for anything you want to draw or make interactive. Defaults to sheet.",
+        },
+        title: { type: "string", description: "The artefact's name." },
+        sheets: {
+          type: "array",
+          description: "sheet only. One entry per tab; most have one.",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              rows: {
+                type: "array",
+                description:
+                  "Rows of cells. A cell is a string, number, boolean or null. A string starting with = is a formula, e.g. \"=SUM(B2:B5)\". Empty cells are not stored.",
+                items: { type: "array", items: {} },
+              },
+            },
+          },
+        },
+        blocks: {
+          type: "array",
+          description:
+            "doc only. One block per entry with exactly one of: heading (plus optional level 1-6), text, bullet, number, rule. A bare string is a paragraph.",
+          items: {},
+        },
+        slides: {
+          type: "array",
+          description:
+            "deck only. Each slide takes a title, bullets, and optional speaker notes. Notes are indexed, so the argument you write there stays findable.",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              bullets: { type: "array", items: { type: "string" } },
+              notes: { type: "string" },
+            },
+          },
+        },
+        html: {
+          type: "string",
+          description:
+            "html only. A complete HTML document. It renders sandboxed on a separate origin with no network access at all, so inline every script and style and embed images as data URIs — a remote <script src> or a fetch() will be blocked. Put the point of the page in visible text, since that is what search reads.",
+        },
+        key: {
+          type: "string",
+          description:
+            "A stable name for this artefact. Pass one whenever you might produce the same thing again: a second call with the same key replaces its contents instead of leaving a near-duplicate on the board.",
+        },
+      },
+      required: ["mindmap_id", "title"],
+    },
+  },
+  {
+    name: "update_artefact",
+    description:
+      "Replace an artefact's contents. Takes the same shape as create_artefact and overwrites everything, so send the whole thing rather than a fragment. Read it first with get_card if you are amending rather than replacing. The kind is whatever the artefact already is; you cannot turn a deck into a spreadsheet this way.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The artefact's card id." },
+        title: { type: "string" },
+        sheets: { type: "array", items: {} },
+        blocks: { type: "array", items: {} },
+        slides: { type: "array", items: {} },
+        html: { type: "string" },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "get_artefact_schema",
+    description:
+      "The full payload shape for one artefact kind, for when the simple form is not enough: styles, number formats, frozen panes, tables, images, themes, element geometry. Not needed for ordinary tables, documents or decks. Call this only when you want control create_artefact does not expose.",
+    inputSchema: {
+      type: "object",
+      properties: { type: { type: "string", enum: ["sheet", "doc", "deck", "html"] } },
+      required: ["type"],
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "put_file",
+    description:
+      "Store a file on a mindmap so it outlives this session. Use it for anything you want yourself or another agent to be able to open later: a dataset, an export, a log, a generated report, a diagram. Text content goes in `content`; anything else goes in `content_base64`. Always write `description` — one line saying what this is and why it was kept. For a file whose text we cannot read, that line is the only thing that will ever find it again.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mindmap_id: {
+          type: "string",
+          description: "The mindmap to put it on. Ignored when folder_id is given.",
+        },
+        folder_id: {
+          type: "string",
+          description:
+            "Add to an existing folder instead of making a new card. Use this when several files belong together — they then share one place on the board and one set of permissions.",
+        },
+        name: { type: "string", description: "The filename, with its extension." },
+        content: { type: "string", description: "The file's text. Use this for anything textual." },
+        content_base64: {
+          type: "string",
+          description: "Base64 for binary files. Keep these small; large uploads belong in the app.",
+        },
+        content_type: {
+          type: "string",
+          description: "MIME type. Guessed from the extension when omitted.",
+        },
+        description: {
+          type: "string",
+          description:
+            "One line: what this is. Required for anything not textual, because nothing else about it is searchable.",
+        },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "list_files",
+    description:
+      "The files stored on a mindmap, or in one folder. Start here when you are looking for something a previous session left behind — the descriptions say what each one is without downloading any of it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "A mindmap id, or a file or folder card id." },
+      },
+      required: ["id"],
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "read_file",
+    description:
+      "Read a stored file's text. Works for text, source, csv, json and the like. A binary file cannot be returned this way and you get a download link instead.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The file id from list_files, or a file card id." },
+      },
+      required: ["id"],
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
     name: "add_card",
     description:
       "Add a single card to a mindmap you already have. Use the mindmap a recall match came from, or one from list_mindmaps. Reach for create_mindmap only when the subject genuinely has no home yet.",
@@ -402,6 +566,8 @@ const TOOLS = [
 
 const WRITE_TOOLS = new Set([
   "create_mindmap",
+  "create_artefact",
+  "update_artefact",
   "update_mindmap",
   "add_to_mindmap",
   "relayout_mindmap",
@@ -423,6 +589,8 @@ export const requiredScopeFor = (tool: string) =>
 
 export interface McpEnv extends SemanticEnv {
   DB: D1Database;
+  /** artefact payloads; see artefacts.ts */
+  ARTEFACTS: R2Bucket;
 }
 
 /**
@@ -616,6 +784,31 @@ async function callTool(id: Id, env: McpEnv, grant: TokenGrant, params: any): Pr
       return rpcOk(id, await getContext(env, u, args));
     case "update_mindmap":
       return rpcOk(id, await updateMindmap(env, u, args));
+    case "create_artefact":
+      return rpcOk(id, await createArtefact(env, u, args));
+    case "update_artefact":
+      return rpcOk(id, await updateArtefact(env, u, args));
+    case "get_artefact_schema": {
+      // One kind at a time. Returning all three would put three schemas into
+      // the context of an agent that asked about one.
+      const want = String(args?.type ?? "sheet");
+      const schema = ARTEFACT_SCHEMAS[want];
+      return rpcOk(
+        id,
+        schema
+          ? toolText(schema)
+          : toolText(
+              `No schema for "${want}". Artefact types are: ${Object.keys(ARTEFACT_SCHEMAS).join(", ")}.`,
+              true,
+            ),
+      );
+    }
+    case "put_file":
+      return rpcOk(id, await putFileTool(env, u, args));
+    case "list_files":
+      return rpcOk(id, await listFilesTool(env, u, args));
+    case "read_file":
+      return rpcOk(id, await readFileTool(env, u, args));
     case "create_mindmap":
       return rpcOk(id, await createMindmap(env, u, args, grant.clientId));
     case "add_to_mindmap":
@@ -647,22 +840,79 @@ async function callTool(id: Id, env: McpEnv, grant: TokenGrant, params: any): Pr
 // REST API already behaves.
 // ---------------------------------------------------------------------------
 
-async function ownedBoard(env: McpEnv, userId: string, boardId: string) {
-  return await env.DB.prepare(
-    `SELECT * FROM boards WHERE id = ? AND user_id = ? AND parent_id IS NULL`,
+/**
+ * A mindmap this agent's user may write to.
+ *
+ * Every MCP tool that takes a `mindmap_id` writes to it — adding cards,
+ * artefacts, links — so write is the right bar, not read. A viewer on a shared
+ * mindmap gets the same "no such mindmap" an outsider does, which is the
+ * honest answer to "put this there": they cannot.
+ */
+async function writableBoard(env: McpEnv, userId: string, boardId: string) {
+  const board = await env.DB.prepare(
+    `SELECT * FROM boards WHERE id = ? AND parent_id IS NULL`,
   )
-    .bind(boardId, userId)
+    .bind(boardId)
     .first<any>();
+  if (!board) return null;
+  return canWrite(await boardRole(env.DB, userId, boardId)) ? board : null;
 }
 
-async function ownedNode(env: McpEnv, userId: string, nodeId: string) {
-  return await env.DB.prepare(
+/**
+ * Why a write was refused, in words the agent can act on.
+ *
+ * "No mindmap with id X" is the right answer when there is nothing to see, and
+ * a lie when the user is looking at it with view-only access — the agent would
+ * retry, or tell them the mindmap does not exist while it is open on screen.
+ * Telling it the truth lets it say so instead.
+ */
+async function writeDenial(
+  env: McpEnv,
+  userId: string,
+  kind: "mindmap" | "card",
+  id: string,
+): Promise<string> {
+  const role =
+    kind === "mindmap" ? await boardRole(env.DB, userId, id) : await nodeRole(env.DB, userId, id);
+  return role
+    ? `You have view-only access to that ${kind}, so it cannot be changed.`
+    : `No ${kind} with id ${id}.`;
+}
+
+/** A node this agent's user may read. Used by the tools that only look. */
+async function readableNode(env: McpEnv, userId: string, nodeId: string) {
+  const node = await env.DB.prepare(
     `SELECT n.*, b.id AS board_id_check, b.name AS board_name
        FROM nodes n JOIN boards b ON b.id = n.board_id
-      WHERE n.id = ? AND b.user_id = ?`,
+      WHERE n.id = ?`,
   )
-    .bind(nodeId, userId)
+    .bind(nodeId)
     .first<any>();
+  if (!node) return null;
+  return (await nodeRole(env.DB, userId, nodeId)) ? node : null;
+}
+
+/** A mindmap this agent's user may read. Used by the tools that only look. */
+async function readableBoard(env: McpEnv, userId: string, boardId: string) {
+  const board = await env.DB.prepare(
+    `SELECT * FROM boards WHERE id = ? AND parent_id IS NULL`,
+  )
+    .bind(boardId)
+    .first<any>();
+  if (!board) return null;
+  return (await boardRole(env.DB, userId, boardId)) ? board : null;
+}
+
+async function writableNode(env: McpEnv, userId: string, nodeId: string) {
+  const node = await env.DB.prepare(
+    `SELECT n.*, b.id AS board_id_check, b.name AS board_name
+       FROM nodes n JOIN boards b ON b.id = n.board_id
+      WHERE n.id = ?`,
+  )
+    .bind(nodeId)
+    .first<any>();
+  if (!node) return null;
+  return canWrite(await nodeRole(env.DB, userId, nodeId)) ? node : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -675,7 +925,7 @@ async function listMindmaps(env: McpEnv, userId: string) {
             (SELECT COUNT(*) FROM nodes n WHERE n.board_id = b.id AND n.type = 'card') AS cards,
             (SELECT COUNT(*) FROM nodes n WHERE n.board_id = b.id AND n.type = 'note') AS notes
        FROM boards b
-      WHERE b.user_id = ? AND b.parent_id IS NULL
+      WHERE ${BOARD_READABLE("b")} AND b.parent_id IS NULL
       ORDER BY b.pinned DESC, b.updated_at DESC`,
   )
     .bind(userId)
@@ -711,8 +961,8 @@ async function listMindmaps(env: McpEnv, userId: string) {
 
 async function updateMindmap(env: McpEnv, userId: string, args: any) {
   const boardId = String(args?.id ?? "");
-  const board = await ownedBoard(env, userId, boardId);
-  if (!board) return toolText(`No mindmap with id ${boardId}.`, true);
+  const board = await writableBoard(env, userId, boardId);
+  if (!board) return toolText(await writeDenial(env, userId, "mindmap", boardId), true);
 
   const sets: string[] = [];
   const vals: unknown[] = [];
@@ -765,7 +1015,7 @@ async function updateMindmap(env: McpEnv, userId: string, args: any) {
  * window, so it is markdown with ids attached and a hard cap on size.
  */
 async function getMindmap(env: McpEnv, userId: string, args: any) {
-  const board = await ownedBoard(env, userId, String(args?.id ?? ""));
+  const board = await readableBoard(env, userId, String(args?.id ?? ""));
   if (!board) return toolText(`No mindmap with id ${args?.id}.`, true);
 
   const withDocs = args?.include_documents !== false;
@@ -873,7 +1123,7 @@ async function getMindmap(env: McpEnv, userId: string, args: any) {
 }
 
 async function getCard(env: McpEnv, userId: string, args: any) {
-  const node = await ownedNode(env, userId, String(args?.id ?? ""));
+  const node = await readableNode(env, userId, String(args?.id ?? ""));
   if (!node) return toolText(`No card with id ${args?.id}.`, true);
 
   const blocks = parseDoc(node.doc);
@@ -994,6 +1244,8 @@ async function keywordHits(
   boardId: string | null,
   limit: number,
   mode: "all" | "any" = "all",
+  /** The workspace to stay inside, or null for everywhere the user can read. */
+  workspaceId: string | null = null,
 ): Promise<Hit[]> {
   const match = ftsQuery(query, mode);
   if (!match) return [];
@@ -1004,14 +1256,15 @@ async function keywordHits(
        FROM nodes_fts f
        JOIN nodes  n ON n.rowid = f.rowid
        JOIN boards b ON b.id = n.board_id
-      WHERE nodes_fts MATCH ?
-        AND b.user_id = ?
-        AND (? IS NULL OR n.board_id = ?)
-        AND n.type IN ('card','note')
+      WHERE nodes_fts MATCH ?1
+        AND ${BOARD_READABLE("b", 2)}
+        AND ${IN_WORKSPACE("b", "n", 5, 2)}
+        AND (?3 IS NULL OR n.board_id = ?3)
+        AND n.type IN (${INDEXABLE_SQL})
       ORDER BY score DESC
-      LIMIT ?`,
+      LIMIT ?4`,
   )
-    .bind(match, userId, boardId, boardId, limit)
+    .bind(match, userId, boardId, limit, workspaceId)
     .all<Hit>();
   return results ?? [];
 }
@@ -1190,10 +1443,15 @@ async function createMindmap(env: McpEnv, userId: string, args: any, clientId?: 
     .bind(userId)
     .first<{ top: number }>();
 
+  // An agent creates in the user's personal workspace. It has no notion of
+  // which workspace a request "means", and guessing would put work in front of
+  // colleagues who were never asked.
+  const workspaceId = await ensurePersonalWorkspace(env.DB, userId);
+
   const stmts = [
     env.DB.prepare(
-      `INSERT INTO boards (id,name,status,parent_id,node_id,created_at,updated_at,user_id,position,idem_key,description)
-       VALUES (?,?,'active',NULL,NULL,?,?,?,?,?,?)`,
+      `INSERT INTO boards (id,name,status,parent_id,node_id,created_at,updated_at,user_id,position,idem_key,description,workspace_id)
+       VALUES (?,?,'active',NULL,NULL,?,?,?,?,?,?,?)`,
     ).bind(
       boardId,
       name,
@@ -1205,6 +1463,7 @@ async function createMindmap(env: McpEnv, userId: string, args: any, clientId?: 
       typeof args?.description === "string" && args.description.trim()
         ? args.description.trim()
         : null,
+      workspaceId,
     ),
     ...rows.map((r) =>
       insertNodeStmt(env, boardId, r, dataFor(null, clientId), mapKey ? r.key : null),
@@ -1319,8 +1578,8 @@ async function mergeIntoMindmap(
 }
 
 async function addToMindmap(env: McpEnv, userId: string, args: any, clientId?: string) {
-  const board = await ownedBoard(env, userId, String(args?.id ?? ""));
-  if (!board) return toolText(`No mindmap with id ${args?.id}.`, true);
+  const board = await writableBoard(env, userId, String(args?.id ?? ""));
+  if (!board) return toolText(await writeDenial(env, userId, "mindmap", String(args?.id ?? "")), true);
   const nodes: IncomingNode[] = Array.isArray(args?.nodes) ? args.nodes : [];
   if (!nodes.length) return toolText("At least one node is required.", true);
 
@@ -1377,9 +1636,186 @@ async function addToMindmap(env: McpEnv, userId: string, args: any, clientId?: s
   );
 }
 
+/**
+ * What each kind is called and what it expects, in one place.
+ *
+ * Three artefact types that differ only in the field carrying their content is
+ * exactly the shape that rots into three near-identical branches. This table is
+ * the alternative: adding a fourth kind is a row here, not a new code path.
+ */
+const KINDS: Record<
+  ArtefactKind,
+  {
+    noun: string;
+    field: "sheets" | "blocks" | "slides" | "html";
+    /** A page is one string; the other three are lists. */
+    shape: "list" | "text";
+    fallback: string;
+    count: (d: any) => string;
+  }
+> = {
+  sheet: {
+    noun: "spreadsheet",
+    field: "sheets",
+    shape: "list",
+    fallback: "Untitled sheet",
+    count: (d) => `${d.sheets} sheet${d.sheets === 1 ? "" : "s"}, ${d.cells} cells`,
+  },
+  doc: {
+    noun: "document",
+    field: "blocks",
+    shape: "list",
+    fallback: "Untitled document",
+    count: (d) => `${d.words} word${d.words === 1 ? "" : "s"}`,
+  },
+  deck: {
+    noun: "deck",
+    field: "slides",
+    shape: "list",
+    fallback: "Untitled deck",
+    count: (d) => `${d.slides} slide${d.slides === 1 ? "" : "s"}`,
+  },
+  html: {
+    noun: "page",
+    field: "html",
+    shape: "text",
+    fallback: "Untitled page",
+    count: (d) =>
+      `${Math.max(1, Math.round(d.bytes / 1000))} kB${d.scripted ? ", runs script" : ""}`,
+  },
+};
+
+/** The content an agent passed for this kind, or null if it passed none. */
+function contentFor(spec: (typeof KINDS)[ArtefactKind], args: any): unknown[] | string | null {
+  const raw = args?.[spec.field];
+  if (spec.shape === "text")
+    return typeof raw === "string" && raw.trim() ? raw : null;
+  return Array.isArray(raw) && raw.length ? raw : null;
+}
+
+/** Shape the content into the argument `payloadFromInput` expects. */
+const inputFor = (spec: (typeof KINDS)[ArtefactKind], content: unknown[] | string) =>
+  ({ [spec.field]: content }) as Parameters<typeof payloadFromInput>[2];
+
+const kindOf = (raw: unknown): ArtefactKind =>
+  isArtefact(String(raw ?? "sheet")) ? (String(raw) as ArtefactKind) : "sheet";
+
+/**
+ * Create a spreadsheet, document or deck on a mindmap.
+ *
+ * Sits beside `add_card` rather than replacing it: a card holds prose and an
+ * artefact holds something with a shape — a grid that computes, a document that
+ * paginates, a deck that presents — and the agent picks by what it is
+ * recording. The payload goes to R2, the row keeps a pointer and the snapshot
+ * (ARTEFACTS.md §3).
+ */
+async function createArtefact(env: McpEnv, userId: string, args: any) {
+  const board = await writableBoard(env, userId, String(args?.mindmap_id ?? ""));
+  if (!board) return toolText(await writeDenial(env, userId, "mindmap", String(args?.mindmap_id ?? "")), true);
+
+  const kind = kindOf(args?.type);
+  const spec = KINDS[kind];
+  const title = String(args?.title ?? "").trim() || spec.fallback;
+  const content = contentFor(spec, args);
+  if (content === null)
+    return toolText(
+      `Pass \`${spec.field}\` to write a ${spec.noun}. get_artefact_schema shows the shape.`,
+      true,
+    );
+
+  const key = String(args?.key ?? "").trim();
+  const prior = key ? await existingByKey(env, board.id, [key]) : new Map();
+  const seen = prior.get(key);
+
+  const nodeId = seen?.id ?? crypto.randomUUID();
+  let stored;
+  try {
+    stored = await putArtefact(env, nodeId, kind, payloadFromInput(kind, title, inputFor(spec, content)));
+  } catch (err: any) {
+    return toolText(String(err?.message ?? err), true);
+  }
+
+  if (seen) {
+    // Keyed and already here: replace the contents, leave where the user put it.
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE nodes SET title = ?, body = ?, data = ?, updated_at = ? WHERE id = ?`,
+      ).bind(title, stored.body, JSON.stringify(stored.data), now(), nodeId),
+      env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id),
+    ]);
+    await reindex(env, userId, nodeId);
+    return toolText(
+      `Updated **${title}** on ${board.name} — an artefact with key \`${key}\` was already there, so nothing was duplicated.\n\ncard id: \`${nodeId}\``,
+    );
+  }
+
+  const { results: existing } = await env.DB.prepare(
+    `SELECT id, y, h FROM nodes WHERE board_id = ?`,
+  )
+    .bind(board.id)
+    .all<any>();
+  const { rows } = prepare(
+    [{ key: key || "a0", type: "card", title }],
+    [],
+    (n, e) => layoutBelow(n, e, existing ?? []),
+  );
+  const at = rows[0];
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at,idem_key)
+       VALUES (?,?,?,?,?,NULL,?,?,260,150,?,?,?,?)`,
+    ).bind(
+      nodeId, board.id, kind, title, stored.body, at.x, at.y,
+      JSON.stringify(stored.data), now(), now(), key || null,
+    ),
+    env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id),
+  ]);
+  await reindex(env, userId, nodeId);
+
+  return toolText(
+    `Added **${title}** to ${board.name}: ${spec.count(stored.data)}.\n\ncard id: \`${nodeId}\``,
+  );
+}
+
+async function updateArtefact(env: McpEnv, userId: string, args: any) {
+  const node = await writableNode(env, userId, String(args?.id ?? ""));
+  if (!node) return toolText(`No artefact with id ${args?.id}.`, true);
+  if (!isArtefact(node.type))
+    return toolText(`That is a ${node.type}, not an artefact. Use update_card.`, true);
+
+  // The kind is the node's, never the caller's: an update must not turn a deck
+  // into a spreadsheet and silently drop everything that was in it.
+  const kind = node.type as ArtefactKind;
+  const spec = KINDS[kind];
+  const content = contentFor(spec, args);
+  if (content === null)
+    return toolText(
+      `Pass \`${spec.field}\` to write. This replaces the contents rather than merging.`,
+      true,
+    );
+
+  const title = String(args?.title ?? node.title ?? "").trim() || spec.fallback;
+  let stored;
+  try {
+    stored = await putArtefact(env, node.id, kind, payloadFromInput(kind, title, inputFor(spec, content)));
+  } catch (err: any) {
+    return toolText(String(err?.message ?? err), true);
+  }
+
+  await env.DB.prepare(
+    `UPDATE nodes SET title = ?, body = ?, data = ?, updated_at = ? WHERE id = ?`,
+  )
+    .bind(title, stored.body, JSON.stringify(stored.data), now(), node.id)
+    .run();
+  await reindex(env, userId, node.id);
+
+  return toolText(`Rewrote **${title}**: ${spec.count(stored.data)}.`);
+}
+
 async function addCard(env: McpEnv, userId: string, args: any, clientId?: string) {
-  const board = await ownedBoard(env, userId, String(args?.mindmap_id ?? ""));
-  if (!board) return toolText(`No mindmap with id ${args?.mindmap_id}.`, true);
+  const board = await writableBoard(env, userId, String(args?.mindmap_id ?? ""));
+  if (!board) return toolText(await writeDenial(env, userId, "mindmap", String(args?.mindmap_id ?? "")), true);
 
   const { results: existing } = await env.DB.prepare(
     `SELECT id, y, h FROM nodes WHERE board_id = ?`,
@@ -1422,8 +1858,8 @@ async function addCard(env: McpEnv, userId: string, args: any, clientId?: string
 }
 
 async function updateCard(env: McpEnv, userId: string, args: any) {
-  const node = await ownedNode(env, userId, String(args?.id ?? ""));
-  if (!node) return toolText(`No card with id ${args?.id}.`, true);
+  const node = await writableNode(env, userId, String(args?.id ?? ""));
+  if (!node) return toolText(await writeDenial(env, userId, "card", String(args?.id ?? "")), true);
 
   const sets: string[] = [];
   const vals: unknown[] = [];
@@ -1463,8 +1899,8 @@ async function updateCard(env: McpEnv, userId: string, args: any) {
 }
 
 async function appendToCard(env: McpEnv, userId: string, args: any) {
-  const node = await ownedNode(env, userId, String(args?.id ?? ""));
-  if (!node) return toolText(`No card with id ${args?.id}.`, true);
+  const node = await writableNode(env, userId, String(args?.id ?? ""));
+  if (!node) return toolText(await writeDenial(env, userId, "card", String(args?.id ?? "")), true);
 
   const existing = parseDoc(node.doc);
   const { doc: addedDoc } = normaliseContent(args?.content);
@@ -1514,9 +1950,9 @@ async function ownedEdge(env: McpEnv, userId: string, edgeId: string) {
        JOIN boards sb ON sb.id = sn.board_id
        JOIN nodes  tn ON tn.id = e.target_id
        JOIN boards tb ON tb.id = tn.board_id
-      WHERE e.id = ? AND sb.user_id = ? AND tb.user_id = ?`,
+      WHERE e.id = ?1 AND ${BOARD_READABLE("sb", 2)} AND ${BOARD_READABLE("tb", 2)}`,
   )
-    .bind(edgeId, userId, userId)
+    .bind(edgeId, userId)
     .first<any>();
 }
 
@@ -1537,7 +1973,7 @@ async function connectionsOf(env: McpEnv, userId: string, nodeId: string) {
        FROM edges e
        JOIN nodes  other ON other.id = CASE WHEN e.source_id = ?1 THEN e.target_id ELSE e.source_id END
        JOIN boards ob    ON ob.id = other.board_id
-      WHERE (e.source_id = ?1 OR e.target_id = ?1) AND ob.user_id = ?2
+      WHERE (e.source_id = ?1 OR e.target_id = ?1) AND ${BOARD_READABLE("ob", 2)}
       ORDER BY dir DESC, other.title`,
   )
     .bind(nodeId, userId)
@@ -1565,8 +2001,8 @@ function connectionLines(rows: any[], homeBoard: string | null): string[] {
  * top-to-bottom".
  */
 async function relayoutMindmap(env: McpEnv, userId: string, args: any) {
-  const board = await ownedBoard(env, userId, String(args?.id ?? ""));
-  if (!board) return toolText(`No mindmap with id ${args?.id}.`, true);
+  const board = await writableBoard(env, userId, String(args?.id ?? ""));
+  if (!board) return toolText(await writeDenial(env, userId, "mindmap", String(args?.id ?? "")), true);
   if (!isDirection(args?.direction))
     return toolText("direction must be `right` or `down`.", true);
   const direction: Direction = args.direction;
@@ -1620,8 +2056,8 @@ async function relayoutMindmap(env: McpEnv, userId: string, args: any) {
 }
 
 async function linkCards(env: McpEnv, userId: string, args: any) {
-  const from = await ownedNode(env, userId, String(args?.from ?? ""));
-  const to = await ownedNode(env, userId, String(args?.to ?? ""));
+  const from = await writableNode(env, userId, String(args?.from ?? ""));
+  const to = await writableNode(env, userId, String(args?.to ?? ""));
   if (!from) return toolText(`No card with id ${args?.from}.`, true);
   if (!to) return toolText(`No card with id ${args?.to}.`, true);
   if (from.id === to.id) return toolText("A card cannot link to itself.", true);
@@ -1677,8 +2113,8 @@ async function unlinkCards(env: McpEnv, userId: string, args: any) {
   let edge = args?.id ? await ownedEdge(env, userId, String(args.id)) : null;
 
   if (!edge && args?.from && args?.to) {
-    const from = await ownedNode(env, userId, String(args.from));
-    const to = await ownedNode(env, userId, String(args.to));
+    const from = await writableNode(env, userId, String(args.from));
+    const to = await writableNode(env, userId, String(args.to));
     if (from && to) {
       // either orientation: "unlink these two" shouldn't depend on argument order
       const row = await env.DB.prepare(
@@ -1716,7 +2152,7 @@ function neighbourLine(n: Neighbour, homeBoard: string | null): string {
 }
 
 async function getContext(env: McpEnv, userId: string, args: any) {
-  const node = await ownedNode(env, userId, String(args?.id ?? ""));
+  const node = await readableNode(env, userId, String(args?.id ?? ""));
   if (!node) return toolText(`No card with id ${args?.id}.`, true);
 
   const depth = Math.min(
@@ -1860,15 +2296,27 @@ export async function rankRecall(
   env: McpEnv,
   userId: string,
   query: string,
-  scope: string | null,
+  boardId: string | null,
   depth: number,
+  /**
+   * The workspace the question is being asked from.
+   *
+   * The app knows this — it is whichever workspace the user is looking at — and
+   * passing it keeps recall to one vector query however large the team. An
+   * agent has no such context, so when this is absent the scope widens to every
+   * workspace the user belongs to, which is a small fan-out and the only
+   * sensible default for something with no notion of "where I am".
+   */
+  workspaceId?: string | null,
 ): Promise<RecallResult> {
+  const scope = await recallScope(env.DB, userId, workspaceId ?? null);
+
   // Cast wide, then rank: `any` mode so a long question still finds things,
   // with `all` a separate list because matching every term is its own evidence.
   const [strict, loose, semanticResult] = await Promise.all([
-    keywordHits(env, userId, query, scope, RECALL_HITS * 3, "all"),
-    keywordHits(env, userId, query, scope, RECALL_HITS * 4, "any"),
-    semanticHits(env, userId, query, scope, RECALL_HITS * 3),
+    keywordHits(env, userId, query, boardId, RECALL_HITS * 3, "all", workspaceId ?? null),
+    keywordHits(env, userId, query, boardId, RECALL_HITS * 4, "any", workspaceId ?? null),
+    semanticHits(env, userId, query, boardId, RECALL_HITS * 3, scope),
   ]);
   const { hits: semantic, passages, degraded } = semanticResult;
 
@@ -2111,13 +2559,29 @@ async function semanticHits(
   query: string,
   boardId: string | null,
   limit: number,
+  /**
+   * Which namespaces to search, and which granted nodes to score directly.
+   *
+   * Resolved by the caller because it depends on where the request came from:
+   * the app knows which workspace the user is looking at, an agent does not.
+   */
+  scope?: { namespaces: string[]; grantedNodeIds: string[] },
 ): Promise<{ hits: Hit[]; passages: Map<string, string>; degraded?: string }> {
   const none = { hits: [] as Hit[], passages: new Map<string, string>() };
   if (!semanticReady(env)) return { ...none, degraded: "semantic index not configured" };
 
   // Ask for more chunks than cards wanted: several passages of one card can
   // occupy the top, and they collapse to a single result.
-  const { hits: matches, degraded } = await similarChunks(env, userId, query, limit * 3);
+  const { hits: matches, degraded } = await similarChunks(
+    env,
+    {
+      userId,
+      namespaces: scope?.namespaces ?? [userId],
+      grantedNodeIds: scope?.grantedNodeIds ?? [],
+    },
+    query,
+    limit * 3,
+  );
   if (!matches.length) return { ...none, degraded };
 
   // Best passage per card, and its score. Max rather than sum: a card is as
@@ -2134,12 +2598,12 @@ async function semanticHits(
   const { results } = await env.DB.prepare(
     `SELECT n.id, n.title, n.body, n.board_id, n.updated_at, b.name AS board_name
        FROM nodes n JOIN boards b ON b.id = n.board_id
-      WHERE n.id IN (${marks})
-        AND b.user_id = ?
-        AND (? IS NULL OR n.board_id = ?)
-        AND n.type IN ('card','note')`,
+      WHERE n.id IN (${cardIds.map((_, i) => `?${i + 1}`).join(",")})
+        AND ${BOARD_READABLE("b", cardIds.length + 1)}
+        AND (?${cardIds.length + 2} IS NULL OR n.board_id = ?${cardIds.length + 2})
+        AND n.type IN (${INDEXABLE_SQL})`,
   )
-    .bind(...cardIds, userId, boardId, boardId)
+    .bind(...cardIds, userId, boardId)
     .all<Omit<Hit, "score">>();
 
   const rows = results ?? [];
@@ -2168,13 +2632,24 @@ async function semanticHits(
 }
 
 /** Keep the semantic index in step with a card that just changed. */
-async function reindex(env: McpEnv, userId: string, nodeId: string): Promise<void> {
+/**
+ * Re-embed one card.
+ *
+ * The namespace is read from the card's own board rather than taken from the
+ * caller. Vectors are partitioned by workspace, and a card shared into your
+ * view still belongs to its owner's workspace — indexing it under yours would
+ * file someone else's content in your partition, where revoking your access
+ * would not remove it.
+ */
+async function reindex(env: McpEnv, _caller: string, nodeId: string): Promise<void> {
   if (!semanticReady(env)) return;
   const row = await env.DB.prepare(
-    `SELECT n.id, n.title, n.body, n.board_id FROM nodes n WHERE n.id = ?`,
+    `SELECT n.id, n.title, n.body, n.board_id, b.workspace_id
+       FROM nodes n JOIN boards b ON b.id = n.board_id
+      WHERE n.id = ?`,
   )
     .bind(nodeId)
-    .first<{ id: string; title: string; body: string; board_id: string }>();
+    .first<{ id: string; title: string; body: string; board_id: string; workspace_id: string }>();
   if (!row) {
     await removeCards(env, [nodeId]);
     return;
@@ -2183,7 +2658,7 @@ async function reindex(env: McpEnv, userId: string, nodeId: string): Promise<voi
     id: row.id,
     title: row.title,
     body: row.body,
-    userId,
+    namespace: row.workspace_id,
     boardId: row.board_id,
   });
   // Whatever marked this card is now satisfied, whichever path got here.
@@ -2217,20 +2692,20 @@ export async function sweepDirty(env: McpEnv, limit = 30): Promise<number> {
   if (!semanticReady(env)) return 0;
 
   const { results } = await env.DB.prepare(
-    `SELECT n.id, b.user_id
+    `SELECT n.id, b.workspace_id
        FROM nodes n JOIN boards b ON b.id = n.board_id
       WHERE n.index_dirty IS NOT NULL
-        AND n.type IN ('card','note')
+        AND n.type IN (${INDEXABLE_SQL})
       ORDER BY n.index_dirty
       LIMIT ?`,
   )
     .bind(limit)
-    .all<{ id: string; user_id: string }>();
+    .all<{ id: string; workspace_id: string }>();
 
   const rows = results ?? [];
   // Sequential, like reindexAll and for the same reason: Workers AI is
   // rate-limited, and a sweep is exactly the burst shape that trips it.
-  for (const row of rows) await reindex(env, row.user_id, row.id);
+  for (const row of rows) await reindex(env, row.workspace_id, row.id);
   return rows.length;
 }
 
@@ -2257,8 +2732,8 @@ export async function reindexPage(
   const { results } = await env.DB.prepare(
     `SELECT n.id
        FROM nodes n JOIN boards b ON b.id = n.board_id
-      WHERE b.user_id = ?
-        AND n.type IN ('card','note')
+      WHERE ${BOARD_READABLE("b")}
+        AND n.type IN (${INDEXABLE_SQL})
         AND (? IS NULL OR n.id > ?)
       ORDER BY n.id
       LIMIT ?`,
@@ -2365,4 +2840,252 @@ async function existingEdges(
     .bind(...ids, ...ids)
     .all<{ id: string; source_id: string; target_id: string }>();
   return new Map((results ?? []).map((e) => [`${e.source_id}>${e.target_id}`, e.id]));
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+/**
+ * Why agents get a file surface at all.
+ *
+ * An agent's memory already crosses sessions, because it lives in D1 and
+ * Vectorize. Its files do not: they sit on whatever machine that session ran
+ * on, and the next agent — a different machine, often a different harness —
+ * cannot see them. Everything that took work to produce and was written to disk
+ * is lost at the end of the turn.
+ *
+ * So the tool is deliberately shaped around leaving something behind rather
+ * than around storage: it insists on a description, and the description is what
+ * `recall` will match on months later.
+ */
+
+/**
+ * The most an agent may upload through a tool call.
+ *
+ * Far below MAX_FILE_BYTES, and not for storage reasons: this arrives as
+ * base64 inside a JSON-RPC envelope, so the bytes are in the model's context
+ * on the way out. A megabyte of base64 is a quarter of a million tokens. The
+ * browser's upload path streams and has no such ceiling, which is what the
+ * refusal points at.
+ */
+const MCP_MAX_UPLOAD_BYTES = 1_000_000;
+
+/** Enough of a guess to make a text file readable and a binary downloadable. */
+const MIME_BY_EXT: Record<string, string> = {
+  txt: "text/plain", md: "text/markdown", csv: "text/csv", tsv: "text/tab-separated-values",
+  json: "application/json", yaml: "application/yaml", yml: "application/yaml",
+  xml: "application/xml", html: "text/html", css: "text/css", js: "text/javascript",
+  ts: "text/plain", py: "text/x-python", sql: "application/sql", sh: "application/x-sh",
+  pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+  gif: "image/gif", svg: "image/svg+xml", webp: "image/webp", zip: "application/zip",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+
+const guessType = (name: string): string => {
+  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
+  return MIME_BY_EXT[ext] ?? "application/octet-stream";
+};
+
+const readableSize = (bytes: number) =>
+  bytes >= 1_000_000
+    ? `${(bytes / 1_000_000).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1000))} kB`;
+
+async function putFileTool(env: McpEnv, userId: string, args: any) {
+  const name = String(args?.name ?? "").trim();
+  if (!name) return toolText("Pass `name` — the filename, with its extension.", true);
+
+  const hasText = typeof args?.content === "string";
+  const hasBinary = typeof args?.content_base64 === "string";
+  if (!hasText && !hasBinary)
+    return toolText("Pass `content` for text, or `content_base64` for anything else.", true);
+  if (hasText && hasBinary)
+    return toolText("Pass one of `content` or `content_base64`, not both.", true);
+
+  let bytes: ArrayBuffer;
+  if (hasText) {
+    bytes = new TextEncoder().encode(String(args.content)).buffer as ArrayBuffer;
+  } else {
+    try {
+      const raw = atob(String(args.content_base64));
+      const out = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+      bytes = out.buffer;
+    } catch {
+      return toolText("`content_base64` is not valid base64.", true);
+    }
+  }
+
+  if (bytes.byteLength > MCP_MAX_UPLOAD_BYTES)
+    return toolText(
+      `That is ${readableSize(bytes.byteLength)}, over the ${MCP_MAX_UPLOAD_BYTES / 1_000_000} MB a tool call can carry — it travels as base64 through your context. Upload it in the app instead, where it streams.`,
+      true,
+    );
+
+  const contentType = String(args?.content_type ?? "").trim() || guessType(name);
+  const description = String(args?.description ?? "").trim();
+
+  // Into an existing folder, or onto a mindmap as a card of its own.
+  const folderId = String(args?.folder_id ?? "").trim();
+  if (folderId) {
+    const node = await writableNode(env, userId, folderId);
+    if (!node) return toolText(`No folder with id ${folderId}.`, true);
+    if (!isFileKind(node.type))
+      return toolText(`That is a ${node.type}, not a folder.`, true);
+    if (node.type === "file")
+      return toolText(
+        "That card holds a single file. Make a folder if several belong together.",
+        true,
+      );
+
+    try {
+      const row = await storeFile(env as any, {
+        nodeId: folderId, kind: "folder", title: node.title ?? "",
+        name, contentType, description, size: bytes.byteLength,
+        uploadedBy: userId, source: bytes,
+      });
+      await reindex(env, userId, folderId);
+      return toolText(
+        `Added **${row.name}** (${readableSize(row.size)}) to ${node.title || "the folder"}.\n\nfile id: \`${row.id}\``,
+      );
+    } catch (err: any) {
+      return toolText(String(err?.message ?? err), true);
+    }
+  }
+
+  const board = await writableBoard(env, userId, String(args?.mindmap_id ?? ""));
+  if (!board)
+    return toolText(
+      await writeDenial(env, userId, "mindmap", String(args?.mindmap_id ?? "")),
+      true,
+    );
+
+  const nodeId = crypto.randomUUID();
+  const { results: existing } = await env.DB.prepare(`SELECT id, y, h FROM nodes WHERE board_id = ?`)
+    .bind(board.id)
+    .all<any>();
+  const { rows } = prepare(
+    [{ key: "a0", type: "card", title: name }],
+    [],
+    (n, e) => layoutBelow(n, e, existing ?? []),
+  );
+  const at = rows[0];
+
+  // The node first, because `files.node_id` references it, then the file —
+  // which also writes the summary and the snapshot back onto the row.
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at)
+       VALUES (?,?,'file',?,'',NULL,?,?,260,150,'{}',?,?)`,
+    ).bind(nodeId, board.id, name, at.x, at.y, now(), now()),
+    env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id),
+  ]);
+
+  try {
+    const row = await storeFile(env as any, {
+      nodeId, kind: "file", title: name,
+      name, contentType, description, size: bytes.byteLength,
+      uploadedBy: userId, source: bytes,
+    });
+    await reindex(env, userId, nodeId);
+    return toolText(
+      `Stored **${row.name}** (${readableSize(row.size)}) on ${board.name}.\n\ncard id: \`${nodeId}\``,
+    );
+  } catch (err: any) {
+    // The row would otherwise sit on the board as an empty file card with no
+    // way to tell it apart from one whose upload is still coming.
+    await env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(nodeId).run();
+    return toolText(String(err?.message ?? err), true);
+  }
+}
+
+async function listFilesTool(env: McpEnv, userId: string, args: any) {
+  const wanted = String(args?.id ?? "").trim();
+
+  // One argument, either kind of id: an agent holding a mindmap id from recall
+  // should not have to discover which of its cards happen to be folders first.
+  const node = await readableNode(env, userId, wanted);
+  if (node && isFileKind(node.type)) {
+    const rows = await filesOf(env as any, wanted);
+    if (!rows.length) return toolText(`**${node.title || "Untitled"}** is empty.`);
+    return toolText(
+      `**${node.title || "Untitled"}**\n\n` +
+        rows
+          .map(
+            (f: FileRow) =>
+              `- **${f.name}** · ${readableSize(f.size)} · \`${f.id}\`` +
+              (f.description ? `\n  ${f.description}` : ""),
+          )
+          .join("\n"),
+    );
+  }
+
+  const board = await readableBoard(env, userId, wanted);
+  if (!board) return toolText(`Nothing readable with id ${wanted}.`, true);
+
+  const { results } = await env.DB.prepare(
+    `SELECT n.id, n.title, n.type, COUNT(f.id) AS files, COALESCE(SUM(f.size),0) AS bytes
+       FROM nodes n LEFT JOIN files f ON f.node_id = n.id
+      WHERE n.board_id = ? AND n.type IN ('file','folder')
+      GROUP BY n.id ORDER BY n.updated_at DESC`,
+  )
+    .bind(board.id)
+    .all<any>();
+
+  const rows = results ?? [];
+  if (!rows.length) return toolText(`No files on ${board.name} yet.`);
+
+  return toolText(
+    `Files on **${board.name}**\n\n` +
+      rows
+        .map(
+          (r: any) =>
+            `- ${r.type === "folder" ? "📁" : "📄"} **${r.title || "Untitled"}** · ` +
+            `${r.files} file${r.files === 1 ? "" : "s"} · ${readableSize(r.bytes)} · \`${r.id}\``,
+        )
+        .join("\n"),
+  );
+}
+
+async function readFileTool(env: McpEnv, userId: string, args: any) {
+  const wanted = String(args?.id ?? "").trim();
+
+  // Accept either a file id or the card id of a single-file node, because an
+  // agent that has just been handed a card id from recall has no reason to
+  // know there is a second kind of identifier underneath it.
+  let row = await fileById(env as any, wanted);
+  if (row) {
+    const node = await readableNode(env, userId, row.node_id);
+    if (!node) return toolText(`No file with id ${wanted}.`, true);
+  } else {
+    const node = await readableNode(env, userId, wanted);
+    if (!node || !isFileKind(node.type)) return toolText(`No file with id ${wanted}.`, true);
+    const rows = await filesOf(env as any, wanted);
+    if (rows.length !== 1)
+      return toolText(
+        rows.length
+          ? `That folder holds ${rows.length} files. Call list_files and read one by its file id.`
+          : "That card holds no files yet.",
+        true,
+      );
+    row = rows[0];
+  }
+
+  if (!isTextual(row.name, row.content_type)) {
+    const url = await fileUrl(env as any, row.id);
+    return toolText(
+      `**${row.name}** is ${row.content_type}, which has no text to return.` +
+        (row.description ? `\n\n${row.description}` : "") +
+        (url ? `\n\nDownload (expires in an hour): ${url}` : ""),
+    );
+  }
+
+  const obj = await env.ARTEFACTS.get(row.r2_key);
+  if (!obj) return toolText(`**${row.name}** is no longer stored.`, true);
+
+  const text = await obj.text();
+  return toolText(`**${row.name}**\n\n\`\`\`\n${text}\n\`\`\``);
 }

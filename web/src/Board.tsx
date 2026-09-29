@@ -25,10 +25,14 @@ import { CardNode, NoteNode } from "./nodes/CardNode";
 import { ImageNode } from "./nodes/ImageNode";
 import { StrokeNode } from "./nodes/StrokeNode";
 import { StubNode, type StubData } from "./nodes/StubNode";
+import { ArtefactNode } from "./nodes/ArtefactNode";
+import { MembersPanel } from "./MembersPanel";
+import { Modal } from "./ui/Modal";
+import { ARTEFACT_KINDS, isArtefactKind, type ArtefactKind } from "./nodes/artefact";
 import { useHistory, isTextTarget } from "./useHistory";
 import { LabelledEdge } from "./edges/LabelledEdge";
 import { Toolbar } from "./Toolbar";
-import { IconHome } from "./ui/Icons";
+import { IconHome, IconPeople } from "./ui/Icons";
 import { CardDocument, docProgress } from "./CardDocument";
 import { LinkPicker } from "./LinkPicker";
 import {
@@ -36,7 +40,17 @@ import {
   writeLocalView, type BoardView,
 } from "./viewState";
 
-const nodeTypes = { card: CardNode, note: NoteNode, image: ImageNode, stroke: StrokeNode, stub: StubNode };
+// Artefact kinds are spread in rather than listed: every one of them renders
+// with the same component, and a kind missing from this map renders as an empty
+// default node instead of failing loudly.
+const nodeTypes = {
+  card: CardNode,
+  note: NoteNode,
+  image: ImageNode,
+  stroke: StrokeNode,
+  stub: StubNode,
+  ...Object.fromEntries(ARTEFACT_KINDS.map((k) => [k, ArtefactNode])),
+};
 
 /**
  * Readable prose for a collapsed card.
@@ -139,14 +153,29 @@ function BoardInner({ boardId, revision, onNavigate }: Props) {
   const [restoreTick, setRestoreTick] = useState(0);
   /** the view to apply once the nodes are actually on screen */
   const pendingView = useRef<BoardView | null>(null);
+  /**
+   * A transient line of text for things that failed where the user was looking.
+   *
+   * Today that is one case: undoing the delete of an artefact whose contents
+   * have passed the retention window. The server refuses rather than restoring
+   * a blank one, and without this the refusal would be invisible.
+   */
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
   const {
     push: pushHistory,
     undo: undoHistory,
     redo: redoHistory,
     clear: clearHistory,
     depth: historyDepth,
-  } = useHistory();
+  } = useHistory(useCallback((m: string) => setNotice(m), []));
 
+  const [sharing, setSharing] = useState(false);
   const [tool, setTool] = useState<InkTool>("select");
   const [color, setColor] = useState("#1a1a1a");
   const [size, setSize] = useState(4);
@@ -664,6 +693,28 @@ function BoardInner({ boardId, revision, onNavigate }: Props) {
         };
       }
 
+      // An artefact carries a pointer, not a payload (ARTEFACTS.md §3), so the
+      // node renders from the summary in `data` and never touches R2. Opening
+      // it is a route change, which is what keeps the spreadsheet, document and
+      // presentation engines off a board that holds none of them.
+      if (isArtefactKind(n.type)) {
+        return {
+          id: n.id,
+          type: n.type,
+          position: { x: n.x, y: n.y },
+          zIndex: 1,
+          data: {
+            nodeId: n.id,
+            boardId,
+            kind: n.type as ArtefactKind,
+            title: n.title,
+            counts: (n.data ?? {}) as Record<string, unknown>,
+            onTitle: setTitle,
+            onDelete: removeNode,
+          },
+        };
+      }
+
       return {
         id: n.id,
         type: n.type === "note" ? "note" : "card",
@@ -736,7 +787,7 @@ function BoardInner({ boardId, revision, onNavigate }: Props) {
     }
 
     setNodes(out);
-  }, [raw, rawEdges, openId, focused, openCard, closeCard, setTitle, patch, removeNode, resizeNode, onJump]);
+  }, [raw, rawEdges, boardId, openId, focused, openCard, closeCard, setTitle, patch, removeNode, resizeNode, onJump]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1041,7 +1092,7 @@ function BoardInner({ boardId, revision, onNavigate }: Props) {
 
   /** Drop new nodes where you're looking, not at a random spot off-screen. */
   const addNode = useCallback(
-    async (type: "card" | "note", at?: { x: number; y: number }) => {
+    async (type: "card" | "note" | ArtefactKind, at?: { x: number; y: number }) => {
       const pane = document.querySelector(".react-flow__pane")?.getBoundingClientRect();
       const pos =
         at ??
@@ -1179,6 +1230,20 @@ function BoardInner({ boardId, revision, onNavigate }: Props) {
           {counts.threads > 0 && ` · ${counts.threads} threads`}
         </span>
 
+        {/* Beside the title, the way an artefact has one — sharing a mindmap was
+            reachable only through the rail's ••• menu, which is where people
+            went looking for settings, not for people. */}
+        {board && (
+          <button
+            className={`topbar-share${board.shared_with ? " on" : ""}`}
+            onClick={() => setSharing(true)}
+            title="Share this mindmap"
+          >
+            <IconPeople size={14} />
+            {board.shared_with ? `Shared with ${board.shared_with}` : "Share"}
+          </button>
+        )}
+
         <span className="grow" />
         <HomeViewMenu
           hasHome={!!parseHomeView(board?.home_view)}
@@ -1280,6 +1345,32 @@ function BoardInner({ boardId, revision, onNavigate }: Props) {
           />
         </ReactFlow>
 
+        {notice && (
+          <div className="board-notice" role="status">
+            {notice}
+            <button className="board-notice-x" onClick={() => setNotice(null)} aria-label="Dismiss">
+              ×
+            </button>
+          </div>
+        )}
+
+        {board && (
+          <Modal
+            open={sharing}
+            title={`Share ${board.name}`}
+            description="People you add here can open this mindmap and everything on it."
+            onClose={() => {
+              setSharing(false);
+              // The badge is served with the board, so re-read it rather than
+              // guess at the new count.
+              void api.contents(boardId).then((c) => setBoard(c.board));
+            }}
+            width={520}
+          >
+            <MembersPanel kind="boards" id={board.id} ownerId={board.id} />
+          </Modal>
+        )}
+
         <Toolbar
           tool={tool}
           setTool={setTool}
@@ -1289,6 +1380,12 @@ function BoardInner({ boardId, revision, onNavigate }: Props) {
           setSize={setSize}
           onAddCard={() => void addNode("card")}
           onAddNote={() => void addNode("note")}
+          onAddSheet={() => void addNode("sheet")}
+          onAddDoc={() => void addNode("doc")}
+          onAddDeck={() => void addNode("deck")}
+          onAddPage={() => void addNode("html")}
+          onAddFile={() => void addNode("file")}
+          onAddFolder={() => void addNode("folder")}
           onUndo={() => void undoHistory()}
           onRedo={() => void redoHistory()}
           canUndo={!!historyDepth.undo}

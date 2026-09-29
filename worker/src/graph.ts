@@ -8,6 +8,8 @@
  * than a demo.
  */
 
+import { BOARD_READABLE } from "./access";
+
 export interface Neighbour {
   id: string;
   title: string;
@@ -87,7 +89,7 @@ export async function neighbourhood(
          FROM reach r
          JOIN nodes  n ON n.id = r.id
          JOIN boards b ON b.id = n.board_id
-        WHERE b.user_id = ?3
+        WHERE ${BOARD_READABLE("b", 3)}
           AND r.id <> ?1
           AND n.type IN ('card','note')
         ORDER BY r.depth, n.updated_at DESC
@@ -125,14 +127,14 @@ export async function neighbourhoods(
               ${supersededExpr("n")} AS superseded
          FROM (
            SELECT e.source_id AS root, e.target_id AS other, e.label AS via_label FROM edges e
-            WHERE e.source_id IN (${marks})
+            WHERE e.source_id IN (${rootIds.map((_, i) => `?${i + 1}`).join(",")})
            UNION ALL
            SELECT e.target_id AS root, e.source_id AS other, e.label AS via_label FROM edges e
-            WHERE e.target_id IN (${marks})
+            WHERE e.target_id IN (${rootIds.map((_, i) => `?${rootIds.length + i + 1}`).join(",")})
          ) r
          JOIN nodes  n ON n.id = r.other
          JOIN boards b ON b.id = n.board_id
-        WHERE b.user_id = ? AND n.type IN ('card','note')
+        WHERE ${BOARD_READABLE("b", rootIds.length * 2 + 1)} AND n.type IN ('card','note')
         ORDER BY n.updated_at DESC`,
     )
     .bind(...rootIds, ...rootIds, userId)

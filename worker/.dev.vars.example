@@ -15,3 +15,7 @@ GITHUB_TOKEN=
 # as an Authorised redirect URI. Leave blank to hide the Google button.
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+
+# Signs the short-lived URLs that render HTML artefacts (src/mindbox.ts).
+# Any long random string. Without it the HTML artefact type is unavailable.
+MINDBOX_SECRET=

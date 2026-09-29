@@ -307,6 +307,270 @@ h1, h2, h3 { letter-spacing: -0.02em; text-wrap: balance; }
 .btn-confirm-danger:hover:not(:disabled) { background: #8f1e17; border-color: #8f1e17; }
 
 /* =============================================================================
+   Trash
+   ========================================================================== */
+
+.btn-small { padding: 4px 10px; font-size: var(--t-sm); }
+.btn-quiet { border-color: transparent; color: var(--faint); padding: 4px 9px; }
+.btn-quiet:hover:not(:disabled) { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+
+.trash-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.trash-row {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.trash-row:last-child { border-bottom: 0; }
+
+/* A fixed-width kind column so the eye can scan down it, rather than the labels
+   shifting left and right with the length of each word. */
+.trash-kind {
+  flex: 0 0 62px;
+  font-size: var(--t-xs); font-weight: 600; letter-spacing: 0.03em;
+  text-transform: uppercase; color: var(--faint);
+}
+.trash-kind.board { color: var(--accent); }
+
+.trash-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.trash-label {
+  font-size: var(--t-sm); font-weight: 500; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.trash-meta {
+  font-size: var(--t-xs); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The only thing in this dialog worth colouring: it is about to be too late. */
+.trash-soon { color: var(--danger); }
+
+.trash-msg { margin: var(--s3) 0; color: var(--muted); font-size: var(--t-sm); line-height: 1.55; }
+.trash-error {
+  margin: 0; padding: var(--s2) var(--s3);
+  background: var(--danger-soft); color: var(--danger);
+  border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.5;
+}
+.trash-warn { flex: 1; font-size: var(--t-sm); color: var(--danger); }
+
+/* Sits under the mindmap list, above the account block: a way out, not a place
+   you spend time. Quiet until it has something in it. */
+.rail-trash {
+  display: flex; align-items: center; gap: var(--s2);
+  width: 100%; padding: 7px var(--s2);
+  margin: 0 0 var(--s2);
+  border: 0; border-radius: var(--r-sm); background: none;
+  color: var(--muted); font: inherit; font-size: var(--t-sm);
+  cursor: pointer; text-align: left;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.rail-trash:hover { background: var(--surface-2); color: var(--ink); }
+
+/* =============================================================================
+   Workspace switcher
+   ========================================================================== */
+
+.ws { position: relative; margin-bottom: var(--s2); }
+
+/* Reads as part of the rail rather than as a form control: same radius and
+   hover as a mindmap row, so switching workspace feels like the same kind of
+   act as switching mindmap. */
+.ws-trigger {
+  width: 100%; display: flex; align-items: center; gap: var(--s2);
+  padding: 7px var(--s2);
+  border: 1px solid transparent; border-radius: var(--r-sm);
+  background: none; color: var(--ink);
+  font: inherit; font-size: var(--t-sm); font-weight: 500;
+  cursor: pointer; text-align: left;
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.ws-trigger:hover { background: var(--surface-2); }
+.ws-trigger.open { background: var(--surface-2); border-color: var(--line); }
+.ws-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-caret { flex: 0 0 auto; color: var(--faint); }
+
+.ws-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 80;
+  padding: 4px;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--e3);
+}
+
+.ws-item {
+  width: 100%; display: flex; align-items: center; gap: var(--s2);
+  padding: 6px 7px;
+  border: 0; border-radius: var(--r-sm); background: none;
+  font: inherit; font-size: var(--t-sm); color: var(--ink);
+  cursor: pointer; text-align: left;
+}
+.ws-item:hover { background: var(--surface-2); }
+.ws-item.on .ws-item-name { color: var(--accent); font-weight: 500; }
+
+/* A fixed gutter for the tick, so names line up whether or not one is current
+   — the column is the alignment, not the check. */
+.ws-check {
+  flex: 0 0 16px; display: grid; place-items: center;
+  color: var(--accent);
+}
+.ws-new .ws-check { color: var(--faint); }
+
+.ws-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ws-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-item-role { font-size: var(--t-xs); color: var(--faint); }
+
+.ws-item-people {
+  flex: 0 0 auto; width: 22px; height: 22px;
+  display: grid; place-items: center;
+  border-radius: var(--r-xs); color: var(--faint);
+}
+.ws-item-people:hover { background: var(--accent-soft); color: var(--accent); }
+
+.ws-sep { height: 1px; margin: 4px 2px; background: var(--line); }
+
+/* Pushes the dialog's buttons right, matching the other dialogs. */
+.ws-spacer { flex: 1; }
+.rail-trash.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+
+/* =============================================================================
+   Artefacts list
+   ========================================================================== */
+
+/* Its own pane beside the rail, sharing the board's scroll container. The
+   column is capped so a wide monitor gives long lines somewhere to stop rather
+   than stretching every row across the screen. */
+.arte-view {
+  flex: 1; min-width: 0; overflow-y: auto;
+  padding: var(--s5) var(--s5) var(--s6);
+}
+/* Full width, with a ceiling.
+   A file list wants the room — the flexible column is the name, which is the
+   one that truncates. But unbounded means a title and its date at opposite ends
+   of an ultrawide row, so it stops at a width a row still reads across. */
+.arte-view > * { max-width: 1320px; margin-left: auto; margin-right: auto; }
+
+.arte-head { margin-bottom: var(--s4); }
+.arte-head h1 { margin: 0 0 4px; font-size: 21px; font-weight: 600; color: var(--ink); }
+.arte-head p { margin: 0; font-size: var(--t-sm); color: var(--muted); }
+
+.arte-controls { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin-bottom: var(--s2); }
+.arte-filters { display: flex; gap: 4px; flex-wrap: wrap; }
+.arte-filter {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface); color: var(--muted);
+  font: inherit; font-size: var(--t-xs); cursor: pointer;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+.arte-filter:hover:not(:disabled) { color: var(--ink); border-color: var(--muted); }
+.arte-filter.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+.arte-filter:disabled { opacity: 0.4; cursor: default; }
+.arte-count { font-variant-numeric: tabular-nums; opacity: 0.75; }
+
+.arte-search {
+  flex: 1; min-width: 150px;
+  padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--ink);
+  font: inherit; font-size: var(--t-sm); outline: none;
+}
+.arte-search:focus { border-color: var(--accent-line); }
+
+/* A file list, in the shape people already know: aligned columns under sortable
+   headers, a small coloured glyph for the kind, dense rows. The earlier version
+   was rows of free-floating text, which read as database output rather than as
+   a list of things you own. */
+.arte-table { margin-top: var(--s2); }
+
+/* One template, shared by the header and every row, so the columns actually
+   line up. Anything else drifts the moment a name gets long. */
+.arte-head-row,
+.arte-tr {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 170px 108px 140px;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.arte-head-row {
+  padding: 0 var(--s2) 6px;
+  border-bottom: 1px solid var(--line-strong);
+}
+.arte-col {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 0; border: 0; background: none;
+  font: inherit; font-size: var(--t-xs); font-weight: 600;
+  letter-spacing: 0.02em; color: var(--muted);
+  text-align: left; cursor: pointer;
+}
+.arte-col.static { cursor: default; }
+.arte-col:not(.static):hover { color: var(--ink); }
+.arte-col.on { color: var(--ink); }
+.arte-caret { font-size: 9px; line-height: 1; }
+
+.arte-rows { list-style: none; margin: 0; padding: 0; }
+
+.arte-tr {
+  position: relative;
+  padding: 0 var(--s2);
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.arte-tr:hover { background: var(--surface-2); }
+.arte-tr:focus-within { background: var(--surface-2); }
+
+.arte-name {
+  display: flex; align-items: center; gap: var(--s2);
+  min-width: 0; padding: 9px 0;
+  text-decoration: none; color: inherit;
+}
+/* Stretched, so the whole row is the hit target without wrapping the mindmap
+   button in a link. */
+.arte-name::after { content: ""; position: absolute; inset: 0; }
+
+/* The kind, as a small coloured mark. Muted rather than saturated: it is there
+   to be told apart at a glance, not to decorate. */
+.arte-icon {
+  flex: 0 0 auto; width: 26px; height: 26px;
+  display: grid; place-items: center;
+  border-radius: var(--r-xs);
+  background: var(--k-soft); color: var(--k-ink);
+}
+.arte-tr.sheet { --k-soft: #e3f1ea; --k-ink: #0f7a57; }
+.arte-tr.doc   { --k-soft: #e3eefb; --k-ink: #17548f; }
+.arte-tr.deck  { --k-soft: #fbf0dd; --k-ink: #8a5a13; }
+.arte-tr.html  { --k-soft: #efe8fa; --k-ink: #5b3ea8; }
+
+.arte-label {
+  min-width: 0; font-size: var(--t-sm); font-weight: 500; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Above the stretched link, so clicking the mindmap goes to the mindmap. */
+.arte-where {
+  position: relative; z-index: 1;
+  justify-self: start; max-width: 100%;
+  padding: 3px 8px;
+  border: 0; border-radius: var(--r-xs);
+  background: none; color: var(--muted);
+  font: inherit; font-size: var(--t-xs); cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.arte-where:hover { background: var(--accent-soft); color: var(--accent); }
+
+.arte-when, .arte-detail {
+  font-size: var(--t-xs); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.arte-when { font-variant-numeric: tabular-nums; }
+
+/* Below the header's breakpoint the two quiet columns are the ones to lose. */
+@media (max-width: 720px) {
+  .arte-head-row, .arte-tr { grid-template-columns: minmax(0, 1fr) 120px; }
+  .arte-when, .arte-detail, .arte-col:nth-child(3), .arte-col.static { display: none; }
+}
+
+
+/* =============================================================================
    Nodes
    ========================================================================== */
 
@@ -362,6 +626,31 @@ h1, h2, h3 { letter-spacing: -0.02em; text-wrap: balance; }
     color var(--fast) var(--ease);
 }
 .card-open:hover { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+
+/* Failure notice, above the tool dock.
+   Sits where the dock is because that is where the hands and the eyes already
+   are after pressing undo, and it is the one place on the canvas guaranteed not
+   to be covered by a card. */
+.board-notice {
+  position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
+  z-index: 60; max-width: min(520px, calc(100% - 2 * var(--s4)));
+  display: flex; align-items: center; gap: var(--s2);
+  padding: 9px var(--s2) 9px var(--s3);
+  border: 1px solid var(--danger-soft); border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--e2);
+  font-size: var(--t-sm); line-height: 1.45; color: var(--ink);
+}
+.board-notice-x {
+  flex: 0 0 auto; width: 20px; height: 20px; padding: 0;
+  display: grid; place-items: center;
+  border: 0; border-radius: var(--r-xs); background: none;
+  color: var(--faint); font-size: 15px; line-height: 1; cursor: pointer;
+}
+.board-notice-x:hover { background: var(--danger-soft); color: var(--danger); }
+/* An artefact's Open is an anchor, not a button, because it opens a new tab and
+   a link is what cmd-click, middle-click and "open in new tab" already know how
+   to do. These four lines are what an <a> needs to sit where a <button> did. */
+a.card-open { display: block; box-sizing: border-box; text-align: center; text-decoration: none; }
 
 .node-x {
   position: absolute; top: 6px; right: 6px;
@@ -582,6 +871,22 @@ h1, h2, h3 { letter-spacing: -0.02em; text-wrap: balance; }
   border-radius: 9px;   /* round the picture instead of clipping the node */
 }
 .node.image .node-x { background: rgb(255 255 255 / 0.92); box-shadow: var(--e1); }
+
+/* Artefacts.
+   A sheet on the board is a label and a count, not a grid. The payload is in
+   R2 and the node only ever had a pointer, so there is nothing here to draw a
+   spreadsheet from — which is what keeps a board of twenty sheets as fast to
+   open as an empty one. */
+.node.artefact { padding-top: var(--s2); }
+.artefact-kind {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-bottom: 4px;
+  font-size: var(--t-xs); font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--faint);
+}
+.node.artefact:hover .artefact-kind,
+.node.artefact.selected .artefact-kind { color: var(--accent); }
+
 
 .react-flow__resize-control.handle {
   width: 9px; height: 9px; border-radius: 2px;
@@ -1168,3 +1473,374 @@ h1, h2, h3 { letter-spacing: -0.02em; text-wrap: balance; }
    clipped by the card, hiding the first few items. A card is 520px with chrome,
    so 190px fits either side of any caret position. */
 .md-doc .milkdown .milkdown-slash-menu .menu-groups { max-height: 190px; }
+
+/* =============================================================================
+   Sheet editor (/sheet/:nodeId)
+   ========================================================================== */
+
+/* Its own route rather than an expanded card: a grid wants the whole window,
+   and a route is what puts the spreadsheet engine behind a lazy boundary. */
+.sheet-page {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column;
+  background: var(--surface);
+}
+
+.sheet-head {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+  /* Above the editor below it, so the share popover is not painted over by a
+     toolbar. z-index alone on the popover could not do this: it sits inside
+     this header, and the editor's chrome builds its own stacking context, so
+     the contest is between these two elements rather than between the popover
+     and the toolbar. */
+  position: relative; z-index: 20;
+}
+.sheet-back {
+  padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--ink-2);
+  font: inherit; font-size: var(--t-sm); cursor: pointer; white-space: nowrap;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+.sheet-back:hover { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+
+.sheet-title {
+  flex: 1; min-width: 0;
+  border: 0; background: none; padding: 0;
+  font: inherit; font-size: var(--t-base); font-weight: 600;
+  color: var(--ink); outline: none;
+}
+
+/* Reassurance, not a control. Nothing here is a button because nothing here
+   needs pressing: the save already happened. */
+.sheet-state {
+  flex: 0 0 auto; font-size: var(--t-xs); color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.sheet-state.busy { color: var(--accent); }
+
+/* The grid takes whatever the toolbar, formula bar and tabs leave. min-height:0
+   is load-bearing — without it a flex child refuses to shrink and the tab strip
+   is pushed off the bottom of the window. */
+/* The inset is here rather than on the editor's own chrome.
+   Padding the toolbar alone moved its icons in but left the toolbar, the
+   formula bar and the grid all running to the window edge, so the editor read
+   as falling off the screen. Padding the container moves the whole editor in
+   together, and the ResizeObserver measures `contentRect`, so the canvas is
+   sized to the inner width and nothing overflows. */
+.sheet-grid {
+  flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden;
+  padding: 0 var(--s3) var(--s3);
+  /*
+   * `z-index: 0` rather than nothing, to make this a stacking context.
+   *
+   * Without it the editor's own z-indices — and Spindle's toolbar carries a
+   * high one — compete directly with the header's, so a popover in the header
+   * loses to a toolbar in the content. Containing them here means the header
+   * only has to outrank this one element, whatever the library does inside it.
+   */
+  z-index: 0;
+}
+
+.sheet-msg { margin: auto; color: var(--muted); font-size: var(--t-sm); }
+
+/* HTML artefacts: source beside the rendered page.
+   Split rather than tabbed because the point of writing a page is watching it
+   change, and a tab you have to click to see that is a tab you stop clicking. */
+.page-split {
+  display: grid; grid-template-columns: minmax(280px, 40%) 1fr;
+  gap: var(--s2); height: 100%; min-height: 0;
+}
+/* Source hidden: the page gets the whole pane. The textarea is removed from the
+   grid rather than merely narrowed, so it cannot be tabbed into while hidden. */
+.page-split.solo { grid-template-columns: 1fr; }
+.page-split.solo .page-source { display: none; }
+
+.page-code-toggle {
+  flex: 0 0 auto; padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--muted);
+  font: inherit; font-size: var(--t-xs); cursor: pointer;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+.page-code-toggle:hover { color: var(--ink); border-color: var(--muted); }
+.page-code-toggle.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+.page-source {
+  min-height: 0; resize: none; padding: var(--s3);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.6; tab-size: 2;
+  outline: none;
+}
+.page-source:focus { border-color: var(--accent-line); background: var(--surface); }
+
+.page-preview {
+  min-height: 0; display: flex;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: #fff; overflow: hidden;
+}
+/* No border on the frame itself: the container draws the edge, and a doubled
+   line reads as a bug in the artefact rather than in the chrome. */
+.page-preview iframe { flex: 1; border: 0; width: 100%; height: 100%; }
+
+@media (max-width: 860px) {
+  .page-split { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+}
+.sheet-err { color: var(--danger); }
+
+
+/* =============================================================================
+   Sharing
+   ========================================================================== */
+
+.share-wrap { position: relative; display: inline-flex; }
+
+.share-pop {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 70;
+  width: min(460px, calc(100vw - 2 * var(--s4)));
+  display: flex; flex-direction: column; gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--e3);
+}
+.share-msg { margin: 0; font-size: var(--t-sm); line-height: 1.55; color: var(--muted); }
+
+/* Two ways to share, told apart by a heading each. The order is the argument:
+   naming a person is the common case, a public URL is the exception. */
+.share-section { display: flex; flex-direction: column; gap: var(--s2); }
+.share-heading {
+  margin: 0; display: flex; flex-direction: column; gap: 2px;
+  font-size: var(--t-xs); font-weight: 600; letter-spacing: 0.03em;
+  text-transform: uppercase; color: var(--faint);
+}
+.share-sub {
+  font-size: var(--t-xs); font-weight: 400; letter-spacing: 0;
+  text-transform: none; color: var(--muted);
+}
+.share-sep { height: 1px; background: var(--line); margin: 2px 0; }
+
+.share-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.share-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; }
+.share-url {
+  grid-column: 1 / -1;
+  padding: 5px 8px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--ink-2);
+  font-family: var(--mono); font-size: var(--t-xs);
+  outline: none;
+}
+/* The buttons sit under the URL rather than beside it: a share URL is long, and
+   squeezing it to fit two buttons makes the one thing you came to copy the one
+   thing you cannot read. */
+.share-row .btn { grid-row: 2; }
+.share-row .btn:first-of-type { grid-column: 2; }
+.share-meta { grid-row: 2; grid-column: 1; align-self: center; font-size: var(--t-xs); color: var(--faint); }
+
+/* =============================================================================
+   Shared view (/v/:token)
+   ========================================================================== */
+
+.shared-page {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column;
+  background: var(--surface);
+}
+.shared-head {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+.shared-title { font-size: var(--t-base); font-weight: 600; color: var(--ink); }
+.shared-badge {
+  padding: 2px 8px; border-radius: var(--r-pill);
+  background: var(--surface-2); color: var(--muted); font-size: var(--t-xs);
+}
+.shared-body { flex: 1 1 auto; min-height: 0; position: relative; padding: 0 var(--s3) var(--s3); }
+.shared-body iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+
+.shared-gone { align-items: center; justify-content: center; text-align: center; padding: var(--s5); }
+.shared-gone h1 { margin: 0 0 6px; font-size: var(--t-lg); color: var(--ink); }
+.shared-gone p { margin: 0; max-width: 46ch; font-size: var(--t-sm); line-height: 1.6; color: var(--muted); }
+
+
+/* =============================================================================
+   Members
+   ========================================================================== */
+
+.members { display: flex; flex-direction: column; gap: var(--s2); }
+
+.members-add { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; }
+.members-email, .members-role {
+  padding: 6px 9px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--ink);
+  font: inherit; font-size: var(--t-sm); outline: none;
+}
+.members-email:focus, .members-role:focus { border-color: var(--accent-line); }
+
+.members-note { margin: 0; font-size: var(--t-xs); color: var(--muted); line-height: 1.5; }
+
+.members-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.members-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: var(--s2);
+  align-items: center; padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.members-row:last-child { border-bottom: 0; }
+/* Pending invitations are access that has not happened yet, so they read as
+   quieter than the people who are actually in. */
+.members-row.pending .members-who { color: var(--muted); }
+
+.members-who {
+  min-width: 0; display: flex; flex-direction: column; gap: 1px;
+  font-size: var(--t-sm); color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.members-email-quiet { font-size: var(--t-xs); color: var(--faint); }
+.members-what { font-size: var(--t-xs); color: var(--muted); white-space: nowrap; }
+
+
+/* Sharing, made visible.
+   A mindmap had no share affordance at all — it lived under the rail's ••• menu
+   with the settings, which is where people look for a name field, not for
+   people. */
+.topbar-share {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--muted);
+  font: inherit; font-size: var(--t-xs); cursor: pointer; white-space: nowrap;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+.topbar-share:hover { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft); }
+/* Already shared reads as a state, not an invitation to act. */
+.topbar-share.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+
+.rail-shared {
+  display: inline-flex; align-items: center; gap: 3px;
+  margin-left: 6px; padding: 1px 5px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft); color: var(--accent);
+  font-size: 10px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- files and folders ---------------------------------------------------
+ *
+ * A list and a form, not an editor. Nothing here is a canvas or a document, so
+ * it borrows the artefact page's chrome and adds only what a file row needs:
+ * the name to recognise it by, the line that says what it is, and a way out to
+ * the bytes.
+ */
+
+.files {
+  flex: 1;
+  overflow: auto;
+  padding: var(--s5) clamp(1rem, 6vw, 4rem);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+}
+
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s3) var(--s2);
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+}
+
+.file-row:hover { background: var(--surface-2); border-color: var(--line); }
+
+.file-main { flex: 1; min-width: 0; }
+
+.file-name {
+  display: block;
+  font-size: var(--t-sm);
+  font-weight: 500;
+  /* A filename is the one string here that must not be reflowed into
+   * something unrecognisable — it is how the file is identified. */
+  word-break: break-all;
+}
+
+.file-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+.file-desc {
+  margin: 6px 0 0;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.file-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-shrink: 0;
+}
+
+.file-x {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+}
+
+.file-x:hover { color: var(--danger); background: var(--danger-soft); }
+
+.file-upload {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  align-items: flex-start;
+  padding-top: var(--s5);
+  border-top: 1px solid var(--line);
+}
+
+.file-desc-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: min(100%, 34rem);
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+.file-desc-input {
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.file-desc-input:focus { outline: none; border-color: var(--accent-line); }

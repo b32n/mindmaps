@@ -140,10 +140,14 @@ export async function createStarterBoard(
     const statements = [
       db
         .prepare(
-          `INSERT INTO boards (id,name,status,parent_id,node_id,created_at,updated_at,user_id,position,idem_key)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`,
+          // The personal workspace shares the user's id, so it can be named
+          // here without a lookup. The trigger on `boards` refuses a row
+          // without one, which is how this was caught: the starter board went
+          // missing for every new account while registration still succeeded.
+          `INSERT INTO boards (id,name,status,parent_id,node_id,created_at,updated_at,user_id,position,idem_key,workspace_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
         )
-        .bind(boardId, "Start here", "active", null, null, t, t, userId, 0, BOARD_KEY),
+        .bind(boardId, "Start here", "active", null, null, t, t, userId, 0, BOARD_KEY, userId),
 
       ...rows.map((c) => {
         const blocks: Block[] = markdownToBlocks(c.md);

@@ -8,6 +8,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@b32nio/spindle-docs-core": "^0.3.1",
+    "@b32nio/spindle-docs-react": "^0.3.1",
+    "@b32nio/spindle-shared": "^0.3.1",
+    "@b32nio/spindle-sheets-core": "^0.3.1",
+    "@b32nio/spindle-sheets-react": "^0.3.1",
+    "@b32nio/spindle-slides-core": "^0.3.1",
+    "@b32nio/spindle-slides-react": "^0.3.1",
     "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-sql": "^6.10.0",
