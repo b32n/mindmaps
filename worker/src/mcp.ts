@@ -467,10 +467,14 @@ const TOOLS = [
           type: "string",
           description: "The mindmap to put it on. Ignored when folder_id is given.",
         },
-        folder_id: {
+        folder: {
           type: "string",
           description:
-            "Add to an existing folder instead of making a new card. Use this when several files belong together — they then share one place on the board and one set of permissions.",
+            "Put it in a folder of this name on the mindmap, creating the folder the first time. Use the same name across calls when several files belong together — they then share one place on the board and one set of permissions, instead of scattering a card each.",
+        },
+        folder_id: {
+          type: "string",
+          description: "An existing folder's card id, when you already have one.",
         },
         name: { type: "string", description: "The filename, with its extension." },
         content: { type: "string", description: "The file's text. Use this for anything textual." },
@@ -2962,6 +2966,63 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
       await writeDenial(env, userId, "mindmap", String(args?.mindmap_id ?? "")),
       true,
     );
+
+  /*
+   * A folder named rather than identified.
+   *
+   * An agent producing several related files has a name for the set long
+   * before it has a card id, and making it call a separate tool first — then
+   * remember the id across turns — is how a folder per file happens instead.
+   * Matching on title means the second call lands in the folder the first one
+   * made, which is the same idiom as `key` on create_artefact.
+   */
+  const folderName = String(args?.folder ?? "").trim();
+  if (folderName) {
+    const found = await env.DB.prepare(
+      `SELECT id, title FROM nodes WHERE board_id = ? AND type = 'folder' AND title = ? LIMIT 1`,
+    )
+      .bind(board.id, folderName)
+      .first<{ id: string; title: string }>();
+
+    let folderNodeId = found?.id;
+    if (!folderNodeId) {
+      folderNodeId = crypto.randomUUID();
+      const { results: onBoard } = await env.DB.prepare(
+        `SELECT id, y, h FROM nodes WHERE board_id = ?`,
+      )
+        .bind(board.id)
+        .all<any>();
+      const placed = prepare([{ key: "a0", type: "card", title: folderName }], [], (n, e) =>
+        layoutBelow(n, e, onBoard ?? []),
+      ).rows[0];
+
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at)
+           VALUES (?,?,'folder',?,'',NULL,?,?,260,150,'{}',?,?)`,
+        ).bind(folderNodeId, board.id, folderName, placed.x, placed.y, now(), now()),
+        env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id),
+      ]);
+    }
+
+    try {
+      const row = await storeFile(env as any, {
+        nodeId: folderNodeId, kind: "folder", title: folderName,
+        name, contentType, description, size: bytes.byteLength,
+        uploadedBy: userId, source: bytes,
+      });
+      await reindex(env, userId, folderNodeId);
+      return toolText(
+        `Added **${row.name}** (${readableSize(row.size)}) to ${folderName}` +
+          `${found ? "" : " — a new folder"} on ${board.name}.\n\ncard id: \`${folderNodeId}\`\nfile id: \`${row.id}\``,
+      );
+    } catch (err: any) {
+      // A folder this call just made, left empty by a refused upload, is
+      // litter. One that was already there stays: it is not ours to remove.
+      if (!found) await env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(folderNodeId).run();
+      return toolText(String(err?.message ?? err), true);
+    }
+  }
 
   const nodeId = crypto.randomUUID();
   const { results: existing } = await env.DB.prepare(`SELECT id, y, h FROM nodes WHERE board_id = ?`)

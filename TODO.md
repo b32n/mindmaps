@@ -266,6 +266,10 @@ CSV's contents.
   folder that large wants to be several.
 - **No reparenting.** Moving a loose `file` into a `folder` is a convert-and-
   delete, not a move, because a file inside a folder has no node id.
+- **Agents cannot make an empty folder.** `put_file` takes `folder: "<name>"`
+  and creates it on first use, which covers the real case; there is no tool for
+  a folder with nothing in it, and `create_artefact` deliberately does not list
+  the kind.
 - **MCP uploads cap at 1 MB.** Base64 through a tool call is context, not
   storage. Bigger files want the app, and the refusal says so.
 
