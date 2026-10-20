@@ -22,8 +22,8 @@
 
 import { blocksToMarkdown, normaliseContent, parseDoc, progressOf } from "./markdown";
 import {
-  handlesFor, isDirection, layout, layoutBelow,
-  type Direction, type LayoutEdge, type LayoutNode,
+  handlesFor, isDirection, layout, placeBlock,
+  type Direction, type ExistingNode, type LayoutEdge, type LayoutNode, type PlaceResult,
 } from "./layout";
 import {
   ARTEFACT_SCHEMAS, INDEXABLE_SQL, isArtefact, payloadFromInput, putArtefact, type ArtefactKind,
@@ -35,7 +35,7 @@ import {
 import {
   fileById, filesOf, isFileKind, isTextual, storeFile, type FileRow,
 } from "./files";
-import { fileUrl } from "./mindbox";
+import { fileUrl, frameUrl } from "./mindbox";
 import { isSupersedeLabel, neighbourhood, neighbourhoods, supersededSet, type Neighbour } from "./graph";
 import {
   indexCard, removeCards, rerankScores, semanticReady, similarChunks, type SemanticEnv,
@@ -250,7 +250,7 @@ const TOOLS = [
   },
   {
     name: "create_mindmap",
-    description: "Create a mindmap from a graph you describe. Supply nodes and the labelled edges between them; positions are computed here, so do not invent coordinates. Pass a `key` if you might record this topic again — a second call with the same key updates rather than duplicating.",
+    description: "Create a mindmap for a subject with no home yet — the rare case, and refused unless you called recall first. Supply nodes and the labelled edges between them; positions are computed here, so do not invent coordinates. Pass a `key` if you might record this topic again — a second call with the same key updates rather than duplicating.",
     inputSchema: {
       type: "object",
       properties: {
@@ -417,7 +417,7 @@ const TOOLS = [
         html: {
           type: "string",
           description:
-            "html only. A complete HTML document. It renders sandboxed on a separate origin with no network access at all, so inline every script and style and embed images as data URIs — a remote <script src> or a fetch() will be blocked. Put the point of the page in visible text, since that is what search reads.",
+            "html only. A complete HTML document. It renders sandboxed on a separate origin with no network access at all, so inline every script and style and embed images as data URIs — a remote <script src> or a fetch() will be blocked. Put the point of the page in visible text, since that is what search reads. A signed URL comes back: render it to show the page.",
         },
         key: {
           type: "string",
@@ -531,6 +531,12 @@ const TOOLS = [
         mindmap_id: { type: "string" },
         title: { type: "string" },
         content: { type: "string", description: CONTENT_DESC },
+        connect_to: {
+          type: "string",
+          description:
+            "The card id this one follows from. Pass it whenever there is one: it draws the link and places the card beside it rather than off on its own.",
+        },
+        label: { type: "string", description: "How they relate, e.g. blocks, informs." },
         key: {
           type: "string",
           description: "Stable name for this card. Re-adding with the same key updates it instead of creating a second copy.",
@@ -720,15 +726,19 @@ export async function handleMcp(
   }
 }
 
-const INSTRUCTIONS = `Mindmaps are spatial maps of cards; each card holds a markdown document. Use them as memory that outlives this session.
+const INSTRUCTIONS = `Mindmaps are spatial maps of cards, each holding a markdown document: memory that outlives this session.
 
-**Pass a stable \`key\` on anything you might write again.** Re-running a summary without keys leaves a second near-identical mindmap behind, and the memory gets worse each time; with keys the same run converges on what is already there.
+**Call recall first.** One call searches everything and follows the links out from what it finds, so it answers "what do I already know about this" before you start.
 
-**Call recall first.** It searches everything and follows the links out from what it finds, so it answers "what do I already know about this" in one call.
+**Then write where it belongs.** Every match names the mindmap it came from; extend that one. A mindmap is a subject someone returns to over weeks, a card is one thing learned — when it could go either way, add a card to a map that exists. Describe every mindmap you create: that sentence is what later decides whether a new card belongs there.
 
-**Then put what you write where it belongs.** Every recall match names the mindmap it came from, so extend that one with add_to_mindmap or add_card. If nothing matched, check list_mindmaps for an existing home before you create anything — each map's description says what belongs on it, which is what makes that choice answerable rather than a guess. Give every mindmap you create a description, and fix one that has gone stale with update_mindmap. Reserve create_mindmap for a genuinely new subject, not for every new fact: a mindmap is a topic someone returns to over weeks, a card is one thing learned. When it could go either way, add a card to a mindmap that already exists. A brain full of one-card mindmaps is as useless as a brain with one enormous one.
+**Pass a stable \`key\`** on anything you might record again, so a second run updates it instead of leaving a near-duplicate.
 
-Links carry the reasoning — blocks, informs, supersedes — and they may join cards on *different* mindmaps. Use link_cards when something you are recording relates to a card elsewhere; that cross-topic connection is what makes this a brain rather than a filing cabinet.
+**Write before you reply, not after.** If this session produced something the next would have to redo — an investigation, a decision and why, a dead end, a correction to something recall got wrong, a preference the user stated — record it unasked. Not what the repo or git history already says; not what is only true this turn; nothing you cannot describe in one line.
+
+**Artefacts live here too** — sheets, documents, decks, pages, files. Build them with create_artefact rather than elsewhere, and render the signed URL an html artefact hands back.
+
+Links carry the reasoning — blocks, informs, supersedes — and may join cards on *different* mindmaps. That cross-topic link is what makes this a brain rather than a filing cabinet.
 
 Write prose as markdown; positions are computed for you.`;
 
@@ -1324,22 +1334,109 @@ interface IncomingNode {
   content?: unknown;
 }
 
+/**
+ * Everything the placer needs to know about a board, in one round trip.
+ *
+ * Six write tools used to each run their own `SELECT id, y, h` and hand the
+ * result to a layout that put new cards below all of it. They now share this,
+ * because anchor-aware placement needs strictly more: `x`/`w` to know what
+ * space is actually free, `data` to know what a human has arranged, and the
+ * edges to know which cards form a component.
+ */
+interface Surface {
+  existing: ExistingNode[];
+  existingEdges: LayoutEdge[];
+  /** card ids on this board, for resolving an edge endpoint that is not a new key */
+  present: Set<string>;
+}
+
+/** A card a human dragged, or a node that was never part of the graph. */
+const isFixed = (row: any): boolean => {
+  if (row?.type !== "card" && row?.type !== "note") return true;
+  try {
+    return JSON.parse(String(row?.data || "{}"))?.placed === "hand";
+  } catch {
+    // Unparseable `data` is not a reason to move someone's card.
+    return true;
+  }
+};
+
+async function boardSurface(env: McpEnv, boardId: string): Promise<Surface> {
+  const [nodes, edges] = await Promise.all([
+    env.DB.prepare(`SELECT id, type, x, y, w, h, data FROM nodes WHERE board_id = ?`)
+      .bind(boardId)
+      .all<any>(),
+    // Only links with both ends here describe a component on this canvas; one
+    // reaching off-board has no second position to arrange against.
+    env.DB.prepare(
+      `SELECT e.source_id, e.target_id
+         FROM edges e
+         JOIN nodes sn ON sn.id = e.source_id
+         JOIN nodes tn ON tn.id = e.target_id
+        WHERE sn.board_id = ? AND tn.board_id = ?`,
+    )
+      .bind(boardId, boardId)
+      .all<any>(),
+  ]);
+
+  const rows = nodes.results ?? [];
+  return {
+    existing: rows.map((n) => ({
+      id: String(n.id),
+      x: Number(n.x ?? 0),
+      y: Number(n.y ?? 0),
+      w: Number(n.w ?? 260),
+      h: Number(n.h ?? 150),
+      fixed: isFixed(n),
+    })),
+    existingEdges: (edges.results ?? []).map((e) => ({
+      from: String(e.source_id),
+      to: String(e.target_id),
+    })),
+    present: new Set(rows.map((n) => String(n.id))),
+  };
+}
+
+/**
+ * The placer every write tool uses, curried over one board's surface.
+ *
+ * `reflow` is off for the single-card callers: a lone card with no edges has no
+ * component to rebuild, so asking is pointless, and it keeps the blast radius
+ * of a `put_file` to the file it is adding.
+ */
+const placerFor = (surface: Surface, direction: Direction, reflow: boolean) =>
+  (nodes: LayoutNode[], edges: LayoutEdge[]): PlaceResult =>
+    placeBlock(nodes, edges, {
+      direction,
+      existing: surface.existing,
+      existingEdges: surface.existingEdges,
+      reflowComponent: reflow,
+    });
+
 /** Turn the agent's nodes+edges into rows, with positions computed here. */
-function prepare(nodes: IncomingNode[], edges: any[], place: (n: LayoutNode[], e: LayoutEdge[]) => ReturnType<typeof layout>) {
+function prepare(
+  nodes: IncomingNode[],
+  edges: any[],
+  place: (n: LayoutNode[], e: LayoutEdge[]) => PlaceResult,
+) {
   // A key is how edges refer to a node. Agents forget; fall back to the index
   // so a missing key degrades to "no edges for this node" rather than an error.
   const withKeys = nodes.map((n, i) => ({ ...n, key: String(n.key ?? `n${i}`) }));
+  // Endpoints that are existing card ids are passed through untouched: the
+  // placer wants them, because they are what the new work attaches to.
   const laid = place(
     withKeys.map((n) => ({ key: n.key })),
     (edges ?? [])
       .filter((e) => e && e.from && e.to)
       .map((e) => ({ from: String(e.from), to: String(e.to) })),
   );
-  const posOf = new Map(laid.map((p) => [p.key, p]));
+  const posOf = new Map(laid.placed.map((p) => [p.key, p]));
 
   const rows = withKeys.map((n) => {
     const { doc, body } = normaliseContent(n.content);
-    const pos = posOf.get(n.key) ?? { x: 80, y: 80 };
+    // The placer returns a position for every key it was given, so a miss here
+    // would be a bug rather than a case to paper over with the origin.
+    const pos = posOf.get(n.key) ?? { x: ORIGIN_FALLBACK, y: ORIGIN_FALLBACK };
     const type = n.type === "note" ? "note" : "card";
     return {
       id: uuid(),
@@ -1354,8 +1451,23 @@ function prepare(nodes: IncomingNode[], edges: any[], place: (n: LayoutNode[], e
     };
   });
 
-  return { rows, keyToId: new Map(rows.map((r) => [r.key, r.id])) };
+  return {
+    rows,
+    keyToId: new Map(rows.map((r) => [r.key, r.id])),
+    /** existing cards the placer wants to move, when it rebuilt a component */
+    moved: laid.moved,
+  };
 }
+
+/** Only reachable if the placer broke its contract; distinctive enough to spot on a board. */
+const ORIGIN_FALLBACK = 80;
+
+/** `UPDATE` statements for the cards a rebuilt component shifted. */
+const moveStmts = (env: McpEnv, moved: Array<{ key: string; x: number; y: number }>) =>
+  moved.map((m) =>
+    env.DB.prepare(`UPDATE nodes SET x = ?, y = ?, updated_at = ? WHERE id = ?`)
+      .bind(m.x, m.y, now(), m.key),
+  );
 
 const insertNodeStmt = (
   env: McpEnv,
@@ -1417,6 +1529,42 @@ const insertEdgeStmt = (
 const directionOf = (args: any): Direction =>
   isDirection(args?.direction) ? args.direction : "right";
 
+/**
+ * How recently a recall has to have happened for `create_mindmap` to be allowed.
+ *
+ * Long enough to cover a session that recalled, went away and did a lot of
+ * work before deciding it had something new; short enough that it is a real
+ * precondition rather than a formality satisfied once a week.
+ */
+const RECALL_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * The homes a new card could go to instead, newest first.
+ *
+ * Used in two places and for one purpose: to turn "do not create a mindmap for
+ * every fact" from advice in a preamble that is read once into a sentence that
+ * arrives at the moment the choice is being made. A list of names and the
+ * descriptions that say what belongs on them is what makes the choice
+ * answerable rather than a guess.
+ */
+async function candidateHomes(env: McpEnv, userId: string, limit = 6): Promise<string> {
+  const { results } = await env.DB.prepare(
+    `SELECT b.name, b.description
+       FROM boards b
+      WHERE ${BOARD_READABLE} AND b.status != 'trashed' AND b.parent_id IS NULL
+      ORDER BY b.updated_at DESC
+      LIMIT ?`,
+  )
+    .bind(userId, userId, limit)
+    .all<any>();
+
+  const rows = results ?? [];
+  if (!rows.length) return "";
+  return rows
+    .map((b) => `- **${b.name}**${b.description ? ` — ${b.description}` : ""}`)
+    .join("\n");
+}
+
 async function createMindmap(env: McpEnv, userId: string, args: any, clientId?: string) {
   const name = String(args?.name ?? "").trim();
   if (!name) return toolText("A name is required.", true);
@@ -1438,8 +1586,44 @@ async function createMindmap(env: McpEnv, userId: string, args: any, clientId?: 
 
   if (prior) return await mergeIntoMindmap(env, userId, prior.id, name, args, clientId);
 
+  /*
+   * From here a genuinely new mindmap is about to exist, and it is only the
+   * right answer when nothing already here could hold this. The only way to
+   * know that is to have looked.
+   *
+   * Checked after the key lookup above, not before it: a keyed re-run is the
+   * safe, converging path and must stay callable without ceremony. A *first*
+   * create is gated whether it carries a key or not.
+   *
+   * Enforced rather than asked for, because asking has not worked — the
+   * preamble has said this since the server shipped and maps still arrive one
+   * fact at a time. The refusal costs tokens only when the agent was about to
+   * get it wrong, and it carries the real alternatives, which is the part that
+   * makes the next call right.
+   */
+  const looked = await env.DB.prepare(
+    `SELECT 1 FROM recall_queries WHERE user_id = ? AND at > ? LIMIT 1`,
+  )
+    .bind(userId, now() - RECALL_WINDOW_MS)
+    .first();
+
+  if (!looked) {
+    const homes = await candidateHomes(env, userId);
+    return toolText(
+      "Call `recall` before creating a mindmap — a second map on a subject you already have is the one mistake here that editing cannot undo." +
+        (homes
+          ? `\n\nMindmaps that already exist:\n${homes}\n\nIf one of these is the home, use add_card or add_to_mindmap instead.`
+          : ""),
+      true,
+    );
+  }
+
   const boardId = uuid();
-  const { rows, keyToId } = prepare(nodes, args?.edges ?? [], (n, e) => layout(n, e, direction));
+  // A new board is empty, so there is nothing to pack around and no
+  // component to rebuild; the graph lands exactly where `layout` puts it.
+  const { rows, keyToId } = prepare(nodes, args?.edges ?? [], (n, e) =>
+    placeBlock(n, e, { direction }),
+  );
 
   const top = await env.DB.prepare(
     `SELECT COALESCE(MIN(position), 0) AS top FROM boards WHERE user_id = ? AND parent_id IS NULL`,
@@ -1517,16 +1701,14 @@ async function mergeIntoMindmap(
   const nodes: IncomingNode[] = Array.isArray(args?.nodes) ? args.nodes : [];
   const direction = directionOf(args);
 
-  const { results: onBoard } = await env.DB.prepare(
-    `SELECT id, y, h FROM nodes WHERE board_id = ?`,
-  )
-    .bind(boardId)
-    .all<any>();
+  const surface = await boardSurface(env, boardId);
 
-  // New cards land below what is already there, so a re-run never rearranges a
-  // board the user has since tidied.
-  const { rows, keyToId } = prepare(nodes, args?.edges ?? [], (n, e) =>
-    layoutBelow(n, e, onBoard ?? [], direction),
+  // New cards land beside whatever they connect to, in space that is actually
+  // free. A component someone has arranged by hand is never disturbed.
+  const { rows, keyToId, moved } = prepare(
+    nodes,
+    args?.edges ?? [],
+    placerFor(surface, direction, true),
   );
 
   const existing = await existingByKey(env, boardId, rows.map((r) => r.key));
@@ -1539,7 +1721,7 @@ async function mergeIntoMindmap(
   const resolved = new Map<string, string>();
   rows.forEach((r, i) => resolved.set(r.key, ids[i]));
 
-  const present = new Set((onBoard ?? []).map((n) => n.id));
+  const present = surface.present;
   const pairs: Array<[string, string]> = [];
   for (const e of args?.edges ?? []) {
     const from = resolved.get(String(e?.from)) ?? (present.has(String(e?.from)) ? String(e.from) : null);
@@ -1561,6 +1743,9 @@ async function mergeIntoMindmap(
       newLinks += 1;
     }
   }
+
+  // Cards the placer shifted while rebuilding a component it had made itself.
+  stmts.push(...moveStmts(env, moved));
 
   stmts.push(
     env.DB.prepare(`UPDATE boards SET name = ?, updated_at = ? WHERE id = ?`)
@@ -1587,16 +1772,14 @@ async function addToMindmap(env: McpEnv, userId: string, args: any, clientId?: s
   const nodes: IncomingNode[] = Array.isArray(args?.nodes) ? args.nodes : [];
   if (!nodes.length) return toolText("At least one node is required.", true);
 
-  const { results: existing } = await env.DB.prepare(
-    `SELECT id, y, h FROM nodes WHERE board_id = ?`,
-  )
-    .bind(board.id)
-    .all<any>();
-  const present = new Set((existing ?? []).map((n) => n.id));
+  const surface = await boardSurface(env, board.id);
+  const present = surface.present;
 
   const direction = directionOf(args);
-  const { rows } = prepare(nodes, args?.edges ?? [], (n, e) =>
-    layoutBelow(n, e, existing ?? [], direction),
+  const { rows, moved } = prepare(
+    nodes,
+    args?.edges ?? [],
+    placerFor(surface, direction, true),
   );
 
   // Keys are opt-in per call: pass them and a repeat run updates, omit them and
@@ -1624,6 +1807,9 @@ async function addToMindmap(env: McpEnv, userId: string, args: any, clientId?: s
     stmts.push(insertEdgeStmt(env, from, to, String(e?.label ?? ""), direction));
     linked += 1;
   }
+
+  // Cards the placer shifted while rebuilding a component it had made itself.
+  stmts.push(...moveStmts(env, moved));
 
   stmts.push(env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id));
   await env.DB.batch(stmts);
@@ -1713,6 +1899,27 @@ const kindOf = (raw: unknown): ArtefactKind =>
  * recording. The payload goes to R2, the row keeps a pointer and the snapshot
  * (ARTEFACTS.md §3).
  */
+/**
+ * The line that lets an agent actually *show* an HTML artefact it just wrote.
+ *
+ * Storing a page and rendering it used to be two different things an agent had
+ * to know about; the second one it had no way to do at all, because the frame
+ * URL is minted by the app at render time and never travelled back through
+ * this server. Handing it over here makes "keep it" and "show it" one call.
+ *
+ * It is a real credential, so it is worth being plain about its shape: one
+ * hour, one node, read-only, on an origin with no session cookie and
+ * `connect-src 'none'`. `put_file` already hands out the same kind of thing.
+ *
+ * Absent `MINDBOX_SECRET` there is no URL to mint — local development, where
+ * there is only one origin — so the line is omitted rather than broken.
+ */
+async function frameLine(env: McpEnv, kind: ArtefactKind, nodeId: string): Promise<string> {
+  if (kind !== "html") return "";
+  const url = await frameUrl(env as any, nodeId);
+  return url ? `\n\nRender this in your canvas (expires in an hour): ${url}` : "";
+}
+
 async function createArtefact(env: McpEnv, userId: string, args: any) {
   const board = await writableBoard(env, userId, String(args?.mindmap_id ?? ""));
   if (!board) return toolText(await writeDenial(env, userId, "mindmap", String(args?.mindmap_id ?? "")), true);
@@ -1749,19 +1956,16 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
     ]);
     await reindex(env, userId, nodeId);
     return toolText(
-      `Updated **${title}** on ${board.name} — an artefact with key \`${key}\` was already there, so nothing was duplicated.\n\ncard id: \`${nodeId}\``,
+      `Updated **${title}** on ${board.name} — an artefact with key \`${key}\` was already there, so nothing was duplicated.\n\ncard id: \`${nodeId}\`` +
+        (await frameLine(env, kind, nodeId)),
     );
   }
 
-  const { results: existing } = await env.DB.prepare(
-    `SELECT id, y, h FROM nodes WHERE board_id = ?`,
-  )
-    .bind(board.id)
-    .all<any>();
+  const surface = await boardSurface(env, board.id);
   const { rows } = prepare(
     [{ key: key || "a0", type: "card", title }],
     [],
-    (n, e) => layoutBelow(n, e, existing ?? []),
+    placerFor(surface, "right", false),
   );
   const at = rows[0];
 
@@ -1778,7 +1982,8 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
   await reindex(env, userId, nodeId);
 
   return toolText(
-    `Added **${title}** to ${board.name}: ${spec.count(stored.data)}.\n\ncard id: \`${nodeId}\``,
+    `Added **${title}** to ${board.name}: ${spec.count(stored.data)}.\n\ncard id: \`${nodeId}\`` +
+      (await frameLine(env, kind, nodeId)),
   );
 }
 
@@ -1814,24 +2019,31 @@ async function updateArtefact(env: McpEnv, userId: string, args: any) {
     .run();
   await reindex(env, userId, node.id);
 
-  return toolText(`Rewrote **${title}**: ${spec.count(stored.data)}.`);
+  return toolText(
+    `Rewrote **${title}**: ${spec.count(stored.data)}.` + (await frameLine(env, kind, node.id)),
+  );
 }
 
 async function addCard(env: McpEnv, userId: string, args: any, clientId?: string) {
   const board = await writableBoard(env, userId, String(args?.mindmap_id ?? ""));
   if (!board) return toolText(await writeDenial(env, userId, "mindmap", String(args?.mindmap_id ?? "")), true);
 
-  const { results: existing } = await env.DB.prepare(
-    `SELECT id, y, h FROM nodes WHERE board_id = ?`,
-  )
-    .bind(board.id)
-    .all<any>();
+  const surface = await boardSurface(env, board.id);
 
   const cardKey = String(args?.key ?? "").trim();
+  /*
+   * `connect_to` is what makes a single card placeable.
+   *
+   * Without it every `add_card` is an orphan, and an orphan has nothing to sit
+   * next to — which is how the most common write an agent makes ended up being
+   * the one that landed furthest from the thinking it came from.
+   */
+  const connectTo = String(args?.connect_to ?? "").trim();
+  const anchored = connectTo && surface.present.has(connectTo);
   const { rows } = prepare(
     [{ key: cardKey || "n0", type: "card", title: args?.title, content: args?.content }],
-    [],
-    (n, e) => layoutBelow(n, e, existing ?? []),
+    anchored ? [{ from: connectTo, to: cardKey || "n0" }] : [],
+    placerFor(surface, "right", false),
   );
 
   // A keyed card that is already here is restated, not duplicated. Position and
@@ -1854,11 +2066,21 @@ async function addCard(env: McpEnv, userId: string, args: any, clientId?: string
 
   await env.DB.batch([
     insertNodeStmt(env, board.id, rows[0], dataFor(args, clientId), cardKey || null),
+    ...(anchored
+      ? [insertEdgeStmt(env, connectTo, rows[0].id, String(args?.label ?? ""), "right")]
+      : []),
     env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id),
   ]);
   await reindex(env, userId, rows[0].id);
 
-  return toolText(`Added **${rows[0].title || "(untitled)"}** to ${board.name}.\n\ncard id: \`${rows[0].id}\``);
+  return toolText(
+    `Added **${rows[0].title || "(untitled)"}** to ${board.name}` +
+      (anchored ? `, linked from \`${connectTo}\`` : "") +
+      // Naming an unknown card is a typo worth surfacing: the card is saved
+      // either way, but it is sitting on its own and the agent should know.
+      (connectTo && !anchored ? `. \`${connectTo}\` is not on this mindmap, so no link was drawn` : "") +
+      `.\n\ncard id: \`${rows[0].id}\``,
+  );
 }
 
 async function updateCard(env: McpEnv, userId: string, args: any) {
@@ -2012,7 +2234,7 @@ async function relayoutMindmap(env: McpEnv, userId: string, args: any) {
   const direction: Direction = args.direction;
 
   const [nodesRes, edgesRes] = await Promise.all([
-    env.DB.prepare(`SELECT id,type,w,h FROM nodes WHERE board_id = ?`).bind(board.id).all<any>(),
+    env.DB.prepare(`SELECT id,type,x,y,w,h FROM nodes WHERE board_id = ?`).bind(board.id).all<any>(),
     // Only links with both ends here shape this board's layout; one reaching
     // off-canvas has no second position to arrange against.
     env.DB.prepare(
@@ -2038,11 +2260,36 @@ async function relayoutMindmap(env: McpEnv, userId: string, args: any) {
     direction,
   );
 
+  /*
+   * This is the one tool that overrules a hand-placed card, and it clears the
+   * flag as it goes.
+   *
+   * Everywhere else, a card someone dragged is immovable. Here the whole
+   * contract is "rearrange this map", and honouring the flag would make the
+   * tool a no-op on exactly the boards that most need it — the ones that have
+   * been poked at. Leaving the flag set afterwards would also be a lie: those
+   * cards are machine-placed now.
+   *
+   * Only `card` and `note` are in `movable`, so ink and images keep both their
+   * coordinates and their flag. They are annotations over the top of a map,
+   * not part of the graph.
+   */
+  const was = new Map(movable.map((n) => [String(n.id), { x: Number(n.x ?? 0), y: Number(n.y ?? 0) }]));
+  const shifted = placed.filter((p) => {
+    const before = was.get(p.key);
+    return !before || before.x !== Math.round(p.x) || before.y !== Math.round(p.y);
+  });
+
   const h = handlesFor(direction);
   const stmts = [
-    ...placed.map((p) =>
-      env.DB.prepare(`UPDATE nodes SET x = ?, y = ?, updated_at = ? WHERE id = ?`)
-        .bind(Math.round(p.x), Math.round(p.y), now(), p.key),
+    ...shifted.map((p) =>
+      env.DB.prepare(
+        `UPDATE nodes
+            SET x = ?, y = ?,
+                data = json_remove(CASE WHEN json_valid(data) THEN data ELSE '{}' END, '$.placed'),
+                updated_at = ?
+          WHERE id = ?`,
+      ).bind(Math.round(p.x), Math.round(p.y), now(), p.key),
     ),
     ...edges.map((e) =>
       env.DB.prepare(`UPDATE edges SET source_handle = ?, target_handle = ? WHERE id = ?`)
@@ -2054,7 +2301,8 @@ async function relayoutMindmap(env: McpEnv, userId: string, args: any) {
 
   return toolText(
     `Rearranged **${board.name}** to flow ${direction === "down" ? "top-to-bottom" : "left-to-right"}: ` +
-      `${placed.length} card${placed.length === 1 ? "" : "s"} moved, ` +
+      `${shifted.length} card${shifted.length === 1 ? "" : "s"} moved` +
+      `${placed.length - shifted.length ? ` (${placed.length - shifted.length} already in place)` : ""}, ` +
       `${edges.length} link${edges.length === 1 ? "" : "s"} re-attached.`,
   );
 }
@@ -2425,12 +2673,22 @@ async function recall(env: McpEnv, userId: string, args: any) {
 
   if (!hits.length) {
     await logRecall(env, userId, query, scope, 0, 0);
+    /*
+     * The decision this result leads to is "where does this go", so answer it
+     * here rather than leaving it to a preamble read once at the start of the
+     * session. Naming the maps and what each is for is what makes the choice
+     * answerable; "check list_mindmaps" is another call and a guess.
+     */
+    const homes = await candidateHomes(env, userId);
     return toolText(
       `Nothing recorded about "${query}".` +
         (degraded
           ? `\n\n_Note: the semantic index is unavailable (${degraded}), so anything older than a few minutes was searched by wording alone — a card may exist that this could not reach._`
           : "") +
-        "\n\nThis is the moment to write it down: create_mindmap for a new topic, or add_card to something list_mindmaps already shows.",
+        "\n\nThis is the moment to write it down." +
+        (homes
+          ? `\n\nClosest homes:\n${homes}\n\nAdd a card to whichever of these it belongs on. create_mindmap only if this is genuinely a subject of its own.`
+          : " Nothing exists yet, so create_mindmap is the right call."),
     );
   }
 
@@ -2458,6 +2716,14 @@ async function recall(env: McpEnv, userId: string, args: any) {
   out.push(
     `_${hits.length} of ${found} matches shown, across ${across} mindmap${across === 1 ? "" : "s"}.` +
       ` get_card for a full document, get_context to walk further out._`,
+  );
+  // Every match names its mindmap above, so the home is already decided —
+  // say so once rather than letting a thin result drift into a new map.
+  out.push(
+    "",
+    `_Anything you record from this session belongs on ${
+      across === 1 ? `*${hits[0].board_name}*` : "one of the mindmaps named above"
+    } — add_card or add_to_mindmap, not a new map._`,
   );
   // Precise about *what* was lost. "Wording only" was true before the fresh
   // pass existed; now a failed index still leaves recently written cards
@@ -2987,13 +3253,11 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
     let folderNodeId = found?.id;
     if (!folderNodeId) {
       folderNodeId = crypto.randomUUID();
-      const { results: onBoard } = await env.DB.prepare(
-        `SELECT id, y, h FROM nodes WHERE board_id = ?`,
-      )
-        .bind(board.id)
-        .all<any>();
-      const placed = prepare([{ key: "a0", type: "card", title: folderName }], [], (n, e) =>
-        layoutBelow(n, e, onBoard ?? []),
+      const surface = await boardSurface(env, board.id);
+      const placed = prepare(
+        [{ key: "a0", type: "card", title: folderName }],
+        [],
+        placerFor(surface, "right", false),
       ).rows[0];
 
       await env.DB.batch([
@@ -3025,13 +3289,11 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
   }
 
   const nodeId = crypto.randomUUID();
-  const { results: existing } = await env.DB.prepare(`SELECT id, y, h FROM nodes WHERE board_id = ?`)
-    .bind(board.id)
-    .all<any>();
+  const surface = await boardSurface(env, board.id);
   const { rows } = prepare(
     [{ key: "a0", type: "card", title: name }],
     [],
-    (n, e) => layoutBelow(n, e, existing ?? []),
+    placerFor(surface, "right", false),
   );
   const at = rows[0];
 

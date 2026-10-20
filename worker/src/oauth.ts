@@ -74,7 +74,7 @@ const now = () => Date.now();
  *  2. Inference does not work here anyway. With a `custom_domain` route in
  *     wrangler.toml, `wrangler dev` rewrites *both* `req.url` and the `Host`
  *     header to the production hostname, so a server on localhost:8787
- *     advertises `mindmaps.b32n.io` and nothing lines up.
+ *     advertises the production hostname and nothing lines up.
  *
  * The request-derived fallback only applies when the variable is unset.
  *

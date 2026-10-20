@@ -1,0 +1,49 @@
+{
+  "name": "mindmaps",
+  "private": true,
+  "type": "module",
+  "description": "A spatial surface for thinking, readable and writable by your AI agents over MCP. Self-hosted on your own Cloudflare account.",
+  "license": "MIT",
+  "repository": "github:b32n/mindmaps",
+  "scripts": {
+    "install:cloudflare": "node scripts/install.mjs",
+    "dev": "wrangler dev",
+    "dev:web": "npm --prefix web run dev",
+    "build": "npm --prefix web ci && npm --prefix web run build",
+    "deploy": "npm run build && wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply DB --local",
+    "db:seed": "wrangler d1 execute DB --local --file=worker/seed.sql",
+    "types": "wrangler types",
+    "typecheck": "wrangler types && tsc -p worker --noEmit",
+    "setup": "node scripts/setup-research.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "wrangler": "^4.128.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "Your database: every mindmap, card and link. Lives in your account."
+      },
+      "IMAGES": {
+        "description": "Storage for pasted images and uploaded files. Lives in your account."
+      },
+      "ARTEFACTS": {
+        "description": "Storage for sheets, docs and decks. Same bucket as IMAGES."
+      },
+      "AI": {
+        "description": "Workers AI, used to search your cards by meaning. Free tier is plenty."
+      },
+      "VECTORS": {
+        "description": "Search index for meaning-based recall. Created for you."
+      },
+      "GOOGLE_CLIENT_ID": {
+        "description": "Optional. Leave blank: email and password sign-in works without it."
+      },
+      "GOOGLE_CLIENT_SECRET": {
+        "description": "Optional. Leave blank unless you set up Google sign-in."
+      }
+    }
+  }
+}

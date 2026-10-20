@@ -1,14 +1,51 @@
 # mindmaps
 
 A spatial surface for thinking. Mindmaps of cards that hold real documents,
-connected by labelled links — and readable and writable by your agent harness
-over MCP.
+connected by labelled links, and readable and writable by your AI agents over
+MCP, so they remember between sessions.
 
-Not a coding tool — code stays in your IDE.
+**You own it.** It runs in your own Cloudflare account. Your data sits in your
+database and your storage. There is no server of ours in the middle, no
+telemetry, and no account with us. The free Cloudflare plan is enough.
 
-- [DESIGN.md](./DESIGN.md) — the board: structure, canvas decisions, data model
-- [MCP.md](./MCP.md) — the MCP server: letting agent harnesses read and write
+## Install (about five minutes)
+
+Pick whichever fits you. All three end at the same place: your own copy, at your
+own address.
+
+### 1. One click, no terminal
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/b32n/mindmaps)
+
+Sign in to Cloudflare (or make a free account), click through, done. Cloudflare
+copies this project into your GitHub, creates the database and storage, and
+deploys it. Then open the address it gives you and create your account. The
+first account is the owner.
+
+### 2. Ask your agent to do it
+
+Paste this into Claude Code, Codex, Cursor, or any agent that can run commands:
+
+> Install mindmaps for me from https://github.com/b32n/mindmaps. Clone it and
+> follow AGENTS.md. I'll need to approve a Cloudflare login in my browser.
+
+### 3. One command
+
+```bash
+git clone https://github.com/b32n/mindmaps && cd mindmaps
+npm install && npm run install:cloudflare
+```
+
+It signs you in, creates everything, deploys, and prints the command to connect
+your agent. Re-run it any time to update. More options (your own domain, HTML
+artefacts, troubleshooting) are in [INSTALL.md](./INSTALL.md).
+
+- [DESIGN.md](./DESIGN.md): the board: structure, canvas decisions, data model
+- [MCP.md](./MCP.md): the MCP server: letting agent harnesses read and write
   the board as durable memory between sessions
+- [INSTALL.md](./INSTALL.md): installing, updating, custom domains, who can sign up
+
+Not a coding tool. Code stays in your IDE.
 
 ## Stack
 
@@ -16,28 +53,23 @@ Not a coding tool — code stays in your IDE.
 |---|---|
 | Frontend | React + Vite, served as static assets by the Worker |
 | Canvas | `@xyflow/react` (MIT) + `perfect-freehand` (MIT) ink layer |
-| Backend | Cloudflare Workers — one Worker, one origin |
+| Backend | Cloudflare Workers: one Worker, one origin |
 | Database | D1, via rerunnable migrations |
-| Images | R2 |
+| Files and images | R2 |
+| Search | Workers AI + Vectorize (optional; keyword search without) |
 | Agents | None hosted. An MCP server; your harness is the agent. |
 
 ## Run locally
 
 ```bash
-# 1. backend
-cd worker
 npm install
-npm run db:create                           # paste database_id into wrangler.toml
-npm run db:migrate                          # idempotent, safe to re-run
-npm run dev                                 # :8787
-
-# 2. frontend (separate terminal)
-cd web
-npm install
-npm run dev                                 # :5173
+npm run db:migrate        # idempotent, safe to re-run
+npm run dev               # API + MCP on :8787
+npm run dev:web           # in a second terminal: the app on :5173
 ```
 
-The board works fully without any Anthropic credentials.
+Local state lives in `.wrangler/` and optional secrets in `.dev.vars` (copy
+`.dev.vars.example`). Nothing needs a Cloudflare login or any API key.
 
 ## Connect an agent harness (MCP)
 
@@ -46,19 +78,19 @@ speaks MCP can read and write your mindmaps as memory between sessions.
 
 ```bash
 # Claude Code
-claude mcp add --transport http mindmaps https://mindmaps.b32n.io/mcp
+claude mcp add --transport http mindmaps <your-url>/mcp
 
 # Codex
-codex mcp add mindmaps --url https://mindmaps.b32n.io/mcp
+codex mcp add mindmaps --url <your-url>/mcp
 ```
 
 Cursor, in `~/.cursor/mcp.json` (or `.cursor/mcp.json` for one project):
 
 ```json
-{ "mcpServers": { "mindmaps": { "url": "https://mindmaps.b32n.io/mcp" } } }
+{ "mcpServers": { "mindmaps": { "url": "<your-url>/mcp" } } }
 ```
 
-Anything else: point it at `https://mindmaps.b32n.io/mcp` as a **streamable
+Anything else: point it at `<your-url>/mcp` as a **streamable
 HTTP** MCP server. There is no bespoke integration per tool, just the spec.
 
 (Locally: `http://localhost:8787/mcp`.)
@@ -183,40 +215,30 @@ and keep a markdown projection for search and context. See
 [MCP.md](./MCP.md) §4–5 for why that direction rather than the reverse.
 
 ```bash
-curl -X POST https://mindmaps.b32n.io/oauth/revoke -d "token=<access or refresh token>"
+curl -X POST <your-url>/oauth/revoke -d "token=<access or refresh token>"
 ```
 
 ## Deployment
 
-Live at **https://mindmaps.b32n.io**.
+See [INSTALL.md](./INSTALL.md). In short, `npm run install:cloudflare` the first
+time, and again after every `git pull`.
 
-One Worker serves both the API and the built React app from a single origin.
-That is load-bearing, not tidiness: the OAuth consent screen reads the board's
-session cookie, and splitting the app and API across two sites would either drop
-that cookie (`SameSite=Lax`) or force it down to `SameSite=None`.
-
-```bash
-cd web    && npm run build          # assets are read from ../web/dist
-cd worker && npm run deploy
-npm run db:migrate:remote           # when migrations change
-```
-
-`wrangler.toml` creates the DNS record itself via `custom_domain = true`.
+One Worker serves the API, the MCP endpoint and the built React app from a
+single origin. That is load-bearing, not tidiness: the OAuth consent screen
+reads the board's session cookie, and splitting the app and API across two sites
+would either drop that cookie (`SameSite=Lax`) or force it down to
+`SameSite=None`.
 
 Two things that bite only in production, both already handled:
 
 - **`/register` is the app's sign-up page**, so the OAuth client-registration
-  endpoint lives at `/oauth/register`. Locally Vite serves the SPA and only
-  proxies `/api`, so the collision is invisible until both come off one origin.
-- **PBKDF2 is capped at 100,000 iterations** on the production runtime; the dev
-  runtime accepts more. `worker/src/auth.ts` chains three rounds to reach
-  300,000 iterations of work. See the comment there before changing it.
-- **`wrangler dev` rewrites `req.url` *and* the `Host` header** to the
-  `custom_domain` in wrangler.toml, so a local server would advertise the
-  production hostname in its OAuth discovery documents. The issuer is therefore
-  configured, not inferred: `PUBLIC_ORIGIN` in `[vars]` for production, and in
-  `worker/.dev.vars` for local. `[env.dev]` would not work — named environments
-  only apply with `--env` and do not inherit bindings.
+  endpoint lives at `/oauth/register`.
+- **PBKDF2 is capped at 100,000 iterations** on the production runtime;
+  `worker/src/auth.ts` chains three rounds to reach 300,000. Read the comment
+  there before changing it.
+
+The OAuth issuer is `PUBLIC_ORIGIN` when set, otherwise the address the request
+arrived on.
 
 ## Enable research
 
@@ -234,7 +256,7 @@ ant auth login                                   # browser, stores a profile
 export ANTHROPIC_AUTH_TOKEN=$(ant auth print-credentials --access-token)
 ```
 
-Put that in `worker/.dev.vars`. The token is **short-lived and not
+Put that in `.dev.vars`. The token is **short-lived and not
 auto-refreshed** once copied out, so re-run `print-credentials` when calls start
 failing with 401. Note `--access-token` is required — the bare command prints
 JSON, not a token.
@@ -259,11 +281,10 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ### Create the agent
 
 ```bash
-cd worker
 npm run setup      # honours either credential; creates agent + environment ONCE
 ```
 
-Put the printed IDs in `worker/.dev.vars` (gitignored):
+Put the printed IDs in `.dev.vars` (gitignored):
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...        # or ANTHROPIC_AUTH_TOKEN=...
@@ -291,10 +312,9 @@ Migrations live in `worker/migrations/`, applied with wrangler and tracked in a
 (`IF NOT EXISTS`), so re-applying against an already-migrated database is safe.
 
 ```bash
-npm run db:new  add_something   # scaffold the next numbered migration
-npm run db:list                 # what's applied
-npm run db:migrate              # local
-npm run db:migrate:remote       # production
+npx wrangler d1 migrations create DB add_something   # scaffold the next one
+npm run db:migrate                                   # local
+# production: applied by `npm run install:cloudflare` / `npm run deploy`
 npm run db:seed                 # local demo data — register an account first
 ```
 
@@ -307,7 +327,7 @@ request meets the subrequest ceiling and a CPU timeout at once:
 
 ```bash
 # signed in to the app, pumping `next` until `done`
-curl -s -X POST https://mindmaps.b32n.io/api/reindex \
+curl -s -X POST <your-url>/api/reindex \
   -b cookies.txt -H 'content-type: application/json' \
   -d '{"limit":25}'                       # then {"limit":25,"after":"<next>"}
 ```
@@ -337,22 +357,3 @@ board (Pages) ──create session──▶ Anthropic (agent loop + container)
 - **Research = a Claude session, one per card, resumed forever.** Sessions are
   event-sourced server-side, so resuming is just another `user.message` — there
   is no transcript to persist or restore.
-
-## Current state
-
-**Working:** boards, nested card boards, notes, edges, pen/eraser ink persisted
-in board coordinates, drag-position persistence, research dispatch + resume +
-polling, webhook receiver with dedupe.
-
-**Not yet:** webhook HMAC verification (`webhooks.unwrap` — raw body only, see
-DESIGN.md §5), Linear/GitHub OAuth, image and shape nodes, ink undo, multi-user
-auth, realtime.
-
-## Notes
-
-- Local dev polls for session status. Webhooks are the production fast path but
-  need a public URL; polling stays as the reconcile path either way, since a
-  webhook event is dropped with no signal after three failed deliveries.
-- `@cloudflare/workers-types` is deliberately not a dependency — it has moved to
-  v5 while wrangler 4.x pins v4. Types come from `wrangler types` instead
-  (`worker-configuration.d.ts`, gitignored).

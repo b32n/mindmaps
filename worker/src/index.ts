@@ -50,6 +50,8 @@ export interface Env {
   ANTHROPIC_ENVIRONMENT_ID?: string;
   GITHUB_TOKEN?: string; // fine-grained PAT, Contents: Read only
   ALLOWED_ORIGIN?: string;
+  /** "true" opens sign-up to anyone; default is owner-first, then invite-only */
+  ALLOW_SIGNUPS?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   /** where the browser lands after Google sends us back */
@@ -329,7 +331,7 @@ async function mcpSurface(
   if (!check.grant.scopes.includes(wanted)) return insufficientScope(req, env, wanted);
 
   // hand the already-read body onward
-  return await handleMcp(new Request(req, { body: raw }), env, check.grant);
+  return await handleMcp(new Request(req, { body: raw }), { ...env, PUBLIC_ORIGIN: issuerOf(req, env) } as typeof env, check.grant);
 }
 
 async function route(req: Request, env: Env, seg: string[], user: SessionUser): Promise<Response> {
@@ -675,14 +677,14 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       expiresAt: typeof body?.expires_at === "number" ? body.expires_at : null,
     });
     if (!share) return json(env, { error: "not found" }, 404);
-    return json(env, { ...share, url: `${appOrigin(env)}/v/${share.token}` }, 201);
+    return json(env, { ...share, url: `${appOrigin(env, req)}/v/${share.token}` }, 201);
   }
 
   if (a === "artefacts" && b && c === "share" && m === "GET") {
     const rows = await sharesFor(env as unknown as ShareEnv, user.id, b);
     return json(
       env,
-      rows.map((r) => ({ ...r, url: `${appOrigin(env)}/v/${r.token}` })),
+      rows.map((r) => ({ ...r, url: `${appOrigin(env, req)}/v/${r.token}` })),
     );
   }
 
@@ -827,7 +829,14 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       y: p.y ?? 0,
       w: p.w ?? 260,
       h: p.h ?? 140,
-      data: JSON.stringify(p.data ?? {}),
+      // An explicit position on a create is a human dropping a card where they
+      // chose, so it pins the same way a drag does. Agent-made nodes are
+      // inserted by the MCP server and never come through here; undo/redo
+      // replays the `data` it captured, so a restored card keeps whatever it
+      // had rather than being re-pinned by the replay.
+      data: JSON.stringify(
+        p.data ?? (p.x !== undefined || p.y !== undefined ? { placed: "hand" } : {}),
+      ),
       created_at: now(),
       updated_at: now(),
     };
@@ -925,9 +934,29 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       sets.push("body = ?");
       vals.push(bodyFromDoc(p.doc));
     }
+    /*
+     * A position in a PATCH means a human dragged this card, and that pins it.
+     *
+     * `x`/`y` only ever arrive from a drag — the layout engine writes positions
+     * through its own statements, not this route — so the gesture is
+     * unambiguous and needs no flag from the client. Every client gets the
+     * behaviour for free, including ones we have not written.
+     *
+     * `data` is set in exactly one clause whichever branch runs. Assigning the
+     * same column twice in one SET list is not something to rely on, and the
+     * right-hand sides would both read the pre-update row anyway, so a merge
+     * has to happen on one side or the other rather than across two clauses.
+     */
+    const dragged = p.x !== undefined || p.y !== undefined;
     if (p.data !== undefined) {
-      sets.push("data = ?");
+      sets.push(dragged ? "data = json_set(?, '$.placed', 'hand')" : "data = ?");
       vals.push(JSON.stringify(p.data));
+    } else if (dragged) {
+      // `json_valid` rather than COALESCE: `json_set` raises on malformed input,
+      // and a card whose `data` somehow went bad must still be draggable.
+      sets.push(
+        "data = json_set(CASE WHEN json_valid(data) THEN data ELSE '{}' END, '$.placed', 'hand')",
+      );
     }
     if (!sets.length) return json(env, { ok: true });
     sets.push("updated_at = ?");
@@ -1536,6 +1565,8 @@ async function authRoute(
     if (existing)
       return json(env, { error: "An account with that email already exists." }, 409);
 
+    if (!(await signupAllowed(env, addr))) return json(env, { error: SIGNUP_CLOSED }, 403);
+
     const { hash, salt } = await hashPassword(password);
     const uid = id();
     await env.DB.prepare(
@@ -1720,6 +1751,7 @@ async function authRoute(
 
     let uid = existing?.id;
     if (!uid) {
+      if (!(await signupAllowed(env, email))) return fail(SIGNUP_CLOSED);
       uid = id();
       await env.DB.prepare(
         `INSERT INTO users (id,email,name,avatar_url,google_sub,created_at,updated_at)
@@ -1860,8 +1892,32 @@ const hydrateBoard = (b: any) => ({ ...b, labels: parseLabels(b?.labels), pinned
 
 const hydrateNode = (n: any) => ({ ...n, data: JSON.parse(n.data || "{}") });
 
+
+/**
+ * Who may create an account on this deployment.
+ *
+ * It is someone's own instance, and anyone who can sign up can spend their R2
+ * and Workers AI quota. So: the first account is the owner, after that sign-up
+ * needs a live invite for that address, unless `ALLOW_SIGNUPS=true`.
+ */
+async function signupAllowed(env: Env, email: string): Promise<boolean> {
+  if (env.ALLOW_SIGNUPS === "true") return true;
+  const any = await env.DB.prepare(`SELECT 1 AS x FROM users LIMIT 1`).first();
+  if (!any) return true;
+  const invite = await env.DB.prepare(
+    `SELECT 1 AS x FROM invites
+      WHERE email = ? AND accepted_at IS NULL AND revoked = 0
+        AND (expires_at IS NULL OR expires_at > ?) LIMIT 1`,
+  )
+    .bind(email.toLowerCase(), now())
+    .first();
+  return !!invite;
+}
+const SIGNUP_CLOSED =
+  "Sign-up is closed on this mindmaps. Ask its owner to invite you, or set ALLOW_SIGNUPS=true to open it.";
+
 /** Where share links live. The app, not the mindbox: the viewer is app chrome. */
-const appOrigin = (env: Env) => env.APP_ORIGIN || env.PUBLIC_ORIGIN || "";
+const appOrigin = (env: Env, req: Request) => env.APP_ORIGIN || issuerOf(req, env);
 
 /**
  * Parse a `nodes.data` blob without letting a bad one throw.

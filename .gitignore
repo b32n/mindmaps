@@ -12,3 +12,7 @@ worker-configuration.d.ts
 
 .DS_Store
 *.log
+
+# generated per install by scripts/install.mjs: your IDs, your domain
+wrangler.local.toml
+.install.json

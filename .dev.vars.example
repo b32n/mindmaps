@@ -1,0 +1,9 @@
+# Copy to .dev.vars (gitignored) for local development. On a deployed Worker
+# these are secrets: `npx wrangler secret put NAME`.
+
+# Optional Google sign-in. Email + password works without it. Create an OAuth
+# 2.0 Client ID (Web application) at console.cloud.google.com, with the redirect
+#   <your-origin>/api/auth/google/callback
+# Leave blank to hide the Google button.
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=

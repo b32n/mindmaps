@@ -10,10 +10,16 @@
  * browser and ask it to run. And the author is usually an agent, which means a
  * prompt injection in anything that agent read is a way to author one.
  *
- * So it never runs on the app's origin. Three layers, in order of how much they
- * matter:
+ * So it never runs with the app's authority. Layers, in order of how much they
+ *  matter:
  *
- *  1. A separate hostname. `mindmaps.b32n.io` holds a `HttpOnly; SameSite=Lax`
+ *  0. `Content-Security-Policy: sandbox allow-scripts` on the response. This is
+ *     what makes the default install work with a single hostname: the document
+ *     gets an opaque origin however it is opened, so it has no cookie, no
+ *     storage and no same-origin fetch to borrow. Everything below is the
+ *     stricter, optional setup.
+ *
+ *  1. (Optional) A separate hostname, `MINDBOX_ORIGIN`. The app's own origin holds a `HttpOnly; SameSite=Lax`
  *     session cookie, and `HttpOnly` does nothing against a same-origin
  *     `fetch("/api/boards", { credentials: "include" })` — the browser attaches
  *     the cookie itself. A page running there could read every card the user
@@ -42,6 +48,8 @@ export interface MindboxEnv {
   ARTEFACTS: R2Bucket;
   /** HMAC key for frame URLs. Set with `wrangler secret put MINDBOX_SECRET`. */
   MINDBOX_SECRET?: string;
+  /** set by the MCP/API entry so agents get absolute URLs when no mindbox host is configured */
+  PUBLIC_ORIGIN?: string;
   /** Where the mindbox answers. Absent in local dev, where there is one origin. */
   MINDBOX_ORIGIN?: string;
   APP_ORIGIN?: string;
@@ -80,6 +88,28 @@ function sameSignature(a: string, b: string): boolean {
   return diff === 0;
 }
 
+
+let cachedSecret: string | undefined;
+
+/**
+ * The key frame and download URLs are signed with.
+ *
+ * `MINDBOX_SECRET` wins when set. Otherwise one is generated on first use and
+ * kept in D1, so a fresh install needs no configuration: nobody has to invent a
+ * long random string. It sits in the same database as everything it protects,
+ * which is the same trust boundary; it only signs one-hour preview URLs.
+ */
+export async function mindboxSecret(env: MindboxEnv): Promise<string> {
+  if (env.MINDBOX_SECRET) return env.MINDBOX_SECRET;
+  if (cachedSecret) return cachedSecret;
+  const fresh = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+  await env.DB.prepare(`INSERT OR IGNORE INTO instance_secrets (name, value) VALUES ('mindbox', ?)`)
+    .bind(fresh)
+    .run();
+  const row = await env.DB.prepare(`SELECT value FROM instance_secrets WHERE name = 'mindbox'`).first<{ value: string }>();
+  return (cachedSecret = row!.value);
+}
+
 /**
  * A URL that renders one artefact, for one hour.
  *
@@ -88,13 +118,13 @@ function sameSignature(a: string, b: string): boolean {
  * in the system.
  */
 export async function frameUrl(env: MindboxEnv, nodeId: string): Promise<string | null> {
-  if (!env.MINDBOX_SECRET) return null;
+  const secret = await mindboxSecret(env);
   const exp = Date.now() + TTL_MS;
-  const sig = await sign(env.MINDBOX_SECRET, `${nodeId}.${exp}`);
+  const sig = await sign(secret, `${nodeId}.${exp}`);
   // No configured mindbox origin means local development, where there is only
   // one origin to serve from. Same path, same signing, none of the isolation —
   // which is why it is a dev-only fallback and the deploy notes say to set it.
-  const base = env.MINDBOX_ORIGIN ?? "";
+  const base = env.MINDBOX_ORIGIN || env.PUBLIC_ORIGIN || "";
   return `${base}/s/${nodeId}?exp=${exp}&sig=${sig}`;
 }
 
@@ -109,10 +139,10 @@ export async function frameUrl(env: MindboxEnv, nodeId: string): Promise<string 
  * is no cookie to borrow.
  */
 export async function fileUrl(env: MindboxEnv, fileId: string): Promise<string | null> {
-  if (!env.MINDBOX_SECRET) return null;
+  const secret = await mindboxSecret(env);
   const exp = Date.now() + TTL_MS;
-  const sig = await sign(env.MINDBOX_SECRET, `${fileId}.${exp}`);
-  const base = env.MINDBOX_ORIGIN ?? "";
+  const sig = await sign(secret, `${fileId}.${exp}`);
+  const base = env.MINDBOX_ORIGIN || env.PUBLIC_ORIGIN || "";
   return `${base}/f/${fileId}?exp=${exp}&sig=${sig}`;
 }
 
@@ -133,6 +163,12 @@ const INLINE_TYPES = new Set([
 /** The CSP every artefact is served under. */
 function policy(appOrigin: string): string {
   return [
+    // The boundary that travels with the document. `sandbox` as a header gives
+    // the page an opaque origin however it is reached: framed, or opened
+    // straight in a tab. No cookies, no storage, no same-origin fetch, so it
+    // is safe to serve from the app's own hostname. `allow-scripts` and
+    // nothing else: no same-origin, no popups, no top navigation, no forms.
+    "sandbox allow-scripts",
     // Nothing is permitted that is not named below.
     "default-src 'none'",
     // Inline script is the whole point of the artefact. `unsafe-eval` is left
@@ -168,13 +204,13 @@ export async function serveMindbox(req: Request, env: MindboxEnv, url: URL): Pro
   const deny = (why: string, status = 403) =>
     new Response(why, { status, headers: { "content-type": "text/plain" } });
 
-  if (!env.MINDBOX_SECRET) return deny("Artefact rendering is not configured.", 503);
+  const secret = await mindboxSecret(env);
 
   /*
    * Never serve this on the app's own origin.
    *
    * Both hostnames route to the same Worker, so without this a valid signature
-   * also renders on mindmaps.b32n.io — where the page sits alongside the
+   * also renders on the app origin — where the page sits alongside the
    * session cookie, which is the one thing this whole design exists to prevent.
    * Nothing generates such a URL; the app builds them from MINDBOX_ORIGIN. But
    * "nothing generates it" is a convention, and a convention is not a boundary.
@@ -227,7 +263,7 @@ export async function serveMindbox(req: Request, env: MindboxEnv, url: URL): Pro
     if (!exp || !sig || !Number.isFinite(exp)) return deny("Not a valid link.");
     if (exp < Date.now()) return deny("This link has expired.");
 
-    const expected = await sign(env.MINDBOX_SECRET, `${nodeId}.${exp}`);
+    const expected = await sign(secret, `${nodeId}.${exp}`);
     if (!sameSignature(expected, sig)) return deny("Not a valid link.");
   }
 
@@ -274,7 +310,7 @@ export async function serveFile(req: Request, env: MindboxEnv, url: URL): Promis
   const deny = (why: string, status = 403) =>
     new Response(why, { status, headers: { "content-type": "text/plain" } });
 
-  if (!env.MINDBOX_SECRET) return deny("File downloads are not configured.", 503);
+  const secret = await mindboxSecret(env);
   // A signed download URL is a read capability and nothing else.
   if (req.method !== "GET" && req.method !== "HEAD")
     return deny("Method not allowed.", 405);
@@ -315,7 +351,7 @@ export async function serveFile(req: Request, env: MindboxEnv, url: URL): Promis
     const sig = url.searchParams.get("sig") ?? "";
     if (!exp || !sig || !Number.isFinite(exp)) return deny("Not a valid link.");
     if (exp < Date.now()) return deny("This link has expired.");
-    const expected = await sign(env.MINDBOX_SECRET, `${fileId}.${exp}`);
+    const expected = await sign(secret, `${fileId}.${exp}`);
     if (!sameSignature(expected, sig)) return deny("Not a valid link.");
   }
 

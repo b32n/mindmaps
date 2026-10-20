@@ -1,0 +1,73 @@
+# mindmaps: one Worker serves the API, the MCP server and the built React app.
+#
+# Nothing in this file is specific to anyone's account. Resource IDs are left
+# out on purpose: `npm run install:cloudflare` (or the Deploy to Cloudflare
+# button) creates the database and buckets in *your* account and fills them in.
+# See INSTALL.md.
+
+name = "mindmaps"
+main = "worker/src/index.ts"
+compatibility_date = "2026-09-01"
+
+# Served from <name>.<your-subdomain>.workers.dev unless you attach a domain of
+# your own; the installer asks, and writes it to wrangler.local.toml.
+
+# One origin for app, API and MCP endpoint. That is load-bearing: the OAuth
+# consent screen reads the board's session cookie, and splitting the app and API
+# across two sites would drop it (SameSite=Lax) or force SameSite=None.
+[assets]
+directory = "./web/dist"
+# Unknown paths are client-side routes (/app, /login), so serve the SPA shell.
+not_found_handling = "single-page-application"
+# ...except these, which must reach the Worker. /register is deliberately not
+# here: that is the app's sign-up page; OAuth registration is /oauth/register.
+run_worker_first = [
+  "/api/*",
+  "/mcp",
+  "/oauth/*",
+  "/.well-known/*",
+  # The mindbox (HTML artefacts) and file downloads. Without these the SPA
+  # fallback answers with index.html.
+  "/s/*",
+  "/f/*",
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mindmaps"
+migrations_dir = "worker/migrations"
+
+# Pasted/dropped images, files, and artefact payloads. Two bindings, one bucket:
+# the `artefacts/` key prefix keeps them apart.
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "mindmaps-images"
+
+[[r2_buckets]]
+binding = "ARTEFACTS"
+bucket_name = "mindmaps-images"
+
+# Semantic recall. Without these `recall` falls back to keyword search.
+# 1024 dimensions to match bge-m3:
+#   npx wrangler vectorize create mindmaps-chunks --dimensions=1024 --metric=cosine
+[ai]
+binding = "AI"
+
+[[vectorize]]
+binding = "VECTORS"
+index_name = "mindmaps-chunks"
+
+# Re-embeds cards edited in the browser a minute after the edit (0018_index_dirty.sql).
+[triggers]
+crons = ["* * * * *"]
+
+# Origins are optional. Unset, the Worker uses the address the request arrived
+# on, which is right for a single workers.dev or custom-domain deployment.
+# Set them for a custom domain plus a separate mindbox hostname:
+#   PUBLIC_ORIGIN / APP_ORIGIN   https://notes.example.com
+#   MINDBOX_ORIGIN               https://box.example.com   (optional second hostname for HTML artefacts)
+#
+# Secrets (`npx wrangler secret put NAME`, never committed):
+#   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   optional Google sign-in
+#   MINDBOX_SECRET   optional; signs HTML-artefact URLs. Generated and kept in D1
+#                    when unset, so there is nothing to configure.

@@ -20,8 +20,14 @@
 
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { existsSync, readFileSync } from "node:fs";
 
-const BASE = (process.env.MINDMAPS_URL ?? "https://mindmaps.b32n.io").replace(/\/$/, "");
+const URL_ = process.env.MINDMAPS_URL ?? (existsSync(".install.json") ? JSON.parse(readFileSync(".install.json", "utf8")).url : undefined);
+if (!URL_) {
+  console.error("Set MINDMAPS_URL to your deployment, e.g. MINDMAPS_URL=https://mindmaps.you.workers.dev");
+  process.exit(1);
+}
+const BASE = URL_.replace(/\/$/, "");
 const PAGE = Number(process.env.MINDMAPS_PAGE ?? 25);
 
 /** Read a secret without echoing it. */

@@ -248,14 +248,42 @@ would open a mindmap for it.
 **Resolved:**
 
 - **Auto-layout** — `worker/src/layout.ts`. Layered: edges give depth, each
-  layer is a column, siblings stack down it and are ordered by the mean row of
-  their parents so edges run roughly straight. Depth is the *longest* path from
+  layer is a column, siblings stack down it. Depth is the *longest* path from
   a root, not the shortest, or a node depending on both a root and a deep node
   would sit level with the root and its arrow would point backwards. Cycles are
   expected ("blocks" and "informs" between the same pair), so the traversal is
   iterative with a relaxation cap rather than recursive.
-  `add_to_mindmap` places new nodes strictly below everything already present —
-  extending a map must never move what someone arranged by hand.
+
+  Ordering within a column is a separate phase from coordinates: alternating
+  median sweeps in rank space, scored on the finished drawing and keeping the
+  best candidate seen — including the agent's own input order and the single
+  forward pass this file used to do. Scoring coordinates rather than ranks is
+  deliberate; a rank-space count scores a long edge slicing across four columns
+  as free and cannot see what the centring passes do afterwards, and both were
+  measurable regressions on real graphs. Disconnected components are laid out
+  separately and stacked, instead of interleaving their rows in shared columns.
+
+- **Placing new work on an existing map** — `placeBlock` in the same file.
+  Edges whose far end is a card already on the board are classified out before
+  layout sees them, so "attach these findings to that card" places the new work
+  *beside* that card; it used to be dropped, and the card landed at the bottom
+  of the map with a line drawn all the way back. The block then spirals out
+  from there into space that is actually free, preferring the flow direction
+  and avoiding landing behind its own parent.
+
+  The old rule was "strictly below everything already present", which is safe
+  and turns a board into a long vertical ribbon with its right half empty: six
+  `add_card` calls on a seven-card map used to extend it 2,100px downward.
+  Below everything is now the last resort rather than the rule.
+
+  What must never move is a card a **human** placed, which is narrower than
+  "anything already present" and is the distinction that was missing. A drag or
+  a positioned create sets `data.placed = "hand"` server-side (`index.ts`), and
+  those cards are obstacles forever. A component in which *every* card was
+  machine-placed is rebuilt along with the new nodes, so a map an agent has
+  been extending stays tidy. `relayout_mindmap` is the one tool that overrules
+  the flag, and it clears it: its whole contract is "rearrange this map", and
+  honouring the flag would make it a no-op on exactly the boards that need it.
 
 - **Auth and transport** — Streamable HTTP at `POST /mcp`, OAuth 2.1 with PKCE
   S256, no API keys. We are both authorization server and resource server. See
