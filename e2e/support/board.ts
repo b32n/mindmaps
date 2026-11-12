@@ -170,6 +170,10 @@ export class Board {
     const { mouse } = this.page;
     await mouse.move(from.x, from.y);
     await mouse.down();
+    // React Flow starts the drag on the first move and measures from there, so
+    // make that first move a small one; the distance below is then accurate to
+    // a few pixels.
+    await mouse.move(from.x + Math.sign(dx) * 3, from.y + Math.sign(dy) * 3);
     await mouse.move(from.x + dx / 2, from.y + dy / 2, { steps: 8 });
     await mouse.move(from.x + dx, from.y + dy, { steps: 8 });
     await mouse.up();
