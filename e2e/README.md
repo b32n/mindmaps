@@ -96,14 +96,17 @@ in), so `--repeat-each` is safe for the whole project.
 
 ```
 e2e/
-  fixtures.ts            test, expect, `account`, `existing`, `makePerson`
+  fixtures.ts            test, expect, `account`, `existing`, `makePerson`, `openAs`
   support/
     api.ts               the app's HTTP API: arrange state, read back what the server stored
+                         (boards, nodes, edges, workspaces, members, artefacts, files, links)
     board.ts             Board page object: cards, drag, links, viewport, saved-state reads
     rail.ts              the left rail: create / open / settings dialog for mindmaps
+    members.ts           the people list shared by the Share dialogs; workspace menu helpers
+    sheet.ts             select / type into cells of the (canvas-drawn) sheet editor
     trash.ts             the Trash dialog
     auth.ts              fill the sign-in / sign-up forms
-    files.ts             deliver a pasted or dropped image to the page
+    files.ts             deliver a pasted or dropped image to the page; the test PNG
     users.ts state.ts    unique users; paths of saved sessions
     serve.mjs            starts a local Worker (D1 + R2) for Playwright
   setup/                 registers the instance owner on the main Worker
@@ -116,8 +119,33 @@ e2e/
     layout/              drag, selection, pan/zoom + home view, images, resize, ink
     search/              Recall (keyword path)
     trash/               restore, purge, empty, the shared-mindmap bug
-    settings/ workspaces/ artefacts/   dialogs and lists (basics)
+    settings/            the settings dialog and the mindmap Share dialog (basics)
+    workspaces/          menu (basics), members and invites, roles, isolation between workspaces
+    sharing/             sharing one mindmap: dialog, two people at once, roles, shared rail order
+    artefacts/           the list; sheet, doc, deck and page editors; artefact grants and public links
+    files/               files and folders: chooser, drop, download, delete; image clean-up
+    security/            authorisation regressions, SVG / uploaded-file safety, invite claiming
 ```
+
+### Two people in one test
+
+Fixtures give you cookie-jar-separated people:
+
+```ts
+test("...", async ({ page, account, existing, makePerson, openAs }) => {
+  // `page` and `request` are signed in as `account`.
+  // `existing` is another registered person: `existing.request` is signed in
+  // as them and `existing.user` has the email, e.g. to invite them.
+  const theirPage = await openAs(existing); // a Page in a second browser context, signed in as them
+  const third = await makePerson("third");  // as many more as needed
+});
+```
+
+`openAs` copies the person's session into a fresh browser context, so the two
+UIs really are two browsers. `support/api.ts` has `addMember`, `membersOf`,
+`createWorkspace`, `createArtefact`, `uploadFile`, `createLink`. When a test is
+about a refusal, call `request.get/post/...` directly and assert the status:
+the arranging helpers fail the test on any non-2xx answer.
 
 `Board` (support/board.ts) separates what the browser *shows* (`locator`s,
 `box()`) from what the server *stored* (`saved()`, `savedNode()`). Persistence
@@ -149,8 +177,34 @@ Everything the UI exposes in these areas, on Chromium:
   home view, image resize, pen / eraser.
 - **Search**: Recall's keyword path.
 - **Trash**: card and mindmap restore, purge, empty, ownership.
-- **Basics only**: settings dialog, workspace menu, the mindmap share dialog,
-  the Artefacts list, the research-thread section (no thread is started).
+- **Workspaces**: create, switch, remembered choice, Personal; the People
+  dialog (invite an existing account, a pending address, role choice, re-invite
+  to change a role, cancel, remove); a pending invite claimed at sign-up by the
+  matching address (case-insensitive, exact otherwise); leaving; what an editor
+  and a viewer may and may not do (API status codes and the UI's refusals);
+  isolation: a stranger gets 404 on every read and write, with a response
+  indistinguishable from a made-up id, and cannot create, invite or reorder in
+  a workspace they are not in.
+- **Sharing a mindmap**: the Share dialog (existing account, pending address,
+  Remove, Cancel, re-share with another role, leaving); the mindmap seen by two
+  people in two browsers (cards added / edited / deleted by each show for both
+  after a reload); viewer vs editor vs owner on the API; what a viewer's UI does
+  (edits are attempted and refused, nothing is stored).
+- **Artefacts**: sheet (dock, open in a new tab, formulas shown, recalculation
+  saved, errors as values, autosave, rename, search snapshot, size limit),
+  document and deck (open, edit, autosave, snapshot), page (source and preview,
+  the sandbox: no cookie, storage, parent or network, even when opened straight
+  in a tab; signed URLs; public pages), grants to a person (Can edit / Can view,
+  Remove, pending address), public links (create, anonymous read-only view,
+  view counter, revoke, expiry, deleting and restoring from the trash).
+- **Files and folders**: dock, chooser, drag and drop, description rules, size
+  limit, one file per file node and many per folder, download headers and bytes,
+  inline PNG, delete with confirmation, trash and restore, permissions.
+- **Security**: SVG and HTML uploads (attachment, CSP sandbox, nosniff; no
+  script runs when navigated to, in either route), file-name header injection,
+  id reuse, edge ids, invite matching.
+- **Basics only**: settings dialog, the Artefacts list, the research-thread
+  section (no thread is started).
 
 Known product bugs are written as `test.fixme` with expected-vs-actual in a
 comment above the test; un-`fixme` one when its fix lands.
@@ -160,11 +214,18 @@ comment above the test; un-`fixme` one when its fix lands.
 - **Semantic recall.** The test Worker has no Workers AI / Vectorize, so only
   the keyword ranking runs. Meaning-based ranking, the reranker and the
   embedding sweep are not exercised.
-- **Sharing in depth** (invites, roles, removal, public links, the `/v/:token`
-  viewer, workspace membership rules), and **artefacts and files** (the sheet,
-  document, deck, page editors, uploads, downloads): a later PR.
-- **MCP, the OAuth flow and "Connected apps"**: a later PR.
-- **Visual regression, accessibility audits, Firefox and WebKit**: a later PR.
+- **MCP, the OAuth flow and "Connected apps"**: the next PR.
+- **Things that do not exist in the product**, so are not tested: renaming or
+  deleting a workspace, moving a mindmap between workspaces, a role control on
+  a member's row (a role is changed by inviting again), a "Leave" button (the
+  API allows leaving), deleting an account (so "deleting a workspace's owner
+  removes the workspace" cannot be reached from the app), e-mail verification,
+  and sending of any e-mail. The research routes need Anthropic credentials.
+- **Cell-by-cell rendering of the sheet.** It is drawn on a canvas; the tests
+  read the formula bar and what the editor saves, not pixels.
+- **Per-user preferences.** Order and pinning of a mindmap are one value shared
+  by everyone who can see it (see the fixmes in `sharing/shared-order.spec.ts`).
+- **Visual regression, accessibility audits, Firefox and WebKit**: the PR after that.
 - Things the UI does not have: forgot-password, changing a password, deleting an
   account, card colours or kinds beyond card/note, copy/paste or duplicate of
   cards, auto-arrange or direction toggles (relayout is MCP-only), resizing
