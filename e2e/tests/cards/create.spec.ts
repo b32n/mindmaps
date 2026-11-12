@@ -106,7 +106,11 @@ test.describe("creating cards and notes", () => {
     void account;
     const { board } = await Board.create(page);
     const id = await board.addCard();
-    await board.node(id).dblclick({ position: { x: 130, y: 100 } });
+    // The card's padding at its left edge: clear of the title, the buttons and
+    // the connection handles that hang below the card, whatever height the
+    // card's text lays out to (a fixed y would miss a shorter card).
+    const box = (await board.node(id).boundingBox())!;
+    await board.node(id).dblclick({ position: { x: 4, y: box.height / 2 } });
     await expect(board.editor).toBeVisible();
     await expect(board.nodes()).toHaveCount(1);
   });
