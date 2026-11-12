@@ -274,7 +274,7 @@ test.describe("what a member can do in a shared workspace", () => {
   }) => {
     void account;
     const ws = await createWorkspace(request, "Both write");
-    const board = await createBoard(request, "Co-authored", { workspace_id: ws.id });
+    const board = await createBoard(request, "Written together", { workspace_id: ws.id });
     await addMember(request, "workspaces", ws.id, existing.user.email, "editor");
     await createNode(request, board.id, { title: "From the owner", x: 0, y: 0 });
     await createNode(existing.request, board.id, { title: "From the editor", x: 300, y: 0 });

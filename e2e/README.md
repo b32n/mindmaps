@@ -220,7 +220,7 @@ comment above the test; un-`fixme` one when its fix lands.
   a member's row (a role is changed by inviting again), a "Leave" button (the
   API allows leaving), deleting an account (so "deleting a workspace's owner
   removes the workspace" cannot be reached from the app), e-mail verification,
-  and sending of any e-mail. The research routes need Anthropic credentials.
+  and sending of any e-mail. The research routes need credentials this test Worker does not have.
 - **Cell-by-cell rendering of the sheet.** It is drawn on a canvas; the tests
   read the formula bar and what the editor saves, not pixels.
 - **Per-user preferences.** Order and pinning of a mindmap are one value shared
