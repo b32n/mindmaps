@@ -137,7 +137,7 @@ test.describe("the workspace owner", () => {
     expect(members.map((m: { role: string }) => m.role)).not.toContain("owner");
   });
 
-  test("a blank name becomes "New workspace"", async ({ account, request }) => {
+  test("a blank name becomes 'New workspace'", async ({ account, request }) => {
     void account;
     const res = await request.post("/api/workspaces", { data: { name: "   " } });
     expect(res.status()).toBe(201);

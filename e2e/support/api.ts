@@ -15,6 +15,7 @@ export interface ApiBoard {
   description: string | null;
   home_view: string | null;
   workspace_id: string | null;
+  position: number | null;
 }
 
 export interface ApiNode {
