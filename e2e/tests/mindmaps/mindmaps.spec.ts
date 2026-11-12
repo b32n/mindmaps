@@ -278,13 +278,19 @@ test.describe("renaming and editing", () => {
     let dialog = await rail.openSettings("Labelled");
 
     const input = dialog.locator("#mm-label");
+    const chips = dialog.locator(".mm-label");
+    // One step at a time, each confirmed on screen before the next: adding two
+    // labels before the first has rendered would race the dialog's own state.
     await input.fill("auth");
     await input.press("Enter");
+    await expect(chips).toHaveText(["auth×"]);
     await input.fill("pci");
     await input.press(",");
+    await expect(chips).toHaveText(["auth×", "pci×"]);
     await input.fill("AUTH");
     await input.press("Enter"); // same label, different case
-    await expect(dialog.locator(".mm-label")).toHaveText(["auth×", "pci×"]);
+    await expect(input).toHaveValue(""); // taken in, and not added again
+    await expect(chips).toHaveText(["auth×", "pci×"]);
 
     await dialog.getByRole("button", { name: "Remove pci" }).click();
     await expect(dialog.locator(".mm-label")).toHaveText(["auth×"]);

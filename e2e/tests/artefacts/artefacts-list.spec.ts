@@ -20,6 +20,9 @@ test.describe("the Artefacts list", () => {
   test("with none, says how to make one", async ({ page, account }) => {
     void account;
     await page.goto("/app");
+    // let /app settle on a mindmap first: it redirects once its list loads, and
+    // would otherwise override this click if the click came first
+    await expect(page).toHaveURL(/\/app\/[0-9a-f-]{36}$/);
     await page.getByRole("button", { name: "Artefacts" }).click();
     await expect(page).toHaveURL(/\/artefacts$/);
     await expect(page.getByRole("heading", { level: 1, name: "Artefacts" })).toBeVisible();
