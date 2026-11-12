@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One run per ref. A newer push to a pull request supersedes the older run;
+# runs on main are never cancelled, so every merge keeps its own result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - run: npm ci
+      # wrangler types + tsc for the Worker, then tsc for the e2e code.
+      - run: npm run ci:typecheck
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - run: npm ci
+      # `npm run build` installs web/ and runs `tsc -b && vite build`, so this
+      # job also type-checks the web app.
+      - run: npm run ci:build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  e2e:
+    name: e2e (${{ matrix.shard }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Raise the denominator and list the new shards to split the suite
+        # (e.g. ["1/3", "2/3", "3/3"]). `ci-ok` waits on the whole matrix.
+        shard: ["1/1"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Read Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        id: browsers
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
+      # Browser download is cached; system libraries are not, so they are
+      # installed on every run.
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - if: steps.browsers.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      - run: npx playwright test --shard=${{ matrix.shard }}
+      - name: Name the shard for artifacts
+        if: always()
+        run: echo "SHARD_NAME=${SHARD//\//-of-}" >> "$GITHUB_ENV"
+        env:
+          SHARD: ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: playwright-report-${{ env.SHARD_NAME }}
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-${{ env.SHARD_NAME }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The one required check on main. It passes only if every job it needs
+  # succeeded: a failed, cancelled or skipped job all fail it. `if: always()`
+  # is what makes that true; without it a failed dependency would leave this
+  # job "skipped", which branch protection can read as passing.
+  ci-ok:
+    name: ci-ok
+    needs: [typecheck, build, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to have succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          echo "$RESULTS" | node -e '
+            const needs = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const bad = Object.entries(needs).filter(([, j]) => j.result !== "success");
+            for (const [name, j] of bad) console.error(`${name}: ${j.result}`);
+            process.exit(bad.length ? 1 : 0);
+          '
