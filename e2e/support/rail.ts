@@ -24,6 +24,16 @@ export class Rail {
   async openNewDialog() {
     await this.page.getByRole("button", { name: "New mindmap" }).first().click();
     await expect(this.page.getByRole("dialog", { name: "New mindmap" })).toBeVisible();
+    await this.dialogSettled(this.page.getByRole("dialog", { name: "New mindmap" }));
+  }
+
+  /**
+   * Modals move focus to their first field ~30ms after opening. Typing before
+   * that lands the keys in the wrong field (an Enter then submits the form), so
+   * wait for it before interacting.
+   */
+  private async dialogSettled(dialog: Locator) {
+    await expect(dialog.getByLabel("Name")).toBeFocused();
   }
 
   /** Create a mindmap through the dialog; resolves once it is open. */
@@ -43,6 +53,7 @@ export class Rail {
     await this.row(name).getByRole("button", { name: "Mindmap settings" }).click();
     const dialog = this.page.getByRole("dialog", { name: "Mindmap settings" });
     await expect(dialog).toBeVisible();
+    await this.dialogSettled(dialog);
     return dialog;
   }
 }
