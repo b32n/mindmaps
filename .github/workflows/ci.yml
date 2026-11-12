@@ -69,8 +69,9 @@ jobs:
       fail-fast: false
       matrix:
         # Raise the denominator and list the new shards to split the suite
-        # (e.g. ["1/3", "2/3", "3/3"]). `ci-ok` waits on the whole matrix.
-        shard: ["1/1"]
+        # further. Every shard starts its own two Workers (sign-up open and
+        # closed) with their own databases. `ci-ok` waits on the whole matrix.
+        shard: ["1/3", "2/3", "3/3"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

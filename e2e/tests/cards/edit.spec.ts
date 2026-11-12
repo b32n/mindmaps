@@ -136,6 +136,23 @@ test.describe("card document", () => {
     );
   });
 
+  test("pasting markdown text into the document becomes formatted blocks", async ({ page, account }) => {
+    void account;
+    const { board, card } = await boardWithCard(page);
+    await board.openCard(card.id);
+    await board.editor.click();
+    // a real paste event carrying plain text, delivered to the focused editor
+    await page.evaluate(() => {
+      const data = new DataTransfer();
+      data.setData("text/plain", "# Pasted heading\n\n- one\n- two\n\nand **bold** text");
+      document.activeElement!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    await expect(board.editor.locator("h1")).toHaveText("Pasted heading");
+    await expect(board.editor.locator("li")).toHaveCount(2);
+    await expect(board.editor.locator("strong")).toHaveText("bold");
+    await expect.poll(() => savedBody(page, card.id)).toBe("# Pasted heading\n\n- one\n- two\n\nand **bold** text");
+  });
+
   test("the slash menu inserts blocks", async ({ page, account }) => {
     void account;
     const { board, card } = await boardWithCard(page);
