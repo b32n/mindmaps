@@ -86,10 +86,11 @@ closed one is idle unless a closed-signup spec runs. `e2e/support/serve.mjs` tak
 
 `closed-setup` signs the owner up through the form (the first account) and saves
 its session and credentials under `e2e/.auth/`. "First account on an empty
-database" can only be observed once per server start, so on a repeat
-(`--repeat-each`) or a retry that one step is *skipped*, not failed; every other
-closed spec works on any database state (a stranger is refused, an invited
-address gets in).
+database" can only be observed once per server start, so if that step ever runs
+a second time against the same server (a retry; Playwright does not repeat setup
+projects for `--repeat-each`) it is *skipped*, not failed. Every other closed
+spec works on any database state (a stranger is refused, an invited address gets
+in), so `--repeat-each` is safe for the whole project.
 
 ## Layout
 
