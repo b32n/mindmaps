@@ -219,6 +219,22 @@ test.describe("links across mindmaps", () => {
     await expect(page.getByRole("link", { name: /Here/ })).toContainText("Near");
   });
 
+  test("a stub can be followed from the keyboard", async ({ page, account }) => {
+    void account;
+    const here = await createBoard(page.request, "Here");
+    const there = await createBoard(page.request, "There");
+    const a = await createNode(page.request, here.id, { title: "Near", x: 0, y: 0 });
+    const b = await createNode(page.request, there.id, { title: "Away", body: "keyboard target", x: 0, y: 0 });
+    await createEdge(page.request, { source_id: a.id, target_id: b.id, source_handle: "right", target_handle: "left" });
+
+    await page.goto(`/app/${here.id}`);
+    const stub = page.getByRole("link", { name: /There/ });
+    await stub.focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(new RegExp(`/app/${there.id}\\?card=${b.id}`));
+    await expect(page.locator(".card-doc .ProseMirror")).toContainText("keyboard target");
+  });
+
   test("several links to the same far card share one stub", async ({ page, account }) => {
     void account;
     const here = await createBoard(page.request, "Here");

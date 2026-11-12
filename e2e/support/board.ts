@@ -178,7 +178,11 @@ export class Board {
     await mouse.move(from.x + dx, from.y + dy, { steps: 8 });
     await mouse.up();
     await saved;
-    return { before, after: await this.savedNode(id) };
+    const after = await this.savedNode(id);
+    // A drag that saved nothing new would make every "position persists" check
+    // below compare the server with itself.
+    expect([after.x, after.y], `node ${id} moved on the server`).not.toEqual([before.x, before.y]);
+    return { before, after };
   }
 
   // --- links ---------------------------------------------------------------
