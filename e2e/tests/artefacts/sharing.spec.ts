@@ -1,6 +1,7 @@
 import { test, expect } from "../../fixtures";
 import { addMember, createArtefact, createBoard, createLink, membersOf, nodeById, trash } from "../../support/api";
 import { MembersPanel } from "../../support/members";
+import { formulaBar, selectCell } from "../../support/sheet";
 import type { Page } from "@playwright/test";
 
 // Sharing a single artefact: with a person (a grant: "Can edit" / "Can view",
@@ -185,6 +186,49 @@ test.describe("a public link", () => {
       .toBe(1);
     await page.reload();
     await (await openShare(page)).getByText(/1 view, last/).waitFor();
+  });
+
+  test("a shared sheet shows its cells and formulas but cannot be edited", async ({ page, account, browser }) => {
+    void account;
+    const board = await createBoard(page.request, "Shared sheet");
+    const sheet = await createArtefact(page.request, board.id, "sheet", {
+      title: "Read-only sheet",
+      sheets: [{ name: "S", rows: [["Item", "Cost"], ["a", 10], ["b", 20], ["Total", "=SUM(B2:B3)"]] }],
+    });
+    const link = await createLink(page.request, sheet.id);
+    const visitor = await browser.newContext();
+    const theirs = await visitor.newPage();
+    const writes: string[] = [];
+    theirs.on("request", (r) => {
+      if (r.method() !== "GET") writes.push(`${r.method()} ${r.url()}`);
+    });
+    await theirs.goto(`/v/${link.token}`);
+    await expect(theirs.getByText("Shared, read only")).toBeVisible();
+    await expect(theirs.locator("canvas").first()).toBeVisible();
+    await selectCell(theirs, "B4", "=SUM(B2:B3)");
+    await selectCell(theirs, "B2", "10");
+
+    await theirs.keyboard.type("999");
+    await theirs.keyboard.press("Enter");
+    await selectCell(theirs, "B2", "10");
+    await expect(formulaBar(theirs)).toHaveValue("10");
+    expect(writes).toEqual([]);
+    expect(JSON.stringify(await (await page.request.get(`/api/artefacts/${sheet.id}`)).json())).not.toContain("999");
+    await visitor.close();
+  });
+
+  test("a shared deck shows its slides text", async ({ page, account, browser }) => {
+    void account;
+    const board = await createBoard(page.request, "Shared deck");
+    const deck = await createArtefact(page.request, board.id, "deck", { title: "Public deck", slides: [{ title: "Opening slide" }, { title: "Closing slide" }] });
+    const link = await createLink(page.request, deck.id);
+    const visitor = await browser.newContext();
+    const theirs = await visitor.newPage();
+    await theirs.goto(`/v/${link.token}`);
+    await expect(theirs.locator(".shared-title")).toHaveText("Public deck");
+    await expect(theirs.getByText("Opening slide").first()).toBeVisible();
+    await expect(theirs.getByText("Closing slide").first()).toBeVisible();
+    await visitor.close();
   });
 
   test("Revoke turns the link into 'not available' for the visitor", async ({ page, account, browser }) => {

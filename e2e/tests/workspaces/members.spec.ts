@@ -9,7 +9,7 @@ import {
   listWorkspaces,
   membersOf,
 } from "../../support/api";
-import { openWorkspacePeople } from "../../support/members";
+import { openWorkspacePeople, switchWorkspace } from "../../support/members";
 import { Rail } from "../../support/rail";
 import { signUpViaForm, expectSignedInShell } from "../../support/auth";
 import { newUser } from "../../support/users";
@@ -290,5 +290,71 @@ test.describe("what a member can do in a shared workspace", () => {
       "From the editor",
       "From the owner",
     ]);
+  });
+
+  test("an editor makes a mindmap from the rail while in the workspace; it lands there, for the owner too", async ({
+    account,
+    request,
+    existing,
+    openAs,
+    page,
+  }) => {
+    void account;
+    const ws = await createWorkspace(request, "Shared desk");
+    await addMember(request, "workspaces", ws.id, existing.user.email, "editor");
+    const theirs = await openAs(existing);
+    await theirs.goto("/app");
+    await switchWorkspace(theirs, /Shared desk/);
+    const made = theirs.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith("/api/boards"));
+    await new Rail(theirs).create("Made by the editor");
+    expect(((await (await made).json()) as { workspace_id: string }).workspace_id).toBe(ws.id);
+
+    await page.goto("/app");
+    await switchWorkspace(page, /Shared desk/);
+    await expect(new Rail(page).names()).toHaveText(["Made by the editor"]);
+  });
+
+  test("a viewer who tries to make a mindmap in the workspace is refused, and nothing is made", async ({
+    account,
+    request,
+    existing,
+    openAs,
+  }) => {
+    void account;
+    const ws = await createWorkspace(request, "Look only");
+    await addMember(request, "workspaces", ws.id, existing.user.email, "viewer");
+    const theirs = await openAs(existing);
+    await theirs.goto("/app");
+    await switchWorkspace(theirs, /Look only/);
+    const rail = new Rail(theirs);
+    await rail.openNewDialog();
+    const dialog = theirs.getByRole("dialog", { name: "New mindmap" });
+    await dialog.getByLabel("Name").fill("Should not exist");
+    const refused = theirs.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith("/api/boards"));
+    await dialog.getByRole("button", { name: "Create mindmap" }).click();
+    expect((await refused).status()).toBe(403);
+    await expect(dialog.getByRole("button", { name: "Create mindmap" })).toBeEnabled();
+    expect((await listBoards(request)).map((b) => b.name)).not.toContain("Should not exist");
+    await expect(rail.names()).toHaveCount(0);
+  });
+
+  test.fixme("a viewer whose new mindmap is refused is told why", async ({ account, request, existing, openAs }) => {
+    // Expected: the dialog says "You cannot add mindmaps to that workspace."
+    // (the server's 403 message), as the workspace and Share dialogs do for
+    // their own errors. Actual: MindmapDialog's submit has try/finally and no
+    // catch, so the refusal is an unhandled rejection and the dialog just sits
+    // there, unchanged, with the button re-enabled. Seen by trying to create a
+    // mindmap as a viewer of a workspace.
+    void account;
+    const ws = await createWorkspace(request, "Look only 2");
+    await addMember(request, "workspaces", ws.id, existing.user.email, "viewer");
+    const theirs = await openAs(existing);
+    await theirs.goto("/app");
+    await switchWorkspace(theirs, /Look only 2/);
+    await new Rail(theirs).openNewDialog();
+    const dialog = theirs.getByRole("dialog", { name: "New mindmap" });
+    await dialog.getByLabel("Name").fill("Should not exist");
+    await dialog.getByRole("button", { name: "Create mindmap" }).click();
+    await expect(dialog.getByText("You cannot add mindmaps to that workspace.")).toBeVisible();
   });
 });
