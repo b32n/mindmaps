@@ -206,11 +206,11 @@ test.describe("opening and switching", () => {
   test("a reload stays on the same mindmap", async ({ page, account, request }) => {
     void account;
     await createBoard(request, "Top");
-    const second = await createBoard(request, "Pick me");
-    void second;
+    await createBoard(request, "Pick me");
     await page.goto("/app");
     const rail = new Rail(page);
     await rail.open("Start here");
+    await expect(page.getByRole("heading", { level: 1, name: "Start here" })).toBeVisible();
     const url = page.url();
     await page.reload();
     await expect(page).toHaveURL(url);

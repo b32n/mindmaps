@@ -67,6 +67,8 @@ test.describe("session persistence", () => {
   test("survives a reload on the same page", async ({ page, account }) => {
     await page.goto("/app");
     await expect(page.locator(".rail-account .who-name")).toHaveText(account.name);
+    // /app settles on a concrete mindmap once the list has loaded; reload from there
+    await expect(page).toHaveURL(/\/app\/[0-9a-f-]{36}$/);
     const url = page.url();
     await page.reload();
     await expect(page).toHaveURL(url);

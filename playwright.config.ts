@@ -15,8 +15,9 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: CI,
   retries: CI ? 2 : 0,
-  // One Worker (workerd + SQLite) serves every test; two runners are enough to
-  // exercise isolation without starving it on a 2-vCPU CI machine.
+  // One Worker (workerd + SQLite) serves nearly every test (a second serves only
+  // the sign-up-closed specs); two runners are enough to exercise isolation
+  // without starving it on a 2-vCPU CI machine.
   workers: CI ? 2 : undefined,
   reporter: CI
     ? [

@@ -59,8 +59,8 @@ test.describe("opening and closing", () => {
 
   test("works from inside a card's editor, and reopening starts blank", async ({ page, account }) => {
     void account;
-    const { zebra } = await seed(page);
-    const board = new Board(page, page.request, (await page.url().split("/app/")[1]).split("?")[0]);
+    const { board: record, zebra } = await seed(page);
+    const board = new Board(page, page.request, record.id);
     await board.openCard(zebra.id);
     await board.editor.click();
     await page.keyboard.press("Control+k");

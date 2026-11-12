@@ -13,19 +13,13 @@ test.describe("settings dialog", () => {
     await expect(settings(page).locator("dd")).toHaveText([account.name, account.email]);
   });
 
-  test("an account with no name shows “Not set”", async ({ page, makePerson, browser }) => {
-    void makePerson;
-    const nameless = await browser.newContext();
-    const p = await nameless.newPage();
-    const email = `e2e-noname-${Date.now()}@example.test`;
-    const password = "Aa1!zzyyxxwwvvu9";
-    const res = await p.request.post("/api/auth/register", { data: { email, password } });
+  test("an account with no name shows “Not set”", async ({ page, request }) => {
+    const email = `e2e-noname-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.test`;
+    const res = await request.post("/api/auth/register", { data: { email, password: "Aa1!zzyyxxwwvvu9" } });
     expect(res.ok()).toBe(true);
-    await p.goto("/app");
-    await p.getByRole("button", { name: "Settings", exact: true }).click();
-    await expect(settings(p).locator("dd")).toHaveText(["Not set", email]);
-    await nameless.close();
-    void page;
+    await page.goto("/app");
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await expect(settings(page).locator("dd")).toHaveText(["Not set", email]);
   });
 
   test("with no connected apps it explains how to connect one, with this server's address", async ({ page, account, baseURL }) => {
