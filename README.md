@@ -342,6 +342,10 @@ A board with no owner is not a legal row — `0014_boards_require_owner` enforce
 it with a trigger, after an earlier design where unowned boards were adopted by
 whoever registered next.
 
+## Testing
+
+Browser tests run with Playwright against a local Worker; no Cloudflare account is involved. `npm run build && npm run e2e:install && npm run test:e2e`. See [e2e/README.md](e2e/README.md).
+
 ## How it fits together
 
 ```
