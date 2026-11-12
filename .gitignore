@@ -16,3 +16,10 @@ worker-configuration.d.ts
 # generated per install by scripts/install.mjs: your IDs, your domain
 wrangler.local.toml
 .install.json
+
+# end-to-end suite (see e2e/README.md)
+.e2e-state/
+e2e/.auth/
+test-results/
+playwright-report/
+blob-report/
