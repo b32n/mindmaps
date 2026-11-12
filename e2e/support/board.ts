@@ -114,6 +114,27 @@ export class Board {
     return this.addVia(() => this.page.getByRole("button", { name: "Add note" }).click());
   }
 
+  // --- the open card -------------------------------------------------------
+
+  /** The in-place document of the open card (the ProseMirror editor). */
+  get editor() {
+    return this.page.locator(".card-doc .ProseMirror");
+  }
+
+  /** Open a card with its "Open" button and wait for its editor. */
+  async openCard(id: string) {
+    await this.node(id).getByRole("button", { name: "Open" }).click();
+    await expect(this.editor).toBeVisible();
+    await expect(this.node(id).locator(".node.card.is-open")).toBeVisible();
+  }
+
+  /** Close the open card with its × and wait until the app has forgotten it. */
+  async closeCard() {
+    await this.page.locator(".card-doc").getByRole("button", { name: "Close" }).click();
+    await expect(this.page.locator(".card-doc")).toHaveCount(0);
+    await expect(this.page).not.toHaveURL(/card=/);
+  }
+
   // --- geometry ------------------------------------------------------------
 
   /** Where the browser draws a node, in viewport pixels. */
@@ -150,6 +171,20 @@ export class Board {
   }
 
   // --- viewport ------------------------------------------------------------
+
+  /** Wait until the canvas has stopped gliding (opening a card pans and zooms it). */
+  async settled() {
+    await expect
+      .poll(async () => {
+        const a = await this.viewport();
+        await this.page.evaluate(
+          () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+        );
+        const b = await this.viewport();
+        return a.x === b.x && a.y === b.y && a.zoom === b.zoom;
+      })
+      .toBe(true);
+  }
 
   /** `translate(x, y) scale(z)` of the React Flow viewport, as numbers. */
   async viewport() {

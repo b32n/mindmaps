@@ -35,6 +35,13 @@ interface Fixtures {
 }
 
 export const test = base.extend<Fixtures>({
+  // The default `request` has its own cookie jar. Share the browser context's
+  // instead, so API calls in a test are made as whoever the page is signed in as
+  // (nobody, until `account` runs) and reads/writes line up with what the UI sees.
+  request: async ({ context }, use) => {
+    await use(context.request);
+  },
+
   account: async ({ context }, use) => {
     const user = newUser();
     // `context.request` shares its cookie jar with every page in the context.
