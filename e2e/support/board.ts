@@ -177,6 +177,77 @@ export class Board {
     return { before, after: await this.savedNode(id) };
   }
 
+  // --- links ---------------------------------------------------------------
+
+  /** The connection dot on one side of a node (invisible until hovered, but live). */
+  handle(id: string, side: "top" | "right" | "bottom" | "left") {
+    return this.node(id).locator(`.react-flow__handle[data-handleid="${side}"]`);
+  }
+
+  /**
+   * Press on a node's handle and drag to a screen point (or another node's
+   * handle), releasing there. Real mouse events with intermediate moves, which
+   * React Flow needs to start and finish a connection.
+   */
+  async dragFromHandle(
+    id: string,
+    side: "top" | "right" | "bottom" | "left",
+    to: { x: number; y: number } | { node: string; side: "top" | "right" | "bottom" | "left" },
+  ) {
+    const from = await centre(this.handle(id, side));
+    const end = "node" in to ? await centre(this.handle(to.node, to.side)) : to;
+    const { mouse } = this.page;
+    await mouse.move(from.x, from.y);
+    await mouse.down();
+    await mouse.move((from.x + end.x) / 2, (from.y + end.y) / 2, { steps: 6 });
+    await mouse.move(end.x, end.y, { steps: 8 });
+    await mouse.up();
+  }
+
+  /** Link two cards by dragging handle to handle; resolves with the stored edge. */
+  async link(
+    from: string,
+    fromSide: "top" | "right" | "bottom" | "left",
+    to: string,
+    toSide: "top" | "right" | "bottom" | "left",
+  ) {
+    const created = this.page.waitForResponse(
+      (r) => r.request().method() === "POST" && r.url().endsWith("/api/edges") && r.status() === 201,
+    );
+    await this.dragFromHandle(from, fromSide, { node: to, side: toSide });
+    return (await (await created).json()) as { id: string; source_id: string; target_id: string };
+  }
+
+  /** The drawn link element for an edge id. */
+  edge(id: string) {
+    return this.page.locator(`.react-flow__edge[data-id="${id}"]`);
+  }
+
+  /** The label text of every drawn link ("+" when unlabelled), in DOM order. */
+  edgeLabels() {
+    return this.page.locator(".edge-label .edge-text");
+  }
+
+  /** The whole label chip, including its hover controls. */
+  edgeChips() {
+    return this.page.locator(".edge-label");
+  }
+
+  /**
+   * Put the pointer on a link's label and wait for its controls to open. The
+   * chip grows when they appear, so clicking before they have would land on the
+   * wrong spot.
+   */
+  async hoverEdge(n = 0) {
+    await this.edgeChips().nth(n).hover();
+    await expect(this.edgeChips().nth(n).getByRole("button", { name: "Flip link direction" })).toBeVisible();
+  }
+
+  /** The draggable dot at one end of a link (React Flow's reconnect anchor). */
+  edgeEnd(end: "source" | "target") {
+    return this.page.locator(`.react-flow__edgeupdater-${end}`);
+  }
+
   // --- viewport ------------------------------------------------------------
 
   /** Wait until the canvas has stopped gliding (opening a card pans and zooms it). */
@@ -200,4 +271,10 @@ export class Board {
     expect(m, `viewport transform "${t}"`).toBeTruthy();
     return { x: Number(m![1]), y: Number(m![2]), zoom: Number(m![3]) };
   }
+}
+
+async function centre(l: Locator) {
+  const b = await l.boundingBox();
+  expect(b, "handle has a box").not.toBeNull();
+  return { x: b!.x + b!.width / 2, y: b!.y + b!.height / 2 };
 }
