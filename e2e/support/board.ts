@@ -71,6 +71,11 @@ export class Board {
     return this.page.locator(`.react-flow__node[data-id="${id}"]`);
   }
 
+  /** The × in a node's corner (it is titled "Delete"; its text is just a ×). */
+  deleteButton(id: string) {
+    return this.node(id).getByTitle("Delete");
+  }
+
   /** The title field of a card (collapsed card face). */
   title(id: string) {
     return this.node(id).locator("input.card-title");
@@ -85,13 +90,15 @@ export class Board {
    * Wait for the PATCH that stores `value` into `field` of node `id`. Register
    * it *before* the action that triggers the save, then await it.
    */
-  savedField(id: string, field: NodeField, value?: string | number) {
+  savedField(id: string, field: NodeField, value?: string | number | RegExp) {
     return this.page.waitForResponse((r) => {
       if (r.request().method() !== "PATCH" || !r.url().endsWith(`/api/nodes/${id}`) || !r.ok())
         return false;
       const sent = r.request().postDataJSON() as Record<string, unknown>;
       if (!(field in sent)) return false;
-      return value === undefined || String(sent[field]).trim() === String(value);
+      if (value === undefined) return true;
+      const got = String(sent[field]);
+      return value instanceof RegExp ? value.test(got) : got.trim() === String(value);
     });
   }
 
