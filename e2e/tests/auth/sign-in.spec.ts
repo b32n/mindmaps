@@ -52,7 +52,7 @@ test.describe("sign in", () => {
     await expect(page.locator(".auth-error")).toHaveText("Google sign-in was cancelled");
   });
 
-  test("names the app when an agent harness sent you here to connect", async ({ page }) => {
+  test("names the app when a connecting app sent you here to sign in", async ({ page }) => {
     await page.goto("/login?connect=Claude%20Code");
     await expect(page.getByText("Sign in to connect Claude Code to your mindmaps.")).toBeVisible();
   });
