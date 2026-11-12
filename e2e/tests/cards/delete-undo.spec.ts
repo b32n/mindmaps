@@ -145,14 +145,32 @@ test.describe("undo and redo", () => {
     const id = await board.addCard();
     await board.canvas.click({ position: { x: 10, y: 10 } });
 
+    // Undo sends its DELETE without waiting for it, so a redo pressed at once can
+    // overtake it on the server. Wait for each request to land before the next key
+    // (what a person's keystroke gap does); see Observations in the PR.
+    const request = (method: string) =>
+      page.waitForResponse((r) => r.request().method() === method && r.url().includes("/api/nodes") && r.ok());
+
+    let sent = request("DELETE");
     await page.keyboard.press("Control+z");
     await expect(board.node(id)).toHaveCount(0);
+    await sent;
+
+    sent = request("POST");
     await page.keyboard.press("Control+Shift+z");
     await expect(board.node(id)).toBeVisible();
+    await sent;
+
+    sent = request("DELETE");
     await page.keyboard.press("Control+z");
     await expect(board.node(id)).toHaveCount(0);
+    await sent;
+
+    sent = request("POST");
     await page.keyboard.press("Control+y");
     await expect(board.node(id)).toBeVisible();
+    await sent;
+    expect((await board.savedNode(id)).id).toBe(id);
   });
 
   test("undoing a delete restores the card, its text and its links", async ({ page, account }) => {
