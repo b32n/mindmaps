@@ -1,4 +1,4 @@
-import { expect, test as base, type APIRequestContext } from "@playwright/test";
+import { expect, test as base, type APIRequestContext, type Page } from "@playwright/test";
 import { newUser, type TestUser } from "./support/users";
 
 /** Register through the real API. The session cookie lands on `request`'s jar. */
@@ -32,6 +32,12 @@ interface Fixtures {
    * their own cookie jar. Disposed with the test.
    */
   makePerson: (label?: string) => Promise<Person>;
+  /**
+   * A page signed in as `person`, in its own browser context (its own cookie
+   * jar), so two people can use the app side by side in one test. The context
+   * is closed with the test.
+   */
+  openAs: (person: Person) => Promise<Page>;
 }
 
 export const test = base.extend<Fixtures>({
@@ -59,6 +65,16 @@ export const test = base.extend<Fixtures>({
       return { user, request };
     });
     await Promise.all(made.map((r) => r.dispose()));
+  },
+
+  openAs: async ({ browser }, use) => {
+    const contexts: Awaited<ReturnType<typeof browser.newContext>>[] = [];
+    await use(async (person) => {
+      const context = await browser.newContext({ storageState: await person.request.storageState() });
+      contexts.push(context);
+      return context.newPage();
+    });
+    await Promise.all(contexts.map((c) => c.close()));
   },
 
   existing: async ({ makePerson }, use) => {
