@@ -1,9 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const PORT = Number(process.env.E2E_PORT ?? 8788);
+import { CLOSED_PORT, MAIN_PORT as PORT, mindboxWorker, originWorker } from "./e2e/support/hosts";
+
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 // The second Worker: same app, sign-up closed (wrangler.test-closed.toml).
-const CLOSED_PORT = Number(process.env.E2E_CLOSED_PORT ?? 8789);
 const CLOSED_URL = `http://127.0.0.1:${CLOSED_PORT}`;
 const CI = !!process.env.CI;
 
@@ -60,6 +60,43 @@ export default defineConfig({
       stdout: "pipe",
       stderr: "pipe",
     },
+    {
+      // Third and fourth Workers: origins configured (wrangler.test-origins.toml
+      // plus --var). They listen on every loopback address, so the hosts named
+      // in their configuration (localhost, 127.0.0.2) reach them too.
+      command: "node e2e/support/serve.mjs",
+      env: {
+        E2E_PORT: String(originWorker.port),
+        E2E_STATE_DIR: ".e2e-state-origin",
+        E2E_CONFIG: "wrangler.test-origins.toml",
+        E2E_IP: "0.0.0.0",
+        E2E_VARS: JSON.stringify({ PUBLIC_ORIGIN: originWorker.publicOrigin }),
+      },
+      url: `${originWorker.baseURL}/api/auth/me`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+    {
+      command: "node e2e/support/serve.mjs",
+      env: {
+        E2E_PORT: String(mindboxWorker.port),
+        E2E_STATE_DIR: ".e2e-state-mindbox",
+        E2E_CONFIG: "wrangler.test-origins.toml",
+        E2E_IP: "0.0.0.0",
+        E2E_VARS: JSON.stringify({
+          PUBLIC_ORIGIN: mindboxWorker.publicOrigin,
+          APP_ORIGIN: mindboxWorker.publicOrigin,
+          MINDBOX_ORIGIN: mindboxWorker.mindboxOrigin,
+        }),
+      },
+      url: `${mindboxWorker.baseURL}/api/auth/me`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
   ],
   projects: [
     { name: "setup", testDir: "./e2e/setup", testMatch: /.*\.setup\.ts/ },
@@ -82,6 +119,22 @@ export default defineConfig({
       testMatch: /.*\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: CLOSED_URL },
       dependencies: ["closed-setup"],
+    },
+    // Specs about the URLs the Worker hands out, against the Workers whose
+    // origins are configured. (The same checks run on the main Worker, the
+    // unconfigured default, from e2e/tests/mcp.) Users register through the real
+    // sign-up API, and sign-up is open here, so no setup project is needed.
+    {
+      name: "origin",
+      testDir: "./e2e/origins",
+      testMatch: /public-origin\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: originWorker.baseURL },
+    },
+    {
+      name: "mindbox",
+      testDir: "./e2e/origins",
+      testMatch: /mindbox-origin\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: mindboxWorker.baseURL },
     },
     // Add engines here when the suite is ready for them:
     //   { name: "firefox", use: { ...devices["Desktop Firefox"] }, dependencies: ["setup"] },
