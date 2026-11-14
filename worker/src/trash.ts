@@ -14,6 +14,7 @@
  *           it should be one action too
  */
 
+import { boardRole, canWrite } from "./access";
 import { isArtefact, artefactKey } from "./artefacts";
 import { filesOf, isFileKind, type FileEnv } from "./files";
 import { imageKeyFrom, trashObject, untrashNode, RETENTION_MS, type TrashEnv } from "./r2trash";
@@ -264,6 +265,33 @@ export async function listTrash(env: TrashEnv, userId: string): Promise<TrashRow
   return rows.results ?? [];
 }
 
+/**
+ * May this user put a deleted node back by id?
+ *
+ * Yes only when a live (unexpired) node entry exists and the caller either
+ * deleted it, or can write to the mindmap it was deleted from, which keeps a
+ * collaborator's undo working on a shared map. Everything else, including "no
+ * such entry", answers false, so a caller cannot tell a stranger's trash from an
+ * id that was never used. Reads nothing from R2.
+ */
+export async function mayRestoreNode(
+  env: TrashEnv,
+  userId: string,
+  nodeId: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT user_id, json_extract(payload, '$.node.board_id') AS board_id
+       FROM trash WHERE id = ? AND kind = 'node' AND deleted_at > ?`,
+  )
+    .bind(nodeId, now - RETENTION_MS)
+    .first<{ user_id: string; board_id: string | null }>();
+  if (!row) return false;
+  if (row.user_id === userId) return true;
+  if (!row.board_id) return false;
+  return canWrite(await boardRole(env.DB, userId, row.board_id));
+}
+
 export interface RestoreResult {
   ok: boolean;
   /** Where to send the user afterwards. */
@@ -284,8 +312,10 @@ export async function restoreTrash(
   userId: string,
   id: string,
 ): Promise<RestoreResult> {
-  const row = await env.DB.prepare(`SELECT * FROM trash WHERE id = ? AND user_id = ?`)
-    .bind(id, userId)
+  const row = await env.DB.prepare(
+    `SELECT * FROM trash WHERE id = ? AND user_id = ? AND deleted_at > ?`,
+  )
+    .bind(id, userId, Date.now() - RETENTION_MS)
     .first<Row>();
   if (!row) return { ok: false, error: "not found" };
 
@@ -313,6 +343,16 @@ export async function restoreTrash(
         ok: false,
         error: "The mindmap this came from was deleted too. Restore that first.",
       };
+  }
+
+  // Someone else may have made a node under this id since (an id is not a
+  // credential, but it can be squatted). Replaying the archive onto it would
+  // attach the archived file rows and edges to a node the owner never had.
+  for (const n of nodes) {
+    const taken = await env.DB.prepare(`SELECT 1 AS hit FROM nodes WHERE id = ?`)
+      .bind(String(n.id))
+      .first<{ hit: number }>();
+    if (taken) return { ok: false, error: "A card with this id already exists, so this cannot be restored." };
   }
 
   for (const b of boards) await reinsert(env.DB, "boards", b);
@@ -353,7 +393,12 @@ export async function restoreTrash(
  * board's entry, and that is undone through the trash dialog rather than by
  * replaying individual nodes.
  */
-export async function restoreFileRows(env: TrashEnv, nodeId: string): Promise<number> {
+export async function restoreFileRows(
+  env: TrashEnv,
+  userId: string,
+  nodeId: string,
+): Promise<number> {
+  if (!(await mayRestoreNode(env, userId, nodeId))) return 0;
   const row = await env.DB.prepare(`SELECT payload FROM trash WHERE id = ? AND kind = 'node'`)
     .bind(nodeId)
     .first<{ payload: string }>();
