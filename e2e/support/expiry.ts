@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createServer, type AddressInfo } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { request as pwRequest, type APIRequestContext } from "@playwright/test";
 
@@ -13,18 +14,34 @@ import { request as pwRequest, type APIRequestContext } from "@playwright/test";
  * starts it again on the same state.
  */
 const root = new URL("../..", import.meta.url).pathname;
-const port = Number(process.env.E2E_PORT ?? 8788) + 2;
-const stateDir = ".e2e-state-expiry";
+// Its own state dir and a free port per instance, so `--repeat-each` and
+// parallel workers each get a private Worker.
+const stateDir = `.e2e-state-expiry-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const wrangler = `${root}node_modules/.bin/wrangler`;
 const env = { ...process.env, WRANGLER_SEND_METRICS: "false" };
 
+function freePort(): Promise<number> {
+  return new Promise((ok, fail) => {
+    const srv = createServer();
+    srv.once("error", fail);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as AddressInfo;
+      srv.close(() => ok(port));
+    });
+  });
+}
+
 export class ExpiryWorker {
   private proc: ChildProcess | null = null;
-  readonly url = `http://127.0.0.1:${port}`;
+  private port = 0;
+  get url() {
+    return `http://127.0.0.1:${this.port}`;
+  }
 
   /** Empty database, migrations applied, Worker listening. */
   async start(fresh = true) {
     if (fresh) {
+      this.port = await freePort();
       spawnSync("rm", ["-rf", `${root}${stateDir}`]);
       const m = spawnSync(
         wrangler,
@@ -33,21 +50,33 @@ export class ExpiryWorker {
       );
       if (m.status !== 0) throw new Error(`migrations failed: ${m.stderr}`);
     }
-    this.proc = spawn(
-      wrangler,
-      ["dev", "-c", "wrangler.test.toml", "--persist-to", stateDir, "--ip", "127.0.0.1", "--port", String(port),
-        "--show-interactive-dev-session=false"],
-      { cwd: root, env, stdio: "ignore" },
-    );
-    for (let i = 0; i < 240; i++) {
-      try {
-        if ((await fetch(`${this.url}/api/auth/me`)).status < 500) return;
-      } catch {
-        /* not up yet */
+    // Up to three tries: starting workerd is slow when several of these (or the
+    // whole suite) share a small machine, and a try that hangs is cheaper to
+    // kill and repeat than to wait out.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      this.proc = spawn(
+        wrangler,
+        ["dev", "-c", "wrangler.test.toml", "--persist-to", stateDir, "--ip", "127.0.0.1", "--port", String(this.port),
+          "--show-interactive-dev-session=false"],
+        { cwd: root, env, stdio: "ignore" },
+      );
+      for (let i = 0; i < 80; i++) {
+        try {
+          if ((await fetch(`${this.url}/api/auth/me`)).status < 500) return;
+        } catch {
+          /* not up yet */
+        }
+        await sleep(500);
       }
-      await sleep(500);
+      await this.stop();
     }
     throw new Error("expiry Worker did not start");
+  }
+
+  /** Stop for good and delete the state. */
+  async dispose() {
+    await this.stop();
+    spawnSync("rm", ["-rf", `${root}${stateDir}`]);
   }
 
   async stop() {
@@ -58,7 +87,7 @@ export class ExpiryWorker {
     p.kill("SIGTERM");
     await Promise.race([closed, sleep(10_000)]);
     // workerd is a child of wrangler; make sure nothing keeps the port or the database
-    spawnSync("pkill", ["-f", `--port ${port}`]);
+    spawnSync("pkill", ["-f", `--port ${this.port}`]);
     await sleep(500);
   }
 

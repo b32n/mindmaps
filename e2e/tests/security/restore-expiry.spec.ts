@@ -18,7 +18,7 @@ test.beforeAll(async () => {
   await worker.start();
 });
 test.afterAll(async () => {
-  await worker.stop();
+  await worker.dispose();
 });
 
 test("an entry past its seven days is refused to its owner and to a collaborator, and is not listed; one inside the window still restores", async () => {

@@ -21,7 +21,7 @@ wrangler.local.toml
 .e2e-state/
 e2e/.auth/
 .e2e-state-closed/
-.e2e-state-expiry/
+.e2e-state-expiry-*/
 test-results/
 playwright-report/
 blob-report/
