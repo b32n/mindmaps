@@ -5,6 +5,10 @@
 //   2. apply the real migrations to local D1
 //   3. run `wrangler dev` on a fixed local port with wrangler.test.toml
 //
+// Environment: E2E_PORT, E2E_STATE_DIR and E2E_CONFIG choose the port, the state
+// dir and the wrangler config, so a second instance (sign-up closed, see
+// wrangler.test-closed.toml) can run beside the first.
+//
 // Playwright's `webServer` runs this and waits for HEALTH_URL. Nothing here
 // talks to Cloudflare: local D1/R2 live under STATE_DIR, and the test config has
 // no AI or Vectorize bindings (those would need a login).
@@ -14,7 +18,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const config = "wrangler.test.toml";
+const config = process.env.E2E_CONFIG ?? "wrangler.test.toml";
 const stateDir = process.env.E2E_STATE_DIR ?? ".e2e-state";
 const port = process.env.E2E_PORT ?? "8788";
 const wrangler = resolve(root, "node_modules/.bin/wrangler");

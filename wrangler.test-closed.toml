@@ -1,0 +1,30 @@
+# Second local runtime for the end-to-end suite: sign-up CLOSED. Never deployed.
+#
+# Identical to wrangler.test.toml except that ALLOW_SIGNUPS is not set, so the
+# Worker applies its real default: the first account on an empty database is the
+# owner; after that sign-up needs a live invite for the address. It runs on its
+# own port with its own state dir (see playwright.config.ts and
+# e2e/README.md), so it never shares a database with the main test Worker.
+
+name = "mindmaps-e2e-closed"
+main = "worker/src/index.ts"
+compatibility_date = "2026-09-01"
+
+[assets]
+directory = "./web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/oauth/*", "/.well-known/*", "/s/*", "/f/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mindmaps-e2e-closed"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "worker/migrations"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "mindmaps-e2e-closed"
+
+[[r2_buckets]]
+binding = "ARTEFACTS"
+bucket_name = "mindmaps-e2e-closed"

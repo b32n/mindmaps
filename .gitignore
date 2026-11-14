@@ -20,6 +20,7 @@ wrangler.local.toml
 # end-to-end suite (see e2e/README.md)
 .e2e-state/
 e2e/.auth/
+.e2e-state-closed/
 test-results/
 playwright-report/
 blob-report/
