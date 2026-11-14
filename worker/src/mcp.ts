@@ -2167,7 +2167,7 @@ async function appendToCard(env: McpEnv, userId: string, args: any) {
  * being unambiguously yours.
  */
 async function ownedEdge(env: McpEnv, userId: string, edgeId: string) {
-  return await env.DB.prepare(
+  const edge = await env.DB.prepare(
     `SELECT e.*,
             sn.board_id AS source_board, tn.board_id AS target_board,
             sb.name AS source_board_name, tb.name AS target_board_name
@@ -2180,6 +2180,15 @@ async function ownedEdge(env: McpEnv, userId: string, edgeId: string) {
   )
     .bind(edgeId, userId)
     .first<any>();
+  if (!edge) return null;
+  // Both tools that use this change or delete the link, so reading it is not
+  // enough: a viewer who has seen an id must not be able to rewrite the link.
+  // Same bar as the REST route (`canWriteEdge`): write on both ends.
+  const [a, b] = await Promise.all([
+    nodeRole(env.DB, userId, edge.source_id),
+    nodeRole(env.DB, userId, edge.target_id),
+  ]);
+  return canWrite(a) && canWrite(b) ? edge : null;
 }
 
 /**

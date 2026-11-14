@@ -1341,6 +1341,11 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
   if (a === "edges" && b && m === "PATCH") {
     if (!(await canWriteEdge(env, user, b))) return json(env, { error: "not found" }, 404);
     const p = await req.json<any>();
+    // Moving an end onto a card is writing to that card's graph, so it needs
+    // the same access creating a link there does.
+    for (const end of [p.source_id, p.target_id])
+      if (end !== undefined && !(await canWriteNode(env, user, end)))
+        return json(env, { error: "not found" }, 404);
     const sets: string[] = [];
     const vals: unknown[] = [];
     for (const [key, column] of [
