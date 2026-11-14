@@ -15,6 +15,7 @@ export interface ApiBoard {
   description: string | null;
   home_view: string | null;
   workspace_id: string | null;
+  position: number | null;
 }
 
 export interface ApiNode {
@@ -128,4 +129,94 @@ export async function shareBoard(
     await request.post(`/api/boards/${boardId}/members`, { data: { email, role } }),
     "share board",
   );
+}
+
+// --- workspaces, members, artefacts, files ----------------------------------
+
+export interface ApiWorkspace {
+  id: string;
+  name: string;
+  owner_id: string;
+  personal: number;
+  role: "owner" | "editor" | "viewer";
+}
+
+export async function listWorkspaces(request: APIRequestContext): Promise<ApiWorkspace[]> {
+  return ok(await request.get("/api/workspaces"), "list workspaces");
+}
+
+export async function createWorkspace(request: APIRequestContext, name: string): Promise<ApiWorkspace> {
+  return ok(await request.post("/api/workspaces", { data: { name } }), "create workspace");
+}
+
+/** The three things access can be granted on; the URL segment each uses. */
+export type Shareable = "workspaces" | "boards" | "artefacts";
+
+export interface ApiMembers {
+  members: { user_id: string; email: string; name: string | null; role: "editor" | "viewer"; created_at: number }[];
+  pending: { token: string; email: string; role: "editor" | "viewer" }[];
+}
+
+export async function membersOf(request: APIRequestContext, kind: Shareable, id: string): Promise<ApiMembers> {
+  return ok(await request.get(`/api/${kind}/${id}/members`), `members of ${kind}/${id}`);
+}
+
+/** Invite by email. Returns `{ added }` for an existing account, `{ invited }` for a pending invite. */
+export async function addMember(
+  request: APIRequestContext,
+  kind: Shareable,
+  id: string,
+  email: string,
+  role: "editor" | "viewer" = "editor",
+) {
+  return ok<{
+    added?: { userId: string; email: string; role: string };
+    invited?: { token: string; email: string; role: string };
+  }>(await request.post(`/api/${kind}/${id}/members`, { data: { email, role } }), `invite to ${kind}/${id}`);
+}
+
+/** A card/artefact node with the given type, made through the real create route. */
+export async function createArtefact(
+  request: APIRequestContext,
+  boardId: string,
+  type: "sheet" | "doc" | "deck" | "html" | "file" | "folder",
+  node: Record<string, unknown> = {},
+): Promise<ApiNode> {
+  return createNode(request, boardId, { type, ...node } as Partial<Omit<ApiNode, "id" | "board_id">>);
+}
+
+export interface ApiFile {
+  id: string;
+  name: string;
+  size: number;
+  contentType: string;
+  description: string;
+  uploadedBy: string | null;
+  url?: string;
+}
+
+/** Upload one file to a file/folder node, the way the app does (metadata in headers). */
+export async function uploadFile(
+  request: APIRequestContext,
+  nodeId: string,
+  f: { name: string; type: string; data: Buffer | string; description?: string },
+) {
+  const body = typeof f.data === "string" ? Buffer.from(f.data) : f.data;
+  return request.post(`/api/nodes/${nodeId}/files`, {
+    data: body,
+    headers: {
+      "content-type": f.type,
+      "x-file-name": encodeURIComponent(f.name),
+      ...(f.description ? { "x-file-description": encodeURIComponent(f.description) } : {}),
+    },
+  });
+}
+
+export async function listFiles(request: APIRequestContext, nodeId: string): Promise<ApiFile[]> {
+  return (await ok<{ files: ApiFile[] }>(await request.get(`/api/nodes/${nodeId}/files`), "list files")).files;
+}
+
+/** Create a public link on an artefact. */
+export async function createLink(request: APIRequestContext, nodeId: string) {
+  return ok<{ token: string; url: string }>(await request.post(`/api/artefacts/${nodeId}/share`, { data: {} }), "create link");
 }
