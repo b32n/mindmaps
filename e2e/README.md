@@ -217,7 +217,12 @@ comment above the test; un-`fixme` one when its fix lands. Still open in
 alone (`invite-claim.spec.ts`). Fixed and now ordinary tests: creating a node
 with someone else's artefact id used to overwrite its payload, and creating a
 link with someone else's link id used to replace it (`authz.spec.ts`, "ids are
-not credentials").
+not credentials"). Restoring from the trash is covered the same way
+(`restore.spec.ts`): only whoever deleted an item, or a writer on the mindmap it
+left, can bring it back. `restore-expiry.spec.ts` runs on its own private Worker
+(`support/expiry.ts`, own port and state dir) because it must backdate a trash
+entry, which cannot be done under the shared Worker without breaking its
+database for other tests.
 
 ## What is deliberately not covered
 
