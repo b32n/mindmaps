@@ -107,6 +107,7 @@ e2e/
     trash.ts             the Trash dialog
     auth.ts              fill the sign-in / sign-up forms
     files.ts             deliver a pasted or dropped image to the page; the test PNG
+    mcp.ts               an MCP client: the real OAuth flow, then tool calls over POST /mcp
     users.ts state.ts    unique users; paths of saved sessions
     serve.mjs            starts a local Worker (D1 + R2) for Playwright
   setup/                 registers the instance owner on the main Worker
@@ -202,19 +203,34 @@ Everything the UI exposes in these areas, on Chromium:
   inline PNG, delete with confirmation, trash and restore, permissions.
 - **Security**: SVG and HTML uploads (attachment, CSP sandbox, nosniff; no
   script runs when navigated to, in either route), file-name header injection,
-  id reuse, edge ids, invite matching.
+  id reuse (a node or link created under an id that is taken is a 409 and changes
+  nothing; an identical link re-sent is an idempotent retry; a deleted artefact's
+  id cannot be claimed, but its owner's undo still works), moving a link's end
+  onto a card you cannot write, the same links over MCP (`update_link`,
+  `unlink_cards`), invite matching.
 - **Basics only**: settings dialog, the Artefacts list, the research-thread
   section (no thread is started).
 
 Known product bugs are written as `test.fixme` with expected-vs-actual in a
-comment above the test; un-`fixme` one when its fix lands.
+comment above the test; un-`fixme` one when its fix lands. Still open in
+`security/`: an invite is claimed at sign-up by matching the e-mail address
+alone (`invite-claim.spec.ts`). Fixed and now ordinary tests: creating a node
+with someone else's artefact id used to overwrite its payload, and creating a
+link with someone else's link id used to replace it (`authz.spec.ts`, "ids are
+not credentials").
 
 ## What is deliberately not covered
 
 - **Semantic recall.** The test Worker has no Workers AI / Vectorize, so only
   the keyword ranking runs. Meaning-based ranking, the reranker and the
   embedding sweep are not exercised.
-- **MCP, the OAuth flow and "Connected apps"**: the next PR.
+- **MCP, the OAuth flow and "Connected apps"**: the next PR. (`support/mcp.ts`
+  only goes as far as `security/authz.spec.ts` needs: connect, then call
+  `update_link` / `unlink_cards`.)
+- **A failed R2 write during a node create.** The create writes the artefact
+  payload after the row and deletes the row again if that write throws; the
+  test Worker's R2 cannot be made to fail without a test-only code path, so that
+  one branch is reviewed, not run.
 - **Things that do not exist in the product**, so are not tested: renaming or
   deleting a workspace, moving a mindmap between workspaces, a role control on
   a member's row (a role is changed by inviting again), a "Leave" button (the
