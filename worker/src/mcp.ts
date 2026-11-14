@@ -782,6 +782,19 @@ async function callTool(id: Id, env: McpEnv, grant: TokenGrant, params: any): Pr
   if (!grant.scopes.includes(needed))
     return rpcOk(id, toolText(`This connection lacks the ${needed} scope.`, true));
 
+  // Anything thrown from here is a bug or an outage, not something the agent
+  // can act on. The raw message can carry SQL, so it stays in the log; the
+  // model gets a reference and the one fact it needs: nothing was written.
+  try {
+    return await runTool(id, env, grant, name, args);
+  } catch (err: any) {
+    const ref = crypto.randomUUID().slice(0, 8);
+    console.error("mcp tool failed", name, ref, err);
+    return rpcOk(id, toolText(`That failed (ref ${ref}); nothing was written.`, true));
+  }
+}
+
+async function runTool(id: Id, env: McpEnv, grant: TokenGrant, name: string, args: any): Promise<Response> {
   const u = grant.userId;
   switch (name) {
     case "recall":
@@ -1551,11 +1564,11 @@ async function candidateHomes(env: McpEnv, userId: string, limit = 6): Promise<s
   const { results } = await env.DB.prepare(
     `SELECT b.name, b.description
        FROM boards b
-      WHERE ${BOARD_READABLE} AND b.status != 'trashed' AND b.parent_id IS NULL
+      WHERE ${BOARD_READABLE("b")} AND b.status != 'trashed' AND b.parent_id IS NULL
       ORDER BY b.updated_at DESC
-      LIMIT ?`,
+      LIMIT ?2`,
   )
-    .bind(userId, userId, limit)
+    .bind(userId, limit)
     .all<any>();
 
   const rows = results ?? [];
@@ -1888,7 +1901,45 @@ const inputFor = (spec: (typeof KINDS)[ArtefactKind], content: unknown[] | strin
   ({ [spec.field]: content }) as Parameters<typeof payloadFromInput>[2];
 
 const kindOf = (raw: unknown): ArtefactKind =>
-  isArtefact(String(raw ?? "sheet")) ? (String(raw) as ArtefactKind) : "sheet";
+  typeof raw === "string" && isArtefact(raw) ? raw : "sheet";
+
+/** The size refusal is for the agent to read; anything else is for the log. */
+function artefactRefusal(err: any): string {
+  if (typeof err?.message === "string" && err.message.startsWith("Artefact is ")) return err.message;
+  throw err;
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * Say which field is wrong, before the builders trip over it.
+ *
+ * `payloadFromInput` assumes the shape the schema describes; a null sheet or a
+ * string where a list belongs used to surface as a TypeError about `rows` or
+ * `filter`, which names nothing the agent wrote.
+ */
+function badInput(kind: ArtefactKind, content: unknown[] | string): string | null {
+  if (kind === "sheet") {
+    const sheets = content as unknown[];
+    for (let i = 0; i < sheets.length; i++) {
+      const s = sheets[i];
+      if (!isObject(s)) return `sheets[${i}] must be an object like {name, rows}.`;
+      if (s.rows !== undefined && !Array.isArray(s.rows))
+        return `sheets[${i}].rows must be a list of rows, each a list of cells.`;
+    }
+  }
+  if (kind === "deck") {
+    const slides = content as unknown[];
+    for (let i = 0; i < slides.length; i++) {
+      const s = slides[i];
+      if (!isObject(s)) return `slides[${i}] must be an object like {title, bullets, notes}.`;
+      if (s.bullets !== undefined && !Array.isArray(s.bullets))
+        return `slides[${i}].bullets must be a list of strings.`;
+    }
+  }
+  return null;
+}
 
 /**
  * Create a spreadsheet, document or deck on a mindmap.
@@ -1939,11 +1990,13 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
   const seen = prior.get(key);
 
   const nodeId = seen?.id ?? crypto.randomUUID();
+  const bad = badInput(kind, content);
+  if (bad) return toolText(bad, true);
   let stored;
   try {
     stored = await putArtefact(env, nodeId, kind, payloadFromInput(kind, title, inputFor(spec, content)));
   } catch (err: any) {
-    return toolText(String(err?.message ?? err), true);
+    return toolText(artefactRefusal(err), true);
   }
 
   if (seen) {
@@ -2005,11 +2058,13 @@ async function updateArtefact(env: McpEnv, userId: string, args: any) {
     );
 
   const title = String(args?.title ?? node.title ?? "").trim() || spec.fallback;
+  const bad = badInput(kind, content);
+  if (bad) return toolText(bad, true);
   let stored;
   try {
     stored = await putArtefact(env, node.id, kind, payloadFromInput(kind, title, inputFor(spec, content)));
   } catch (err: any) {
-    return toolText(String(err?.message ?? err), true);
+    return toolText(artefactRefusal(err), true);
   }
 
   await env.DB.prepare(
