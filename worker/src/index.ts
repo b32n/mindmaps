@@ -1299,13 +1299,40 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       source_handle: p.source_handle ?? null,
       target_handle: p.target_handle ?? null,
     };
-    await env.DB.prepare(
-      `INSERT OR REPLACE INTO edges
-         (id,source_id,target_id,label,created_at,source_handle,target_handle)
-       VALUES (?,?,?,?,?,?,?)`,
-    )
-      .bind(...Object.values(edge))
-      .run();
+    /*
+     * A plain INSERT: an id that is taken is never replaced. This used to be
+     * INSERT OR REPLACE keyed on the caller's id, so anyone who had seen a
+     * link's id could delete or rewrite it by "creating" it between their own
+     * cards.
+     *
+     * The one thing that is allowed to meet an existing id is a retry: the
+     * very same link sent again (a dropped response, a redo whose undo never
+     * reached the server). It can only be answered with what is already stored
+     * and changes nothing, and the caller has just been checked to be able to
+     * write both ends, which is all that writing this link takes. Anything else
+     * is a 409.
+     */
+    try {
+      await env.DB.prepare(
+        `INSERT INTO edges
+           (id,source_id,target_id,label,created_at,source_handle,target_handle)
+         VALUES (?,?,?,?,?,?,?)`,
+      )
+        .bind(...Object.values(edge))
+        .run();
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      const prior = await env.DB.prepare(`SELECT * FROM edges WHERE id = ?`).bind(edge.id).first<any>();
+      const same =
+        prior &&
+        prior.source_id === edge.source_id &&
+        prior.target_id === edge.target_id &&
+        prior.label === edge.label &&
+        (prior.source_handle ?? null) === edge.source_handle &&
+        (prior.target_handle ?? null) === edge.target_handle;
+      if (same) return json(env, prior, 200);
+      return json(env, { error: "A link with that id already exists." }, 409);
+    }
     return json(env, edge, 201);
   }
 
