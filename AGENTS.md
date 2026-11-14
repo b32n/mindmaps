@@ -28,6 +28,8 @@ Ask before: using a custom domain (`--domain`), or enabling open sign-up
 
 - One Worker at the repo root (`wrangler.toml`): API and MCP in `worker/`, the
   React app in `web/`. `npm run dev` + `npm run dev:web`.
-- `npm run typecheck` before finishing. Migrations: `worker/migrations/`, numbered,
+- `npm run typecheck` (and `npm run typecheck:e2e`) before finishing. Migrations: `worker/migrations/`, numbered,
   idempotent.
+- `npm run build && npm run test:e2e` runs the Playwright suite against a local Worker
+  (no Cloudflare account needed); see `e2e/README.md`. CI's required check is `ci-ok`.
 - Read DESIGN.md and MCP.md before changing the data model or tools.

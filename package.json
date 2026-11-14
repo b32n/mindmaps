@@ -15,9 +15,19 @@
     "db:seed": "wrangler d1 execute DB --local --file=worker/seed.sql",
     "types": "wrangler types",
     "typecheck": "wrangler types && tsc -p worker --noEmit",
-    "setup": "node scripts/setup-research.mjs"
+    "setup": "node scripts/setup-research.mjs",
+    "typecheck:e2e": "tsc -p e2e --noEmit",
+    "ci:typecheck": "npm run typecheck && npm run typecheck:e2e",
+    "ci:build": "npm run build",
+    "e2e:install": "playwright install --with-deps chromium",
+    "e2e:serve": "node e2e/support/serve.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:report": "playwright show-report"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "@types/node": "^22.20.5",
     "typescript": "^5.7.0",
     "wrangler": "^4.128.0"
   },

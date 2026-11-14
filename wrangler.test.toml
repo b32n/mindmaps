@@ -1,0 +1,36 @@
+# Local runtime for the end-to-end suite (see e2e/README.md). Never deployed.
+#
+# Same Worker, same assets and the same D1/R2 bindings as wrangler.toml, but:
+#   - no [ai] / [[vectorize]]: those need a Cloudflare login even under
+#     `wrangler dev`. The Worker treats both as optional; recall falls back to
+#     keyword search.
+#   - no cron trigger: the minute sweep only re-embeds and reaps trash.
+#   - sign-up is open, so each test can register its own user.
+#   - placeholder database_id / bucket names: local mode never contacts
+#     Cloudflare, and the committed wrangler.toml deliberately has no real ids.
+
+name = "mindmaps-e2e"
+main = "worker/src/index.ts"
+compatibility_date = "2026-09-01"
+
+[assets]
+directory = "./web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/oauth/*", "/.well-known/*", "/s/*", "/f/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mindmaps-e2e"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "worker/migrations"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "mindmaps-e2e"
+
+[[r2_buckets]]
+binding = "ARTEFACTS"
+bucket_name = "mindmaps-e2e"
+
+[vars]
+ALLOW_SIGNUPS = "true"
