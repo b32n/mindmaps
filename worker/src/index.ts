@@ -31,7 +31,7 @@ import {
   sweepTrash,
 } from "./trash";
 import {
-  ARTEFACT_SQL, INDEXABLE_SQL, artefactKey, getArtefact, isArtefact, payloadFromInput,
+  ARTEFACT_SQL, INDEXABLE_SQL, artefactKey, describeArtefact, getArtefact, isArtefact, payloadFromInput,
   putArtefact,
   type ArtefactKind,
 } from "./artefacts";
@@ -815,6 +815,18 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       const deny = await requireBoardWrite(env, user, p.board_id);
       if (deny) return deny;
     }
+    /*
+     * An id the caller chose is only ever for a node that is not there.
+     *
+     * Undo/redo supplies one so a deleted node comes back under its own id, and
+     * that node is, by then, gone. Anything else is a collision, and has to be
+     * refused before the artefact branch below can touch R2: an id is not a
+     * credential, and anyone who has seen one (a viewer, a grantee, a link) must
+     * not be able to rewrite what it names by creating "a new node" with it.
+     */
+    if (p.id !== undefined && (await env.DB.prepare(`SELECT 1 AS hit FROM nodes WHERE id = ?`).bind(p.id).first()))
+      return json(env, { error: "A node with that id already exists." }, 409);
+
     const node = {
       // caller may supply an id so undo/redo can restore the same node and
       // keep any edges that reference it valid
@@ -841,7 +853,9 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       updated_at: now(),
     };
     // An artefact's bytes go to R2 and the row keeps a pointer, a summary and
-    // the text snapshot the brain reads.
+    // the text snapshot the brain reads. They are written *after* the row (see
+    // below), so this branch only works out what to write.
+    let toWrite: { key: string; json: string } | null = null;
     if (isArtefact(node.type)) {
       // A create that carries a pointer and no payload is a *restore* — undo
       // replays the node it captured, whose `data` is `{r2,kind,...}`. Treating
@@ -872,7 +886,15 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
           slides: p.slides,
           html: p.html,
         });
-      const stored = await putArtefact(env, node.id, kind, payload);
+      const { json: payloadJson, stored } = describeArtefact(node.id, kind, payload);
+      // A restore rewrites nothing: the object is already there and is the
+      // source of `payload`. A create must not land on an object that already
+      // exists (an orphan, or a deleted artefact still in the trash) either.
+      if (!restoring) {
+        if (await env.ARTEFACTS.head(stored.data.r2))
+          return json(env, { error: "A node with that id already exists." }, 409);
+        toWrite = { key: stored.data.r2, json: payloadJson };
+      }
       node.data = JSON.stringify(stored.data);
       node.body = stored.body;
     } else if (node.type === "image") {
@@ -885,12 +907,33 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       await untrashNode(env, node.id);
     }
 
-    await env.DB.prepare(
-      `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at,index_dirty)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    )
-      .bind(...Object.values(node), markIndex(node.type, node.title, node.body))
-      .run();
+    try {
+      await env.DB.prepare(
+        `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at,index_dirty)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+        .bind(...Object.values(node), markIndex(node.type, node.title, node.body))
+        .run();
+    } catch (err) {
+      // Lost a race for the same id: still a refusal, and R2 was never touched.
+      if (isUniqueViolation(err)) return json(env, { error: "A node with that id already exists." }, 409);
+      throw err;
+    }
+
+    // Row first, bytes second: only the request whose insert succeeded may
+    // write the object, so a refused create can never change anyone's payload.
+    // If the write itself fails the row goes again rather than pointing at
+    // nothing.
+    if (toWrite) {
+      try {
+        await env.ARTEFACTS.put(toWrite.key, toWrite.json, {
+          httpMetadata: { contentType: "application/json" },
+        });
+      } catch (err) {
+        await env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(node.id).run();
+        throw err;
+      }
+    }
 
     /*
      * A restored file node's rows, put back after the node itself.
@@ -1481,6 +1524,11 @@ async function requireNodeWrite(env: Env, user: SessionUser, nodeId: string) {
   return role
     ? json(env, { error: "You have view-only access to this." }, 403)
     : json(env, { error: "not found" }, 404);
+}
+
+/** Did this statement fail on a primary key / unique constraint? */
+function isUniqueViolation(err: unknown): boolean {
+  return /UNIQUE constraint|PRIMARY KEY/i.test(String((err as Error)?.message ?? err));
 }
 
 /** May this user read this mindmap at all? */
