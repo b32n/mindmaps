@@ -27,7 +27,7 @@ import {
   createShare, noteView, resolveShare, revokeShare, sharesFor, type ShareEnv,
 } from "./shares";
 import {
-  archiveBoard, archiveNode, emptyTrash, listTrash, purgeTrash, restoreFileRows, restoreTrash,
+  archiveBoard, archiveNode, emptyTrash, listTrash, purgeTrash, mayRestoreNode, restoreFileRows, restoreTrash,
   sweepTrash,
 } from "./trash";
 import {
@@ -852,6 +852,11 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       created_at: now(),
       updated_at: now(),
     };
+    // Whether this create may take back something from the trash. Decided once,
+    // before anything is read or un-filed: an id is not a credential, so only
+    // the one who deleted it, or a writer on the mindmap it left, gets the
+    // archived contents. Anyone else is treated as if the id had never existed.
+    const mayRestore = await mayRestoreNode(env, user.id, node.id);
     // An artefact's bytes go to R2 and the row keeps a pointer, a summary and
     // the text snapshot the brain reads. They are written *after* the row (see
     // below), so this branch only works out what to write.
@@ -863,9 +868,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       // the real workbook with an empty grid and call it a successful undo.
       const authored = p.sheets ?? p.blocks ?? p.slides ?? p.html;
       const restoring = !p.data?.workbook && !authored && typeof p.data?.r2 === "string";
-      if (restoring) await untrashNode(env, node.id);
-
-      const existing = restoring ? await getArtefact(env, node.id) : null;
+      const existing = restoring && mayRestore ? await getArtefact(env, node.id) : null;
       if (restoring && !existing)
         return json(
           env,
@@ -876,6 +879,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       // Recompute the pointer and snapshot from the bytes rather than trusting
       // the caller's copy, so a restored row can never describe something the
       // object does not say.
+      if (existing) await untrashNode(env, node.id);
       const kind = node.type as ArtefactKind;
       const payload =
         existing ??
@@ -899,12 +903,12 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       node.body = stored.body;
     } else if (node.type === "image") {
       // Same restore case, one bucket over.
-      await untrashNode(env, node.id);
+      if (mayRestore) await untrashNode(env, node.id);
     } else if (isFileKind(node.type)) {
       // Undo of a file or folder. The bytes were only filed, so un-filing them
       // here is enough to save them. The rows that say what those bytes *are*
       // cascaded with the node and have to wait until it is back — see below.
-      await untrashNode(env, node.id);
+      if (mayRestore) await untrashNode(env, node.id);
     }
 
     try {
@@ -945,7 +949,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
      * that was never there.
      */
     if (isFileKind(node.type)) {
-      const back = await restoreFileRows(env, node.id);
+      const back = await restoreFileRows(env, user.id, node.id);
       if (back) {
         const refreshed = await refreshFileNode(env, node.id, node.type, node.title);
         node.data = JSON.stringify(refreshed.data);
