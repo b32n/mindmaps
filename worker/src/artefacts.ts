@@ -648,18 +648,17 @@ function derive(kind: ArtefactKind, payload: unknown): { body: string; counts: R
 }
 
 /**
- * Write the payload, then return what the row should hold.
+ * Validate a payload and work out what the row should hold, without writing
+ * anything.
  *
- * R2 first, D1 second, and that order is deliberate: a failed D1 write leaves
- * an orphan object that the next save overwrites, where the reverse leaves a
- * row pointing at nothing.
+ * Split from `putArtefact` so a create can decide whether it is allowed to
+ * exist before a single byte reaches R2.
  */
-export async function putArtefact(
-  env: ArtefactEnv,
+export function describeArtefact(
   nodeId: string,
   kind: ArtefactKind,
   payload: unknown,
-): Promise<StoredArtefact> {
+): { json: string; stored: StoredArtefact } {
   const json = JSON.stringify(payload);
   if (json.length > MAX_PAYLOAD_BYTES)
     throw new Error(
@@ -667,10 +666,28 @@ export async function putArtefact(
     );
 
   const key = artefactKey(nodeId);
-  await env.ARTEFACTS.put(key, json, { httpMetadata: { contentType: "application/json" } });
-
   const { body, counts } = derive(kind, payload);
-  return { data: { r2: key, kind, ...counts }, body };
+  return { json, stored: { data: { r2: key, kind, ...counts }, body } };
+}
+
+/**
+ * Write the payload, then return what the row should hold.
+ *
+ * R2 first, D1 second, and that order is deliberate: a failed D1 write leaves
+ * an orphan object that the next save overwrites, where the reverse leaves a
+ * row pointing at nothing. That is right for an *existing* node, whose id the
+ * caller has already been checked against. A create under a caller-chosen id
+ * must not use it: see `POST /api/nodes`, which writes the row first.
+ */
+export async function putArtefact(
+  env: ArtefactEnv,
+  nodeId: string,
+  kind: ArtefactKind,
+  payload: unknown,
+): Promise<StoredArtefact> {
+  const { json, stored } = describeArtefact(nodeId, kind, payload);
+  await env.ARTEFACTS.put(stored.data.r2, json, { httpMetadata: { contentType: "application/json" } });
+  return stored;
 }
 
 export async function getArtefact(env: ArtefactEnv, nodeId: string): Promise<unknown | null> {
