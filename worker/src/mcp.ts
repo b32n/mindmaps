@@ -896,7 +896,7 @@ async function writableBoard(env: McpEnv, userId: string, boardId: string) {
 async function writeDenial(
   env: McpEnv,
   userId: string,
-  kind: "mindmap" | "card",
+  kind: "mindmap" | "card" | "artefact",
   id: string,
 ): Promise<string> {
   const role =
@@ -1182,7 +1182,10 @@ async function getCard(env: McpEnv, userId: string, args: any) {
     [
       `# ${node.title || "(untitled)"}`,
       `In mindmap: ${node.board_name}`,
-      `id: \`${node.id}\`` + (total ? ` · checklist ${done}/${total}` : "") + wrote,
+      `id: \`${node.id}\` · type: ${node.type}` +
+        (node.idem_key ? ` · key: \`${node.idem_key}\`` : "") +
+        (total ? ` · checklist ${done}/${total}` : "") +
+        wrote,
       ...(replacedBy.length
         ? [
             "",
@@ -1249,6 +1252,7 @@ const excerptOf = (body: string, fallbackLen = EXCERPT) =>
 
 export interface Hit {
   id: string;
+  type: string;
   title: string;
   body: string;
   board_id: string;
@@ -1277,7 +1281,7 @@ async function keywordHits(
   const match = ftsQuery(query, mode);
   if (!match) return [];
   const { results } = await env.DB.prepare(
-    `SELECT n.id, n.title, n.body, n.board_id, n.updated_at,
+    `SELECT n.id, n.type, n.title, n.body, n.board_id, n.updated_at,
             b.name AS board_name,
             -bm25(nodes_fts, 6.0, 1.0) AS score
        FROM nodes_fts f
@@ -1321,7 +1325,7 @@ async function search(env: McpEnv, userId: string, args: any) {
       .map((n) => `${n.title || "(untitled)"}${n.via_label ? ` (${n.via_label})` : ""}`)
       .join(", ");
     return (
-      `- **${h.title || "(untitled)"}** in *${h.board_name}*` +
+      `- **${h.title || "(untitled)"}** (${h.type}) in *${h.board_name}*` +
       (stale.has(h.id) ? " ⊘ superseded" : "") +
       `\n  id: \`${h.id}\` · mindmap: \`${h.board_id}\`` +
       (excerptOf(h.body) ? `\n  ${excerptOf(h.body)}…` : "") +
@@ -1725,6 +1729,8 @@ async function mergeIntoMindmap(
   );
 
   const existing = await existingByKey(env, boardId, rows.map((r) => r.key));
+  const clash = proseClash(rows, existing);
+  if (clash) return toolText(clash, true);
   const { stmts, ids, added, updated } = upsertNodeStmts(
     env, boardId, rows, true, existing, clientId,
   );
@@ -1799,6 +1805,8 @@ async function addToMindmap(env: McpEnv, userId: string, args: any, clientId?: s
   // this behaves exactly as it always did.
   const keyed = nodes.some((n) => n.key && String(n.key).trim());
   const prior = keyed ? await existingByKey(env, board.id, rows.map((r) => r.key)) : new Map();
+  const clash = proseClash(rows, prior);
+  if (clash) return toolText(clash, true);
   const { stmts, ids, added, updated } = upsertNodeStmts(
     env, board.id, rows, keyed, prior, clientId,
   );
@@ -1988,6 +1996,7 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
   const key = String(args?.key ?? "").trim();
   const prior = key ? await existingByKey(env, board.id, [key]) : new Map();
   const seen = prior.get(key);
+  if (seen && seen.type !== kind) return toolText(keyClash(key, seen, spec.noun), true);
 
   const nodeId = seen?.id ?? crypto.randomUUID();
   const bad = badInput(kind, content);
@@ -2042,20 +2051,33 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
 
 async function updateArtefact(env: McpEnv, userId: string, args: any) {
   const node = await writableNode(env, userId, String(args?.id ?? ""));
-  if (!node) return toolText(`No artefact with id ${args?.id}.`, true);
+  if (!node) return toolText(await writeDenial(env, userId, "artefact", String(args?.id ?? "")), true);
   if (!isArtefact(node.type))
-    return toolText(`That is a ${node.type}, not an artefact. Use update_card.`, true);
+    return toolText(
+      `That is a ${node.type}, not an artefact.` + (isProse(node.type) ? " Use update_card." : ""),
+      true,
+    );
 
   // The kind is the node's, never the caller's: an update must not turn a deck
   // into a spreadsheet and silently drop everything that was in it.
   const kind = node.type as ArtefactKind;
   const spec = KINDS[kind];
   const content = contentFor(spec, args);
-  if (content === null)
-    return toolText(
-      `Pass \`${spec.field}\` to write. This replaces the contents rather than merging.`,
-      true,
-    );
+  if (content === null) {
+    // A rename on its own leaves the payload exactly as it is.
+    const renamed = String(args?.title ?? "").trim();
+    if (!renamed)
+      return toolText(
+        `Pass \`${spec.field}\` to write the contents (this replaces them rather than merging), or just \`title\` to rename.`,
+        true,
+      );
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE nodes SET title = ?, updated_at = ? WHERE id = ?`).bind(renamed.slice(0, 500), now(), node.id),
+      env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id),
+    ]);
+    await reindex(env, userId, node.id);
+    return toolText(`Renamed to **${renamed.slice(0, 500)}**. The ${spec.noun}'s contents are unchanged.`);
+  }
 
   const title = String(args?.title ?? node.title ?? "").trim() || spec.fallback;
   const bad = badInput(kind, content);
@@ -2067,11 +2089,12 @@ async function updateArtefact(env: McpEnv, userId: string, args: any) {
     return toolText(artefactRefusal(err), true);
   }
 
-  await env.DB.prepare(
-    `UPDATE nodes SET title = ?, body = ?, data = ?, updated_at = ? WHERE id = ?`,
-  )
-    .bind(title, stored.body, JSON.stringify(stored.data), now(), node.id)
-    .run();
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE nodes SET title = ?, body = ?, data = ?, updated_at = ? WHERE id = ?`,
+    ).bind(title, stored.body, JSON.stringify(stored.data), now(), node.id),
+    env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id),
+  ]);
   await reindex(env, userId, node.id);
 
   return toolText(
@@ -2106,6 +2129,7 @@ async function addCard(env: McpEnv, userId: string, args: any, clientId?: string
   // is a fact about the past.
   const prior = cardKey ? await existingByKey(env, board.id, [cardKey]) : new Map();
   const seen = prior.get(cardKey);
+  if (seen && !isProse(seen.type)) return toolText(keyClash(cardKey, seen, "card"), true);
 
   if (seen) {
     await env.DB.batch([
@@ -2138,9 +2162,17 @@ async function addCard(env: McpEnv, userId: string, args: any, clientId?: string
   );
 }
 
+/** Why update_card and append_to_card will not touch this node, and what to use instead. */
+function notACard(node: { type: string; title?: string }): string {
+  if (isArtefact(node.type))
+    return `That is a ${node.type}, not a card. Use update_artefact: update_card would replace its text and leave the ${node.type} itself as it was.`;
+  return `That is a ${node.type}, not a card, so update_card and append_to_card leave it alone.`;
+}
+
 async function updateCard(env: McpEnv, userId: string, args: any) {
   const node = await writableNode(env, userId, String(args?.id ?? ""));
   if (!node) return toolText(await writeDenial(env, userId, "card", String(args?.id ?? "")), true);
+  if (!isProse(node.type)) return toolText(notACard(node), true);
 
   const sets: string[] = [];
   const vals: unknown[] = [];
@@ -2182,6 +2214,7 @@ async function updateCard(env: McpEnv, userId: string, args: any) {
 async function appendToCard(env: McpEnv, userId: string, args: any) {
   const node = await writableNode(env, userId, String(args?.id ?? ""));
   if (!node) return toolText(await writeDenial(env, userId, "card", String(args?.id ?? "")), true);
+  if (!isProse(node.type)) return toolText(notACard(node), true);
 
   const existing = parseDoc(node.doc);
   const { doc: addedDoc } = normaliseContent(args?.content);
@@ -2581,6 +2614,7 @@ function rrf(lists: Array<{ ids: string[]; weight: number }>): Map<string, numbe
 /** One ranked match, with everything either presentation needs. */
 export interface RecallHit {
   id: string;
+  type: string;
   title: string;
   board_id: string;
   board_name: string;
@@ -2707,6 +2741,7 @@ export async function rankRecall(
       const passage = passages.get(h.id) ?? String(h.body ?? "");
       return {
         id: h.id,
+        type: h.type,
         title: h.title,
         board_id: h.board_id,
         board_name: h.board_name,
@@ -2760,7 +2795,7 @@ async function recall(env: McpEnv, userId: string, args: any) {
 
   for (const h of hits) {
     out.push(
-      `## ${h.title || "(untitled)"}${h.superseded ? " ⊘ superseded" : ""}`,
+      `## ${h.title || "(untitled)"} (${h.type})${h.superseded ? " ⊘ superseded" : ""}`,
       `in *${h.board_name}* · id: \`${h.id}\` · matched on ${h.why.join(" + ")}`,
     );
     if (h.passage) out.push("", h.passage + (h.truncated ? "…" : ""));
@@ -2930,7 +2965,7 @@ async function semanticHits(
   const cardIds = [...best.keys()];
   const marks = cardIds.map(() => "?").join(",");
   const { results } = await env.DB.prepare(
-    `SELECT n.id, n.title, n.body, n.board_id, n.updated_at, b.name AS board_name
+    `SELECT n.id, n.type, n.title, n.body, n.board_id, n.updated_at, b.name AS board_name
        FROM nodes n JOIN boards b ON b.id = n.board_id
       WHERE n.id IN (${cardIds.map((_, i) => `?${i + 1}`).join(",")})
         AND ${BOARD_READABLE("b", cardIds.length + 1)}
@@ -3094,6 +3129,7 @@ export async function reindexPage(
 
 interface Existing {
   id: string;
+  type: string;
   x: number;
   y: number;
   data: string;
@@ -3109,12 +3145,46 @@ async function existingByKey(
   if (!wanted.length) return new Map();
   const marks = wanted.map(() => "?").join(",");
   const { results } = await env.DB.prepare(
-    `SELECT idem_key, id, x, y, data FROM nodes
+    `SELECT idem_key, id, type, x, y, data FROM nodes
       WHERE board_id = ? AND idem_key IN (${marks})`,
   )
     .bind(boardId, ...wanted)
     .all<Existing & { idem_key: string }>();
   return new Map((results ?? []).map((r) => [r.idem_key, r]));
+}
+
+/** Cards and notes are the prose nodes; everything else has a payload or bytes of its own. */
+const isProse = (type: string) => type === "card" || type === "note";
+
+/**
+ * What to say when a key already belongs to a node of another kind.
+ *
+ * A keyed write restates what is there, which is only right when what is there
+ * is the same kind of thing. Over a different kind it would replace a sheet's
+ * title with a card's, or leave a card whose payload is a spreadsheet. The agent
+ * is told what holds the key so it can pick another key or the right tool.
+ */
+function keyClash(key: string, seen: Existing, wanted: string): string {
+  const tool = isArtefact(seen.type)
+    ? "update_artefact"
+    : isProse(seen.type)
+      ? "update_card"
+      : null;
+  return (
+    `The key \`${key}\` already belongs to a ${seen.type} (id \`${seen.id}\`) on this mindmap, ` +
+    `so it cannot be reused for a ${wanted}. Nothing was changed. ` +
+    `Pick a different key` +
+    (tool ? `, or change that ${seen.type} with ${tool}.` : ".")
+  );
+}
+
+/** The first keyed row that would land on a node that is not prose, as a message. */
+function proseClash(rows: PreparedRow[], existing: Map<string, Existing>): string | null {
+  for (const r of rows) {
+    const seen = existing.get(r.key);
+    if (seen && !isProse(seen.type)) return keyClash(r.key, seen, "card");
+  }
+  return null;
 }
 
 /**
