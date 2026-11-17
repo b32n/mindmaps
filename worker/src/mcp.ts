@@ -36,6 +36,7 @@ import {
   fileById, filesOf, isFileKind, isTextual, storeFile, type FileRow,
 } from "./files";
 import { fileUrl, frameUrl } from "./mindbox";
+import { boardUrl, mindboxOrigin, nodeUrl, type LinkEnv } from "./links";
 import { isSupersedeLabel, neighbourhood, neighbourhoods, supersededSet, type Neighbour } from "./graph";
 import {
   indexCard, removeCards, rerankScores, semanticReady, similarChunks, type SemanticEnv,
@@ -597,11 +598,28 @@ export const requiredScopeFor = (tool: string) =>
 // Entry point
 // ---------------------------------------------------------------------------
 
-export interface McpEnv extends SemanticEnv {
+export interface McpEnv extends SemanticEnv, LinkEnv {
   DB: D1Database;
   /** artefact payloads; see artefacts.ts */
   ARTEFACTS: R2Bucket;
 }
+
+/*
+ * How a tool says which node it means: its id, type, mindmap and an absolute
+ * URL, always in this order and always on the line that carries the id. Agents
+ * pass the id back to other tools and hand the URL to the person, so both are
+ * on every node a result names. Added after the text a line already had, never
+ * in place of it, so a client that reads the older shape still can.
+ */
+type NodeLike = { id: string; type: string; board_id: string };
+
+const refTail = (env: McpEnv, n: NodeLike) =>
+  ` · type: ${n.type} · mindmap: \`${n.board_id}\` · url: ${nodeUrl(env, n)}`;
+const refLine = (env: McpEnv, n: NodeLike) => `id: \`${n.id}\`${refTail(env, n)}`;
+/** The same, for a mindmap, which is its own mindmap. */
+const boardTail = (env: McpEnv, boardId: string) =>
+  ` · type: mindmap · mindmap: \`${boardId}\` · url: ${boardUrl(env, boardId)}`;
+const boardRefLine = (env: McpEnv, boardId: string) => `id: \`${boardId}\`${boardTail(env, boardId)}`;
 
 /**
  * Handle one JSON-RPC message.
@@ -974,7 +992,7 @@ async function listMindmaps(env: McpEnv, userId: string) {
       `, updated ${new Date(b.updated_at).toISOString().slice(0, 10)}` +
       (labels.length ? `\n  labels: ${labels.join(", ")}` : "") +
       (b.description ? `\n  ${b.description}` : "") +
-      `\n  id: \`${b.id}\``
+      `\n  ${boardRefLine(env, b.id)}`
     );
   });
   const undescribed = rows.filter((b: any) => !b.description).length;
@@ -1034,7 +1052,7 @@ async function updateMindmap(env: McpEnv, userId: string, args: any) {
     .bind(...vals)
     .run();
 
-  return toolText(`Updated **${board.name}** — ${said.join("; ")}.`);
+  return toolText(`Updated **${board.name}** — ${said.join("; ")}.\n\n${boardRefLine(env, boardId)}`);
 }
 
 /**
@@ -1076,11 +1094,11 @@ async function getMindmap(env: McpEnv, userId: string, args: any) {
   const shown = nodes.slice(0, MAX_CARDS_IN_CONTEXT);
   const titleOf = new Map(all.map((n) => [n.id, n.title || "(untitled)"]));
 
-  const out: string[] = [`# ${board.name}`, ""];
+  const out: string[] = [`# ${board.name}`, boardRefLine(env, board.id), ""];
 
   for (const n of shown) {
     if (n.type === "note") {
-      out.push(`### Note`, `> ${(n.title || n.body || "").replace(/\n/g, "\n> ")}`, `id: \`${n.id}\``, "");
+      out.push(`### Note`, `> ${(n.title || n.body || "").replace(/\n/g, "\n> ")}`, refLine(env, n), "");
       continue;
     }
     const blocks = parseDoc(n.doc);
@@ -1090,7 +1108,8 @@ async function getMindmap(env: McpEnv, userId: string, args: any) {
       `id: \`${n.id}\`` +
         // the key is how a later session updates this card without holding its id
         (n.idem_key ? ` · key: \`${n.idem_key}\`` : "") +
-        (total ? ` · checklist ${done}/${total}` : ""),
+        (total ? ` · checklist ${done}/${total}` : "") +
+        refTail(env, { ...n, board_id: board.id }),
     );
     if (withDocs) {
       const raw = blocks.length ? blocksToMarkdown(blocks) : String(n.body ?? "");
@@ -1185,7 +1204,8 @@ async function getCard(env: McpEnv, userId: string, args: any) {
       `id: \`${node.id}\` · type: ${node.type}` +
         (node.idem_key ? ` · key: \`${node.idem_key}\`` : "") +
         (total ? ` · checklist ${done}/${total}` : "") +
-        wrote,
+        wrote +
+        refTail(env, node),
       ...(replacedBy.length
         ? [
             "",
@@ -1199,7 +1219,7 @@ async function getCard(env: McpEnv, userId: string, args: any) {
       // The relationships are the reasoning. Reading one card used to lose them
       // entirely, which made the graph invisible unless you loaded a whole board.
       ...(links.length ? ["", "## Connected to", "", ...links] : []),
-    ].join("\n"),
+    ].join("\n") + (await frameLine(env, node.type, node.id)),
   );
 }
 
@@ -1327,7 +1347,7 @@ async function search(env: McpEnv, userId: string, args: any) {
     return (
       `- **${h.title || "(untitled)"}** (${h.type}) in *${h.board_name}*` +
       (stale.has(h.id) ? " ⊘ superseded" : "") +
-      `\n  id: \`${h.id}\` · mindmap: \`${h.board_id}\`` +
+      `\n  id: \`${h.id}\` · mindmap: \`${h.board_id}\` · type: ${h.type} · url: ${nodeUrl(env, h)}` +
       (excerptOf(h.body) ? `\n  ${excerptOf(h.body)}…` : "") +
       (links ? `\n  connects to: ${links}` : "")
     );
@@ -1694,8 +1714,8 @@ async function createMindmap(env: McpEnv, userId: string, args: any, clientId?: 
       (mapKey
         ? `Keyed \`${mapKey}\` — calling create_mindmap again with this key will update it rather than making a second.\n`
         : "") +
-      `\nmindmap id: \`${boardId}\`\n\n` +
-      rows.map((r) => `- ${r.title || "(untitled)"} — \`${r.id}\``).join("\n"),
+      `\nmindmap ${boardRefLine(env, boardId)}\n\n` +
+      rows.map((r) => `- ${r.title || "(untitled)"} — \`${r.id}\`${refTail(env, { id: r.id, type: r.type, board_id: boardId })}`).join("\n"),
   );
 }
 
@@ -1780,8 +1800,8 @@ async function mergeIntoMindmap(
       `- ${added} added\n` +
       `- ${newLinks} new link${newLinks === 1 ? "" : "s"}, ${relinked} already present\n` +
       `\nCards on this mindmap that you did not mention were left alone.\n` +
-      `\nmindmap id: \`${boardId}\`\n\n` +
-      rows.map((r, i) => `- ${r.title || "(untitled)"} — \`${ids[i]}\``).join("\n"),
+      `\nmindmap ${boardRefLine(env, boardId)}\n\n` +
+      rows.map((r, i) => `- ${r.title || "(untitled)"} — \`${ids[i]}\`${refTail(env, { id: ids[i], type: r.type, board_id: boardId })}`).join("\n"),
   );
 }
 
@@ -1842,8 +1862,8 @@ async function addToMindmap(env: McpEnv, userId: string, args: any, clientId?: s
       : `Added ${added} node${added === 1 ? "" : "s"} to **${board.name}**`) +
       `, with ${linked} link${linked === 1 ? "" : "s"}.\n` +
       (unresolved.length ? `Skipped unresolvable edges: ${unresolved.join(", ")}.\n` : "") +
-      `\n` +
-      rows.map((r, i) => `- ${r.title || "(untitled)"} — \`${ids[i]}\``).join("\n"),
+      `\nmindmap ${boardRefLine(env, board.id)}\n\n` +
+      rows.map((r, i) => `- ${r.title || "(untitled)"} — \`${ids[i]}\`${refTail(env, { id: ids[i], type: r.type, board_id: board.id })}`).join("\n"),
   );
 }
 
@@ -1973,10 +1993,10 @@ function badInput(kind: ArtefactKind, content: unknown[] | string): string | nul
  * Absent `MINDBOX_SECRET` there is no URL to mint — local development, where
  * there is only one origin — so the line is omitted rather than broken.
  */
-async function frameLine(env: McpEnv, kind: ArtefactKind, nodeId: string): Promise<string> {
+async function frameLine(env: McpEnv, kind: string, nodeId: string): Promise<string> {
   if (kind !== "html") return "";
-  const url = await frameUrl(env as any, nodeId);
-  return url ? `\n\nRender this in your canvas (expires in an hour): ${url}` : "";
+  const url = await frameUrl(env as any, nodeId, mindboxOrigin(env));
+  return `\n\nRender this in your canvas (expires in an hour): ${url}`;
 }
 
 async function createArtefact(env: McpEnv, userId: string, args: any) {
@@ -2018,7 +2038,7 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
     ]);
     await reindex(env, userId, nodeId);
     return toolText(
-      `Updated **${title}** on ${board.name} — an artefact with key \`${key}\` was already there, so nothing was duplicated.\n\ncard id: \`${nodeId}\`` +
+      `Updated **${title}** on ${board.name} — an artefact with key \`${key}\` was already there, so nothing was duplicated.\n\ncard id: \`${nodeId}\`${refTail(env, { id: nodeId, type: kind, board_id: board.id })}` +
         (await frameLine(env, kind, nodeId)),
     );
   }
@@ -2044,7 +2064,7 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
   await reindex(env, userId, nodeId);
 
   return toolText(
-    `Added **${title}** to ${board.name}: ${spec.count(stored.data)}.\n\ncard id: \`${nodeId}\`` +
+    `Added **${title}** to ${board.name}: ${spec.count(stored.data)}.\n\ncard id: \`${nodeId}\`${refTail(env, { id: nodeId, type: kind, board_id: board.id })}` +
       (await frameLine(env, kind, nodeId)),
   );
 }
@@ -2076,7 +2096,10 @@ async function updateArtefact(env: McpEnv, userId: string, args: any) {
       env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id),
     ]);
     await reindex(env, userId, node.id);
-    return toolText(`Renamed to **${renamed.slice(0, 500)}**. The ${spec.noun}'s contents are unchanged.`);
+    return toolText(
+      `Renamed to **${renamed.slice(0, 500)}**. The ${spec.noun}'s contents are unchanged.\n\n${refLine(env, node)}` +
+        (await frameLine(env, kind, node.id)),
+    );
   }
 
   const title = String(args?.title ?? node.title ?? "").trim() || spec.fallback;
@@ -2098,7 +2121,7 @@ async function updateArtefact(env: McpEnv, userId: string, args: any) {
   await reindex(env, userId, node.id);
 
   return toolText(
-    `Rewrote **${title}**: ${spec.count(stored.data)}.` + (await frameLine(env, kind, node.id)),
+    `Rewrote **${title}**: ${spec.count(stored.data)}.\n\n${refLine(env, node)}` + (await frameLine(env, kind, node.id)),
   );
 }
 
@@ -2139,7 +2162,7 @@ async function addCard(env: McpEnv, userId: string, args: any, clientId?: string
     ]);
     await reindex(env, userId, seen.id);
     return toolText(
-      `Updated **${rows[0].title || "(untitled)"}** on ${board.name} — a card with key \`${cardKey}\` was already there, so nothing was duplicated.\n\ncard id: \`${seen.id}\``,
+      `Updated **${rows[0].title || "(untitled)"}** on ${board.name} — a card with key \`${cardKey}\` was already there, so nothing was duplicated.\n\ncard id: \`${seen.id}\`${refTail(env, { id: seen.id, type: seen.type, board_id: board.id })}`,
     );
   }
 
@@ -2158,7 +2181,7 @@ async function addCard(env: McpEnv, userId: string, args: any, clientId?: string
       // Naming an unknown card is a typo worth surfacing: the card is saved
       // either way, but it is sitting on its own and the agent should know.
       (connectTo && !anchored ? `. \`${connectTo}\` is not on this mindmap, so no link was drawn` : "") +
-      `.\n\ncard id: \`${rows[0].id}\``,
+      `.\n\ncard id: \`${rows[0].id}\`${refTail(env, { id: rows[0].id, type: rows[0].type, board_id: board.id })}`,
   );
 }
 
@@ -2208,7 +2231,7 @@ async function updateCard(env: McpEnv, userId: string, args: any) {
   await env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id).run();
   await reindex(env, userId, node.id);
 
-  return toolText(`Updated **${args?.title ?? (node.title || "(untitled)")}**.`);
+  return toolText(`Updated **${args?.title ?? (node.title || "(untitled)")}**.\n\n${refLine(env, node)}`);
 }
 
 async function appendToCard(env: McpEnv, userId: string, args: any) {
@@ -2236,7 +2259,7 @@ async function appendToCard(env: McpEnv, userId: string, args: any) {
   return toolText(
     `Appended to **${node.title || "(untitled)"}** — now ${merged.length} block${merged.length === 1 ? "" : "s"}` +
       (total ? `, checklist ${done}/${total}` : "") +
-      ".",
+      `.\n\n${refLine(env, node)}`,
   );
 }
 
@@ -2400,7 +2423,7 @@ async function relayoutMindmap(env: McpEnv, userId: string, args: any) {
     `Rearranged **${board.name}** to flow ${direction === "down" ? "top-to-bottom" : "left-to-right"}: ` +
       `${shifted.length} card${shifted.length === 1 ? "" : "s"} moved` +
       `${placed.length - shifted.length ? ` (${placed.length - shifted.length} already in place)` : ""}, ` +
-      `${edges.length} link${edges.length === 1 ? "" : "s"} re-attached.`,
+      `${edges.length} link${edges.length === 1 ? "" : "s"} re-attached.\n\n${boardRefLine(env, board.id)}`,
   );
 }
 
@@ -2427,7 +2450,7 @@ async function linkCards(env: McpEnv, userId: string, args: any) {
     `Linked **${from.title || "(untitled)"}** → **${to.title || "(untitled)"}**` +
       (args?.label ? ` — *${args.label}*` : "") +
       (across ? ` across mindmaps (${from.board_name} → ${to.board_name})` : "") +
-      ".",
+      `.\n\nfrom ${refLine(env, from)}\nto ${refLine(env, to)}`,
   );
 }
 
@@ -2488,14 +2511,14 @@ async function unlinkCards(env: McpEnv, userId: string, args: any) {
 // ---------------------------------------------------------------------------
 
 /** One line per neighbour: what it is, how it connects, where it lives. */
-function neighbourLine(n: Neighbour, homeBoard: string | null): string {
+function neighbourLine(env: McpEnv, n: Neighbour, homeBoard: string | null): string {
   const excerpt = String(n.body ?? "").replace(/\s+/g, " ").trim().slice(0, EXCERPT);
   const away = homeBoard && n.board_id !== homeBoard ? ` _(in ${n.board_name})_` : "";
   const stale = n.superseded ? " ⊘ superseded" : "";
   return (
     `- **${n.title || "(untitled)"}**${away}${stale}\n` +
     `  ${n.depth === 1 ? "via" : `${n.depth} hops, via`} *${n.via_label || "a link"}*` +
-    ` · id: \`${n.id}\`` +
+    ` · id: \`${n.id}\`${refTail(env, n)}` +
     (excerpt ? `\n  ${excerpt}${String(n.body ?? "").length > EXCERPT ? "…" : ""}` : "")
   );
 }
@@ -2512,13 +2535,14 @@ async function getContext(env: McpEnv, userId: string, args: any) {
 
   if (!found.length)
     return toolText(
-      `**${node.title || "(untitled)"}** in *${node.board_name}* has no links yet.\n\n` +
+      `**${node.title || "(untitled)"}** in *${node.board_name}* has no links yet.\n${refLine(env, node)}\n\n` +
         "Nothing to walk out to. link_cards connects it to something — including a card on another mindmap.",
     );
 
   const out: string[] = [
     `# Around: ${node.title || "(untitled)"}`,
     `Starting card: \`${node.id}\` in *${node.board_name}*`,
+    refLine(env, node),
     "",
   ];
 
@@ -2528,7 +2552,7 @@ async function getContext(env: McpEnv, userId: string, args: any) {
     const atDepth = found.filter((n) => n.depth === d);
     if (!atDepth.length) continue;
     out.push(d === 1 ? "## Directly connected" : `## ${d} hops away`, "");
-    for (const n of atDepth) out.push(neighbourLine(n, node.board_id));
+    for (const n of atDepth) out.push(neighbourLine(env, n, node.board_id));
     out.push("");
   }
 
@@ -2796,7 +2820,7 @@ async function recall(env: McpEnv, userId: string, args: any) {
   for (const h of hits) {
     out.push(
       `## ${h.title || "(untitled)"} (${h.type})${h.superseded ? " ⊘ superseded" : ""}`,
-      `in *${h.board_name}* · id: \`${h.id}\` · matched on ${h.why.join(" + ")}`,
+      `in *${h.board_name}* · id: \`${h.id}\` · matched on ${h.why.join(" + ")}${refTail(env, h)}`,
     );
     if (h.passage) out.push("", h.passage + (h.truncated ? "…" : ""));
     if (h.links.length) {
@@ -3353,7 +3377,7 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
       });
       await reindex(env, userId, folderId);
       return toolText(
-        `Added **${row.name}** (${readableSize(row.size)}) to ${node.title || "the folder"}.\n\nfile id: \`${row.id}\``,
+        `Added **${row.name}** (${readableSize(row.size)}) to ${node.title || "the folder"}.\n\nfile id: \`${row.id}\`\nfolder ${refLine(env, node)}`,
       );
     } catch (err: any) {
       return toolText(String(err?.message ?? err), true);
@@ -3412,7 +3436,7 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
       await reindex(env, userId, folderNodeId);
       return toolText(
         `Added **${row.name}** (${readableSize(row.size)}) to ${folderName}` +
-          `${found ? "" : " — a new folder"} on ${board.name}.\n\ncard id: \`${folderNodeId}\`\nfile id: \`${row.id}\``,
+          `${found ? "" : " — a new folder"} on ${board.name}.\n\ncard id: \`${folderNodeId}\`${refTail(env, { id: folderNodeId, type: "folder", board_id: board.id })}\nfile id: \`${row.id}\``,
       );
     } catch (err: any) {
       // A folder this call just made, left empty by a refused upload, is
@@ -3449,7 +3473,7 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
     });
     await reindex(env, userId, nodeId);
     return toolText(
-      `Stored **${row.name}** (${readableSize(row.size)}) on ${board.name}.\n\ncard id: \`${nodeId}\``,
+      `Stored **${row.name}** (${readableSize(row.size)}) on ${board.name}.\n\ncard id: \`${nodeId}\`${refTail(env, { id: nodeId, type: "file", board_id: board.id })}`,
     );
   } catch (err: any) {
     // The row would otherwise sit on the board as an empty file card with no
@@ -3467,9 +3491,9 @@ async function listFilesTool(env: McpEnv, userId: string, args: any) {
   const node = await readableNode(env, userId, wanted);
   if (node && isFileKind(node.type)) {
     const rows = await filesOf(env as any, wanted);
-    if (!rows.length) return toolText(`**${node.title || "Untitled"}** is empty.`);
+    if (!rows.length) return toolText(`**${node.title || "Untitled"}** is empty.\n${refLine(env, node)}`);
     return toolText(
-      `**${node.title || "Untitled"}**\n\n` +
+      `**${node.title || "Untitled"}**\n${refLine(env, node)}\n\n` +
         rows
           .map(
             (f: FileRow) =>
@@ -3484,7 +3508,7 @@ async function listFilesTool(env: McpEnv, userId: string, args: any) {
   if (!board) return toolText(`Nothing readable with id ${wanted}.`, true);
 
   const { results } = await env.DB.prepare(
-    `SELECT n.id, n.title, n.type, COUNT(f.id) AS files, COALESCE(SUM(f.size),0) AS bytes
+    `SELECT n.id, n.board_id, n.title, n.type, COUNT(f.id) AS files, COALESCE(SUM(f.size),0) AS bytes
        FROM nodes n LEFT JOIN files f ON f.node_id = n.id
       WHERE n.board_id = ? AND n.type IN ('file','folder')
       GROUP BY n.id ORDER BY n.updated_at DESC`,
@@ -3496,12 +3520,12 @@ async function listFilesTool(env: McpEnv, userId: string, args: any) {
   if (!rows.length) return toolText(`No files on ${board.name} yet.`);
 
   return toolText(
-    `Files on **${board.name}**\n\n` +
+    `Files on **${board.name}**\n${boardRefLine(env, board.id)}\n\n` +
       rows
         .map(
           (r: any) =>
             `- ${r.type === "folder" ? "📁" : "📄"} **${r.title || "Untitled"}** · ` +
-            `${r.files} file${r.files === 1 ? "" : "s"} · ${readableSize(r.bytes)} · \`${r.id}\``,
+            `${r.files} file${r.files === 1 ? "" : "s"} · ${readableSize(r.bytes)} · \`${r.id}\`${refTail(env, r)}`,
         )
         .join("\n"),
   );
@@ -3514,11 +3538,12 @@ async function readFileTool(env: McpEnv, userId: string, args: any) {
   // agent that has just been handed a card id from recall has no reason to
   // know there is a second kind of identifier underneath it.
   let row = await fileById(env as any, wanted);
+  let node;
   if (row) {
-    const node = await readableNode(env, userId, row.node_id);
+    node = await readableNode(env, userId, row.node_id);
     if (!node) return toolText(`No file with id ${wanted}.`, true);
   } else {
-    const node = await readableNode(env, userId, wanted);
+    node = await readableNode(env, userId, wanted);
     if (!node || !isFileKind(node.type)) return toolText(`No file with id ${wanted}.`, true);
     const rows = await filesOf(env as any, wanted);
     if (rows.length !== 1)
@@ -3532,11 +3557,12 @@ async function readFileTool(env: McpEnv, userId: string, args: any) {
   }
 
   if (!isTextual(row.name, row.content_type)) {
-    const url = await fileUrl(env as any, row.id);
+    const url = await fileUrl(env as any, row.id, mindboxOrigin(env));
     return toolText(
       `**${row.name}** is ${row.content_type}, which has no text to return.` +
         (row.description ? `\n\n${row.description}` : "") +
-        (url ? `\n\nDownload (expires in an hour): ${url}` : ""),
+        `\n\n${refLine(env, node)}` +
+        `\n\nDownload (expires in an hour): ${url}`,
     );
   }
 
@@ -3544,5 +3570,5 @@ async function readFileTool(env: McpEnv, userId: string, args: any) {
   if (!obj) return toolText(`**${row.name}** is no longer stored.`, true);
 
   const text = await obj.text();
-  return toolText(`**${row.name}**\n\n\`\`\`\n${text}\n\`\`\``);
+  return toolText(`**${row.name}**\n${refLine(env, node)}\n\n\`\`\`\n${text}\n\`\`\``);
 }
