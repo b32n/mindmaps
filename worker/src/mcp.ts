@@ -34,7 +34,7 @@ import {
   nodeRole, recallScope,
 } from "./access";
 import {
-  fileById, filesOf, isFileKind, isTextual, storeFile, type FileRow,
+  FileError, fileById, filesOf, isFileKind, isTextual, storeFile, type FileRow,
 } from "./files";
 import { fileUrl, frameUrl } from "./mindbox";
 import { boardUrl, mindboxOrigin, nodeUrl, type LinkEnv } from "./links";
@@ -1995,6 +1995,12 @@ const kindOf = (raw: unknown): ArtefactKind =>
   typeof raw === "string" && isArtefact(raw) ? raw : "sheet";
 
 /** The size refusal is for the agent to read; anything else is for the log. */
+/** A file tool's own refusal is for the agent to read; anything else is for the log. */
+function fileRefusal(err: any): string {
+  if (err instanceof FileError) return err.message;
+  throw err;
+}
+
 function artefactRefusal(err: any): string {
   if (err instanceof ArtefactTooLarge) return err.message;
   throw err;
@@ -3591,7 +3597,7 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
         `Added **${row.name}** (${readableSize(row.size)}) to ${node.title || "the folder"}.\n\nfile id: \`${row.id}\`\nfolder ${refLine(env, node)}`,
       );
     } catch (err: any) {
-      return toolText(String(err?.message ?? err), true);
+      return toolText(fileRefusal(err), true);
     }
   }
 
@@ -3653,7 +3659,7 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
       // A folder this call just made, left empty by a refused upload, is
       // litter. One that was already there stays: it is not ours to remove.
       if (!found) await env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(folderNodeId).run();
-      return toolText(String(err?.message ?? err), true);
+      return toolText(fileRefusal(err), true);
     }
   }
 
@@ -3690,7 +3696,7 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
     // The row would otherwise sit on the board as an empty file card with no
     // way to tell it apart from one whose upload is still coming.
     await env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(nodeId).run();
-    return toolText(String(err?.message ?? err), true);
+    return toolText(fileRefusal(err), true);
   }
 }
 
