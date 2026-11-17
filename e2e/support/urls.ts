@@ -33,7 +33,8 @@ export interface Ref {
 export function refs(text: string): Ref[] {
   const out: Ref[] = [];
   for (const line of text.split("\n")) {
-    const id = /\bid: `([^`]+)`/.exec(line)?.[1] ?? /^- .* — `([^`]+)`/.exec(line)?.[1];
+    const id = /\bid: `([^`]+)`/.exec(line)?.[1] ?? /^- .* — `([^`]+)`/.exec(line)?.[1] ??
+      /^- .* · `([^`]+)` · type: /.exec(line)?.[1];
     if (!id) continue;
     out.push({
       id,
@@ -95,6 +96,15 @@ export async function anonymous<T>(fn: (r: APIRequestContext) => Promise<T>): Pr
   }
 }
 
+/** GET `url` with nothing but the URL; the body is read before the request context goes. */
+export async function fetched(url: string) {
+  return anonymous(async (r) => {
+    const res = await r.get(url);
+    const body = await res.body();
+    return { status: () => res.status(), body: () => body, text: () => body.toString("utf8") };
+  });
+}
+
 /** Open an app URL as the signed-in person, whatever host it names. */
 export async function openApp(page: Page, context: BrowserContext, url: string) {
   // The session cookie belongs to the host the test connected through; the URL
@@ -126,6 +136,7 @@ export function urlSpecs(label: string, o: Origins) {
       void account;
       const mcp = await connectMcp(request);
 
+      await mcpOk(mcp, "recall", { query: "ref map" });
       const made = await mcpOk(mcp, "create_mindmap", {
         name: "Ref map",
         nodes: [{ key: "a", title: "Alpha card", content: "first" }, { key: "b", title: "Beta card", content: "second" }],
@@ -152,9 +163,10 @@ export function urlSpecs(label: string, o: Origins) {
 
       // The mindmap URL opens the mindmap; a card URL opens that card.
       await openApp(page, context, mapRef.url!);
-      await expect(page.getByText("Alpha card").first()).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Ref map" })).toBeVisible();
+      await expect(page.getByRole("textbox", { name: "Untitled" }).first()).toHaveValue("Alpha card");
       await openApp(page, context, refTo(card, deltaId).url!);
-      await expect(page.getByText("Delta card").first()).toBeVisible();
+      await expect(page.getByRole("textbox", { name: "Untitled" }).last()).toHaveValue("Delta card");
       expect(new URL(page.url()).searchParams.get("card")).toBe(deltaId);
     });
 
@@ -223,9 +235,9 @@ export function urlSpecs(label: string, o: Origins) {
         const url = frameIn(text);
         expect(url, `${what} returned no frame URL:\n${text}`).toBeTruthy();
         expect(url!.startsWith(`${o.mindbox}/s/${id}?exp=`), `${what}: ${url}`).toBe(true);
-        const res = await anonymous((r) => r.get(url!));
+        const res = await fetched(url!);
         expect(res.status(), `${what} frame status`).toBe(200);
-        expect(await res.text()).toContain(marker);
+        expect(res.text()).toContain(marker);
       };
 
       await check(made, "marker-one", "create_artefact");
@@ -236,7 +248,7 @@ export function urlSpecs(label: string, o: Origins) {
       // And the app's own route for it mints one too.
       const viaRest = await (await request.get(`/api/artefacts/${id}/frame`)).json();
       expect(viaRest.url.startsWith(`${o.mindbox}/s/${id}?exp=`), viaRest.url).toBe(true);
-      expect((await anonymous((r) => r.get(viaRest.url))).status()).toBe(200);
+      expect((await fetched(viaRest.url)).status()).toBe(200);
     });
 
     test("a frame URL stops working once its node is in the trash", async ({ account, request }) => {
@@ -246,12 +258,12 @@ export function urlSpecs(label: string, o: Origins) {
       const made = await mcpOk(mcp, "create_artefact", { mindmap_id: board.id, type: "html", title: "Soon gone", html: PAGE_HTML("still-here") });
       const id = idOf(made);
       const url = frameIn(made)!;
-      expect((await anonymous((r) => r.get(url))).status()).toBe(200);
+      expect((await fetched(url)).status()).toBe(200);
 
       await deleteNode(request, id);
-      const gone = await anonymous((r) => r.get(url));
+      const gone = await fetched(url);
       expect(gone.status()).toBe(404);
-      expect(await gone.text()).not.toContain("still-here");
+      expect(gone.text()).not.toContain("still-here");
     });
 
     test("a frame URL stops working once its whole mindmap is in the trash", async ({ account, request }) => {
@@ -260,10 +272,10 @@ export function urlSpecs(label: string, o: Origins) {
       const board = await createBoard(request, "Trashed map");
       const made = await mcpOk(mcp, "create_artefact", { mindmap_id: board.id, type: "html", title: "Soon gone", html: PAGE_HTML("still-here") });
       const url = frameIn(made)!;
-      expect((await anonymous((r) => r.get(url))).status()).toBe(200);
+      expect((await fetched(url)).status()).toBe(200);
 
       await deleteBoard(request, board.id);
-      expect((await anonymous((r) => r.get(url))).status()).toBe(404);
+      expect((await fetched(url)).status()).toBe(404);
     });
 
     test("get_card, get_mindmap, list_mindmaps, get_context, search, recall and the mindmap tools carry ids and URLs", async ({
@@ -352,9 +364,9 @@ export function urlSpecs(label: string, o: Origins) {
       const dl = downloadIn(read);
       expect(dl, read).toBeTruthy();
       expect(dl!.startsWith(`${o.mindbox}/f/`), dl).toBe(true);
-      const res = await anonymous((r) => r.get(dl!));
+      const res = await fetched(dl!);
       expect(res.status()).toBe(200);
-      expect(Buffer.from(await res.body()).equals(bytes)).toBe(true);
+      expect(Buffer.from(res.body()).equals(bytes)).toBe(true);
     });
 
     test("the REST routes build the same URLs: frame, file list, share link and shared view", async ({ page, account, request }) => {
@@ -369,8 +381,8 @@ export function urlSpecs(label: string, o: Origins) {
       const file = idOf(await mcpOk(mcp, "put_file", { mindmap_id: board.id, name: "r.txt", content: "rest bytes", description: "r" }));
       const files = (await (await request.get(`/api/nodes/${file}/files`)).json()).files as { url: string }[];
       expect(files[0]!.url.startsWith(`${o.mindbox}/f/`), files[0]!.url).toBe(true);
-      const dl = await anonymous((r) => r.get(files[0]!.url));
-      expect(await dl.text()).toBe("rest bytes");
+      const dl = await fetched(files[0]!.url);
+      expect(dl.text()).toBe("rest bytes");
 
       const link = await createLink(request, html);
       expect(link.url).toBe(`${o.app}/v/${link.token}`);
@@ -379,9 +391,9 @@ export function urlSpecs(label: string, o: Origins) {
 
       const shared = await anonymous(async (r) => (await r.get(`${new URL(o.app).origin}/api/shared/${link.token}`)).json());
       expect(shared.frame.startsWith(`${o.mindbox}/s/${html}?t=`), shared.frame).toBe(true);
-      const body = await anonymous((r) => r.get(shared.frame));
+      const body = await fetched(shared.frame);
       expect(body.status()).toBe(200);
-      expect(await body.text()).toContain("shared-marker");
+      expect(body.text()).toContain("shared-marker");
 
       // The link itself opens the shared view, signed out.
       await page.context().clearCookies();

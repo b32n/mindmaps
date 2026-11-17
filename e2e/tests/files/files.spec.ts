@@ -164,7 +164,7 @@ test.describe("opening and downloading", () => {
     await page.goto(`/file/${node.id}`);
     const open = rows(page).first().getByRole("link", { name: "Open" });
     await expect(open).toHaveAttribute("target", "_blank");
-    await expect(open).toHaveAttribute("href", /^\/f\/[0-9a-f-]{36}\?exp=\d+&sig=[0-9a-f]{64}$/);
+    await expect(open).toHaveAttribute("href", /^(https?:\/\/[^/]+)?\/f\/[0-9a-f-]{36}\?exp=\d+&sig=[0-9a-f]{64}$/);
 
     const res = await page.request.get((await open.getAttribute("href"))!);
     expect(res.status()).toBe(200);
