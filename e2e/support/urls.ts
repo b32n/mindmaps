@@ -26,11 +26,14 @@ export interface Ref {
   line: string;
 }
 
-/** Every line of a tool's text that names a node by `id: \`…\``, with the fields on it. */
+/**
+ * Every line of a tool's text that names a node, by `id: \`…\`` or (in the lists
+ * `create_mindmap` and `add_to_mindmap` print) `— \`…\``, with the fields on it.
+ */
 export function refs(text: string): Ref[] {
   const out: Ref[] = [];
   for (const line of text.split("\n")) {
-    const id = /\bid: `([^`]+)`/.exec(line)?.[1];
+    const id = /\bid: `([^`]+)`/.exec(line)?.[1] ?? /^- .* — `([^`]+)`/.exec(line)?.[1];
     if (!id) continue;
     out.push({
       id,

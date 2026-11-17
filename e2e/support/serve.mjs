@@ -46,6 +46,9 @@ const dev = spawn(
   [
     "dev", "-c", config, "--persist-to", stateDir,
     "--ip", ip, "--port", port,
+    // Several Workers start at once, and the default inspector port is picked
+    // by probing, which they race each other for. One fixed port each.
+    "--inspector-port", String(Number(port) + 1000),
     ...vars.flatMap((v) => ["--var", v]),
     "--show-interactive-dev-session=false",
   ],
