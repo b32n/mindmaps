@@ -8,7 +8,7 @@
  * than a demo.
  */
 
-import { BOARD_READABLE } from "./access";
+import { NODE_READABLE } from "./access";
 import { INDEXABLE_SQL } from "./artefacts";
 
 export interface Neighbour {
@@ -93,7 +93,7 @@ export async function neighbourhood(
          FROM reach r
          JOIN nodes  n ON n.id = r.id
          JOIN boards b ON b.id = n.board_id
-        WHERE ${BOARD_READABLE("b", 3)}
+        WHERE ${NODE_READABLE("n", "b", 3)}
           AND r.id <> ?1
           AND n.type IN (${INDEXABLE_SQL})
         ORDER BY r.depth, n.updated_at DESC
@@ -138,7 +138,7 @@ export async function neighbourhoods(
          ) r
          JOIN nodes  n ON n.id = r.other
          JOIN boards b ON b.id = n.board_id
-        WHERE ${BOARD_READABLE("b", rootIds.length * 2 + 1)} AND n.type IN (${INDEXABLE_SQL})
+        WHERE ${NODE_READABLE("n", "b", rootIds.length * 2 + 1)} AND n.type IN (${INDEXABLE_SQL})
         ORDER BY n.updated_at DESC`,
     )
     .bind(...rootIds, ...rootIds, userId)

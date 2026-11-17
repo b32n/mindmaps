@@ -26,7 +26,7 @@ import {
   type Direction, type ExistingNode, type LayoutEdge, type LayoutNode, type PlaceResult,
 } from "./layout";
 import {
-  ARTEFACT_SCHEMAS, ArtefactTooLarge, INDEXABLE_SQL, cellProblem, getArtefact as readArtefact, isArtefact,
+  ARTEFACT_SCHEMAS, ARTEFACT_SQL, ArtefactTooLarge, INDEXABLE_SQL, cellProblem, getArtefact as readArtefact, isArtefact,
   payloadFromInput, payloadProblem, putArtefact, type ArtefactKind,
 } from "./artefacts";
 import {
@@ -1021,8 +1021,10 @@ async function listMindmaps(env: McpEnv, userId: string) {
     .all<any>();
 
   const rows = results ?? [];
-  if (!rows.length)
+  const shared = await sharedArtefacts(env, userId);
+  if (!rows.length && !shared)
     return toolText("No mindmaps yet. create_mindmap makes the first one.");
+  if (!rows.length) return toolText(shared);
 
   // The description is the whole reason this listing is worth reading before
   // writing: a name and two counts cannot tell you where a card belongs, and
@@ -1045,8 +1047,41 @@ async function listMindmaps(env: McpEnv, userId: string) {
     `${rows.length} mindmap${rows.length === 1 ? "" : "s"}:\n\n${lines.join("\n")}` +
       (undescribed
         ? `\n\n_${undescribed} of these have no description. update_mindmap can add one, which is what makes the next choice of where to put something easy._`
-        : ""),
+        : "") +
+      (shared ? `\n\n${shared}` : ""),
   );
+}
+
+/**
+ * Artefacts someone handed to this user one at a time, as a "shared with you"
+ * section, or "" when there are none.
+ *
+ * Only those whose mindmap the user cannot already read: the rest are listed
+ * with their mindmap. The mindmap's name and id are left out on purpose, since a
+ * grant on an artefact says nothing about the map around it.
+ */
+async function sharedArtefacts(env: McpEnv, userId: string): Promise<string> {
+  const { results } = await env.DB.prepare(
+    `SELECT n.id, n.type, n.title, n.updated_at, g.role
+       FROM artefact_grants g
+       JOIN nodes  n ON n.id = g.node_id
+       JOIN boards b ON b.id = n.board_id
+      WHERE g.user_id = ?1
+        AND n.type IN (${ARTEFACT_SQL})
+        AND NOT ${BOARD_READABLE("b", 1)}
+      ORDER BY n.updated_at DESC
+      LIMIT 100`,
+  )
+    .bind(userId)
+    .all<any>();
+  const rows = results ?? [];
+  if (!rows.length) return "";
+  const lines = rows.map(
+    (r) =>
+      `- **${r.title || "Untitled"}** — ${r.type}, ${r.role === "editor" ? "you can edit" : "view only"}, ` +
+      `updated ${new Date(r.updated_at).toISOString().slice(0, 10)}\n  id: \`${r.id}\``,
+  );
+  return `Shared with you — ${rows.length} artefact${rows.length === 1 ? "" : "s"} on mindmaps you cannot open (get_artefact reads one, get_card too):\n\n${lines.join("\n")}`;
 }
 
 async function updateMindmap(env: McpEnv, userId: string, args: any) {
@@ -1371,7 +1406,7 @@ async function keywordHits(
        JOIN nodes  n ON n.rowid = f.rowid
        JOIN boards b ON b.id = n.board_id
       WHERE nodes_fts MATCH ?1
-        AND ${BOARD_READABLE("b", 2)}
+        AND ${NODE_READABLE("n", "b", 2)}
         AND ${IN_WORKSPACE("b", "n", 5, 2)}
         AND (?3 IS NULL OR n.board_id = ?3)
         AND n.type IN (${INDEXABLE_SQL})
@@ -3209,7 +3244,7 @@ async function semanticHits(
     `SELECT n.id, n.type, n.title, n.body, n.idem_key AS key, n.board_id, n.updated_at, b.name AS board_name
        FROM nodes n JOIN boards b ON b.id = n.board_id
       WHERE n.id IN (${cardIds.map((_, i) => `?${i + 1}`).join(",")})
-        AND ${BOARD_READABLE("b", cardIds.length + 1)}
+        AND ${NODE_READABLE("n", "b", cardIds.length + 1)}
         AND (?${cardIds.length + 2} IS NULL OR n.board_id = ?${cardIds.length + 2})
         AND n.type IN (${INDEXABLE_SQL})`,
   )
