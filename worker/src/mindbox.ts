@@ -48,8 +48,6 @@ export interface MindboxEnv {
   ARTEFACTS: R2Bucket;
   /** HMAC key for frame URLs. Set with `wrangler secret put MINDBOX_SECRET`. */
   MINDBOX_SECRET?: string;
-  /** set by the MCP/API entry so agents get absolute URLs when no mindbox host is configured */
-  PUBLIC_ORIGIN?: string;
   /** Where the mindbox answers. Absent in local dev, where there is one origin. */
   MINDBOX_ORIGIN?: string;
   APP_ORIGIN?: string;
@@ -116,15 +114,16 @@ export async function mindboxSecret(env: MindboxEnv): Promise<string> {
  * The node id is signed along with the expiry so neither can be edited: swapping
  * the id would otherwise let anyone holding one valid URL read every artefact
  * in the system.
+ *
+ * `base` is the origin to serve it from: `mindboxOrigin()` in links.ts, which
+ * is the app's own origin when no mindbox host is configured (local
+ * development: same path, same signing, none of the isolation, which is why the
+ * deploy notes say to set one).
  */
-export async function frameUrl(env: MindboxEnv, nodeId: string): Promise<string | null> {
+export async function frameUrl(env: MindboxEnv, nodeId: string, base: string): Promise<string> {
   const secret = await mindboxSecret(env);
   const exp = Date.now() + TTL_MS;
   const sig = await sign(secret, `${nodeId}.${exp}`);
-  // No configured mindbox origin means local development, where there is only
-  // one origin to serve from. Same path, same signing, none of the isolation —
-  // which is why it is a dev-only fallback and the deploy notes say to set it.
-  const base = env.MINDBOX_ORIGIN || env.PUBLIC_ORIGIN || "";
   return `${base}/s/${nodeId}?exp=${exp}&sig=${sig}`;
 }
 
@@ -138,11 +137,10 @@ export async function frameUrl(env: MindboxEnv, nodeId: string): Promise<string 
  * the app origin that script sits beside the session cookie. On this one there
  * is no cookie to borrow.
  */
-export async function fileUrl(env: MindboxEnv, fileId: string): Promise<string | null> {
+export async function fileUrl(env: MindboxEnv, fileId: string, base: string): Promise<string> {
   const secret = await mindboxSecret(env);
   const exp = Date.now() + TTL_MS;
   const sig = await sign(secret, `${fileId}.${exp}`);
-  const base = env.MINDBOX_ORIGIN || env.PUBLIC_ORIGIN || "";
   return `${base}/f/${fileId}?exp=${exp}&sig=${sig}`;
 }
 
@@ -265,6 +263,13 @@ export async function serveMindbox(req: Request, env: MindboxEnv, url: URL): Pro
 
     const expected = await sign(secret, `${nodeId}.${exp}`);
     if (!sameSignature(expected, sig)) return deny("Not a valid link.");
+
+    // The signature says the owner minted this, not that the page is still
+    // theirs to show. A deleted node sits in the trash, out of `nodes`, so a URL
+    // minted before the delete must stop rendering with it. (A share token is
+    // checked against `nodes` by `resolveShare`.)
+    const live = await env.DB.prepare(`SELECT 1 AS ok FROM nodes WHERE id = ?`).bind(nodeId).first();
+    if (!live) return deny("Not found.", 404);
   }
 
   const obj = await env.ARTEFACTS.get(`artefacts/${nodeId}`);

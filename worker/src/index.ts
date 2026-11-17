@@ -15,6 +15,7 @@ import {
   BOARD_READABLE, NODE_READABLE, boardRole, canAdmin, canWrite, ensurePersonalWorkspace,
   nodeRole, workspaceRole, workspacesFor, type Role,
 } from "./access";
+import { mindboxOrigin, shareUrl } from "./links";
 import { fileUrl, frameUrl, serveFile, serveMindbox, type MindboxEnv } from "./mindbox";
 import {
   FileError, fileById, filesOf, isFileKind, refreshFileNode, removeFile, storeFile, toMeta,
@@ -183,7 +184,7 @@ export default {
           // The mindbox renders pages; the viewer only needs somewhere to point.
           frame:
             found.kind === "html"
-              ? `${env.MINDBOX_ORIGIN ?? ""}/s/${found.nodeId}?t=${encodeURIComponent(token)}`
+              ? `${mindboxOrigin(env, req)}/s/${found.nodeId}?t=${encodeURIComponent(token)}`
               : null,
         });
       }
@@ -677,14 +678,14 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       expiresAt: typeof body?.expires_at === "number" ? body.expires_at : null,
     });
     if (!share) return json(env, { error: "not found" }, 404);
-    return json(env, { ...share, url: `${appOrigin(env, req)}/v/${share.token}` }, 201);
+    return json(env, { ...share, url: shareUrl(env, share.token, req) }, 201);
   }
 
   if (a === "artefacts" && b && c === "share" && m === "GET") {
     const rows = await sharesFor(env as unknown as ShareEnv, user.id, b);
     return json(
       env,
-      rows.map((r) => ({ ...r, url: `${appOrigin(env, req)}/v/${r.token}` })),
+      rows.map((r) => ({ ...r, url: shareUrl(env, r.token, req) })),
     );
   }
 
@@ -722,14 +723,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
   // signature this produces.
   if (a === "artefacts" && b && c === "frame" && m === "GET") {
     if (!(await canReadNode(env, user, b))) return json(env, { error: "not found" }, 404);
-    const href = await frameUrl(env as unknown as MindboxEnv, b);
-    if (!href)
-      return json(
-        env,
-        { error: "HTML artefacts are not configured on this deployment." },
-        503,
-      );
-    return json(env, { url: href });
+    return json(env, { url: await frameUrl(env as unknown as MindboxEnv, b, mindboxOrigin(env, req)) });
   }
 
   if (a === "trash" && !b && m === "GET") {
@@ -1170,7 +1164,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
 
     const rows = await filesOf(env, b);
     const files = await Promise.all(
-      rows.map(async (row) => ({ ...toMeta(row), url: await fileUrl(env, row.id) })),
+      rows.map(async (row) => ({ ...toMeta(row), url: await fileUrl(env, row.id, mindboxOrigin(env, req)) })),
     );
     return json(env, { files });
   }
@@ -1999,9 +1993,6 @@ async function signupAllowed(env: Env, email: string): Promise<boolean> {
 }
 const SIGNUP_CLOSED =
   "Sign-up is closed on this mindmaps. Ask its owner to invite you, or set ALLOW_SIGNUPS=true to open it.";
-
-/** Where share links live. The app, not the mindbox: the viewer is app chrome. */
-const appOrigin = (env: Env, req: Request) => env.APP_ORIGIN || issuerOf(req, env);
 
 /**
  * Parse a `nodes.data` blob without letting a bad one throw.
