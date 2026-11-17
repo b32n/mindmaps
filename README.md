@@ -150,11 +150,11 @@ uses the same password or Google account as the web app.
 | Tool | Scope | Does |
 |---|---|---|
 | `recall` | read | **start here** — search by wording and meaning, follow the links, get a ranked briefing |
-| `list_mindmaps` | read | names, card counts, ids |
-| `get_mindmap` | read | a whole map as markdown, with ids and checklist state |
+| `list_mindmaps` | read | names, counts of each kind of node, ids, URLs |
+| `get_mindmap` | read | a whole map as markdown (cards, artefacts, files), with ids, URLs and checklist state |
 | `get_card` | read | one card's full document |
 | `search` | read | titles and documents across all maps, ranked by relevance |
-| `get_context` | read | walk outward from a card through its links, across mindmaps |
+| `get_context` | read | walk outward from a card through its links to cards, artefacts and files, across mindmaps |
 | `create_mindmap` | write | a graph of nodes + labelled edges; positions computed here |
 | `add_to_mindmap` | write | extend a map; new nodes land below existing ones |
 | `relayout_mindmap` | write | re-arrange a whole map `right` or `down`, moving cards and re-attaching every link |
