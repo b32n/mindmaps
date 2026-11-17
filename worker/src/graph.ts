@@ -9,12 +9,15 @@
  */
 
 import { BOARD_READABLE } from "./access";
+import { INDEXABLE_SQL } from "./artefacts";
 
 export interface Neighbour {
   id: string;
   type: string;
   title: string;
   body: string;
+  /** the idempotency key it was written under, if any */
+  key: string | null;
   board_id: string;
   board_name: string;
   updated_at: number;
@@ -83,7 +86,7 @@ export async function neighbourhood(
          JOIN edges e ON e.source_id = r.id OR e.target_id = r.id
          WHERE r.depth < ?2
        )
-       SELECT n.id, n.type, n.title, n.body, n.board_id, n.updated_at,
+       SELECT n.id, n.type, n.title, n.body, n.idem_key AS key, n.board_id, n.updated_at,
               b.name AS board_name,
               r.depth, r.via_label, r.via_from,
               ${supersededExpr("n")} AS superseded
@@ -92,7 +95,7 @@ export async function neighbourhood(
          JOIN boards b ON b.id = n.board_id
         WHERE ${BOARD_READABLE("b", 3)}
           AND r.id <> ?1
-          AND n.type IN ('card','note')
+          AND n.type IN (${INDEXABLE_SQL})
         ORDER BY r.depth, n.updated_at DESC
         LIMIT ?4`,
     )
@@ -123,7 +126,7 @@ export async function neighbourhoods(
   const marks = rootIds.map(() => "?").join(",");
   const { results } = await db
     .prepare(
-      `SELECT r.root, n.id, n.type, n.title, n.body, n.board_id, n.updated_at,
+      `SELECT r.root, n.id, n.type, n.title, n.body, n.idem_key AS key, n.board_id, n.updated_at,
               b.name AS board_name, r.via_label, 1 AS depth, r.root AS via_from,
               ${supersededExpr("n")} AS superseded
          FROM (
@@ -135,7 +138,7 @@ export async function neighbourhoods(
          ) r
          JOIN nodes  n ON n.id = r.other
          JOIN boards b ON b.id = n.board_id
-        WHERE ${BOARD_READABLE("b", rootIds.length * 2 + 1)} AND n.type IN ('card','note')
+        WHERE ${BOARD_READABLE("b", rootIds.length * 2 + 1)} AND n.type IN (${INDEXABLE_SQL})
         ORDER BY n.updated_at DESC`,
     )
     .bind(...rootIds, ...rootIds, userId)

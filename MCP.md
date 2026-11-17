@@ -67,8 +67,8 @@ whole server should stay in the low thousands of tokens.
 
 | Tool | Returns |
 |---|---|
-| `list_mindmaps` | names, status, card counts |
-| `get_mindmap(id)` | the mindmap as structured context: cards with documents, checklist state, notes, and labelled edges between them |
+| `list_mindmaps` | names, status, counts of cards, notes, sheets, documents, decks, pages, files and folders |
+| `get_mindmap(id)` | the mindmap as structured context: cards with documents, checklist state, notes, and labelled edges between them, then every artefact, file and folder on the map with its type, key, id and URL |
 | `get_card(id)` | one card's full document |
 | `search(query, mindmap?)` | matches across titles, documents and notes; ids plus snippets |
 
