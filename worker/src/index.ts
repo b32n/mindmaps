@@ -32,7 +32,7 @@ import {
   sweepTrash,
 } from "./trash";
 import {
-  ARTEFACT_SQL, INDEXABLE_SQL, artefactKey, describeArtefact, getArtefact, isArtefact, payloadFromInput,
+  ARTEFACT_SQL, ArtefactTooLarge, INDEXABLE_SQL, artefactKey, describeArtefact, getArtefact, isArtefact, payloadFromInput, payloadProblem,
   putArtefact,
   type ArtefactKind,
 } from "./artefacts";
@@ -1052,9 +1052,22 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       .first<{ type: string }>();
     if (!row || !isArtefact(row.type)) return json(env, { error: "not an artefact" }, 400);
 
-    const payload = await req.json<unknown>();
+    // 400 for a body that is not an artefact of this kind, 413 for one that is
+    // too big. A bad write used to be accepted (`null` replaced the payload and
+    // the editor could not open it again) or refused as "too large" whatever
+    // was wrong with it.
+    let payload: unknown;
     try {
-      const stored = await putArtefact(env, b, row.type as ArtefactKind, payload);
+      payload = await req.json<unknown>();
+    } catch {
+      return json(env, { error: "The body is not valid JSON." }, 400);
+    }
+    const kind = row.type as ArtefactKind;
+    const wrong = payloadProblem(kind, payload);
+    if (wrong) return json(env, { error: wrong }, 400);
+
+    try {
+      const stored = await putArtefact(env, b, kind, payload);
       await env.DB.prepare(
         `UPDATE nodes SET data = ?, body = ?, index_dirty = ?, updated_at = ? WHERE id = ?`,
       )
@@ -1062,7 +1075,8 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
         .run();
       return json(env, { ok: true, ...stored.data });
     } catch (err: any) {
-      return json(env, { error: String(err?.message ?? err) }, 413);
+      if (err instanceof ArtefactTooLarge) return json(env, { error: err.message }, 413);
+      throw err;
     }
   }
 
