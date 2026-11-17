@@ -195,7 +195,12 @@ the server expands it with defaults. For a sheet that is little more than:
 }
 ```
 
-Anything richer is reachable by passing a full `data` payload instead.
+Anything richer is reachable by passing a full `data` payload instead, checked
+for shape and stored as it is. **`get_artefact(id)`** is the read side: it
+returns `{id, title, data}` with the stored payload, so an agent amends by
+reading, changing and sending it back to `update_artefact` with nothing a person
+added lost. The simple form rebuilds an artefact and is for writing from
+nothing. What it could not use is named in the reply. See MCP.md, "Artefacts".
 
 **`get_artefact_schema(type)`** returns the full TypeScript shape on demand.
 This keeps the always-loaded surface small while leaving styles, frozen panes
@@ -240,6 +245,7 @@ Bundle discipline learned from the Milkdown swap, which applies directly here:
       graph links, lazy editor route
 - [x] retrieval filters widened, snapshot regenerated on write
 - [x] `create_artefact`, `update_artefact`, `get_artefact_schema`
+- [x] `get_artefact`, and `data` on create and update
 - [x] then `doc` and `deck`, which were mostly repetition — the parts that were
       not are noted below
 
