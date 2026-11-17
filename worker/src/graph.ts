@@ -12,6 +12,7 @@ import { BOARD_READABLE } from "./access";
 
 export interface Neighbour {
   id: string;
+  type: string;
   title: string;
   body: string;
   board_id: string;
@@ -82,7 +83,7 @@ export async function neighbourhood(
          JOIN edges e ON e.source_id = r.id OR e.target_id = r.id
          WHERE r.depth < ?2
        )
-       SELECT n.id, n.title, n.body, n.board_id, n.updated_at,
+       SELECT n.id, n.type, n.title, n.body, n.board_id, n.updated_at,
               b.name AS board_name,
               r.depth, r.via_label, r.via_from,
               ${supersededExpr("n")} AS superseded
@@ -122,7 +123,7 @@ export async function neighbourhoods(
   const marks = rootIds.map(() => "?").join(",");
   const { results } = await db
     .prepare(
-      `SELECT r.root, n.id, n.title, n.body, n.board_id, n.updated_at,
+      `SELECT r.root, n.id, n.type, n.title, n.body, n.board_id, n.updated_at,
               b.name AS board_name, r.via_label, 1 AS depth, r.root AS via_from,
               ${supersededExpr("n")} AS superseded
          FROM (

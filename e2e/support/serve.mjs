@@ -7,7 +7,9 @@
 //
 // Environment: E2E_PORT, E2E_STATE_DIR and E2E_CONFIG choose the port, the state
 // dir and the wrangler config, so a second instance (sign-up closed, see
-// wrangler.test-closed.toml) can run beside the first.
+// wrangler.test-closed.toml) can run beside the first. E2E_VARS is a JSON object
+// of extra Worker vars (`wrangler dev --var`), and E2E_IP the address to listen
+// on (default 127.0.0.1); the origin-configured instances use both.
 //
 // Playwright's `webServer` runs this and waits for HEALTH_URL. Nothing here
 // talks to Cloudflare: local D1/R2 live under STATE_DIR, and the test config has
@@ -21,6 +23,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const config = process.env.E2E_CONFIG ?? "wrangler.test.toml";
 const stateDir = process.env.E2E_STATE_DIR ?? ".e2e-state";
 const port = process.env.E2E_PORT ?? "8788";
+const ip = process.env.E2E_IP ?? "127.0.0.1";
+const vars = Object.entries(JSON.parse(process.env.E2E_VARS ?? "{}")).map(([k, v]) => `${k}:${v}`);
 const wrangler = resolve(root, "node_modules/.bin/wrangler");
 
 if (!existsSync(resolve(root, "web/dist/index.html"))) {
@@ -41,7 +45,11 @@ const dev = spawn(
   wrangler,
   [
     "dev", "-c", config, "--persist-to", stateDir,
-    "--ip", "127.0.0.1", "--port", port,
+    "--ip", ip, "--port", port,
+    // Several Workers start at once, and the default inspector port is picked
+    // by probing, which they race each other for. One fixed port each.
+    "--inspector-port", String(Number(port) + 1000),
+    ...vars.flatMap((v) => ["--var", v]),
     "--show-interactive-dev-session=false",
   ],
   { cwd: root, stdio: "inherit", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },

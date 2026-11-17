@@ -23,7 +23,9 @@ tests never rely on an empty database (see Isolation).
 
 Anything Playwright accepts works: `npx playwright test smoke --headed`,
 `--debug`, `--repeat-each=10`, `--project=chromium`, `--project=closed-signup`.
-`E2E_PORT` / `E2E_CLOSED_PORT` move the two Workers if 8788 / 8789 are taken.
+`E2E_PORT` / `E2E_CLOSED_PORT` / `E2E_ORIGIN_PORT` / `E2E_MINDBOX_PORT` move the
+Workers if 8788 / 8789 / 8790 / 8791 are taken (`--project=origin`,
+`--project=mindbox` run the specs in `e2e/origins`).
 
 ## How the test runtime works
 
@@ -63,6 +65,15 @@ bypass. Tests register real users through the real sign-up API (or form).
   server, because it runs with `ALLOW_SIGNUPS=true`. They run against a second
   Worker, see "The sign-up-closed instance" below.
 - Never assert on global lists or counts across users; scope to your own user.
+
+## The origin-configured instances
+
+Two more Workers (`wrangler.test-origins.toml`) run with `PUBLIC_ORIGIN`, and
+with `PUBLIC_ORIGIN`, `APP_ORIGIN` and `MINDBOX_ORIGIN`. The configured hosts
+(`localhost`, `127.0.0.2`) differ from the one tests connect through
+(`127.0.0.1`), so a URL built from the request is told apart from one built from
+configuration. `e2e/support/hosts.ts` holds the addresses; `e2e/support/urls.ts`
+holds the checks shared by all three configs.
 
 ## The sign-up-closed instance
 

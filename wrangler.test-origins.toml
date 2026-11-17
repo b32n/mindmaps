@@ -1,0 +1,35 @@
+# Local runtime for the end-to-end suite: configured origins. Never deployed.
+#
+# Identical to wrangler.test.toml, and it sets no origin itself. The two Workers
+# that use it (see playwright.config.ts and e2e/README.md) pass PUBLIC_ORIGIN, or
+# PUBLIC_ORIGIN + APP_ORIGIN + MINDBOX_ORIGIN, on the command line (`wrangler dev
+# --var`, from E2E_VARS in e2e/support/serve.mjs), because the origins carry the
+# port, which is configurable. The values deliberately name hosts the tests do
+# not connect through, so a URL that was derived from the request is told apart
+# from one built from the configuration.
+
+name = "mindmaps-e2e-origins"
+main = "worker/src/index.ts"
+compatibility_date = "2026-09-01"
+
+[assets]
+directory = "./web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/oauth/*", "/.well-known/*", "/s/*", "/f/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mindmaps-e2e-origins"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "worker/migrations"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "mindmaps-e2e-origins"
+
+[[r2_buckets]]
+binding = "ARTEFACTS"
+bucket_name = "mindmaps-e2e-origins"
+
+[vars]
+ALLOW_SIGNUPS = "true"
