@@ -131,13 +131,16 @@ test.describe("artefacts and files in the read tools", () => {
     expectNone(text, gone, "recall");
 
     const block = text.split("\n## ").find((b) => b.includes(`id: \`${card}\``))!;
-    const links = block.slice(block.indexOf("Connects to:"));
-    for (const n of nodes.slice(1)) {
-      const line = links.split("\n").find((l) => l.includes(`\`${n.id}\``));
-      expect(line, `link to ${n.type}`).toBeTruthy();
-      expect(line).toContain(`type: ${n.type}`);
-      expect(line).toContain(`url: ${appUrlOf(n, board.id)}`);
-      if (n.key) expect(line).toContain(`key: \`${n.key}\``);
+    // Recall shows at most a few links per match, so not every node is among them.
+    const linked = block.slice(block.indexOf("Connects to:")).split("\n").filter((l) => l.startsWith("- "));
+    expect(linked.length, "links shown under the card").toBeGreaterThanOrEqual(3);
+    for (const line of linked) {
+      const n = nodes.slice(1).find((x) => line.includes(`\`${x.id}\``));
+      expect(n, `a node on the map: ${line}`).toBeTruthy();
+      expect(line).toContain(`type: ${n!.type}`);
+      expect(line).toContain(`mindmap: \`${board.id}\``);
+      expect(line).toContain(`url: ${appUrlOf(n!, board.id)}`);
+      if (n!.key) expect(line).toContain(`key: \`${n!.key}\``);
     }
   });
 
@@ -158,8 +161,13 @@ test.describe("artefacts and files in the read tools", () => {
     const none = await connectMcp(stranger.request);
     const denied = await none.call("get_mindmap", { id: board.id });
     expect(denied.isError).toBe(true);
-    expectNone(denied.text, nodes, "stranger get_mindmap");
-    expectNone((await none.call("get_context", { id: card })).text, nodes, "stranger get_context");
+    // A refusal repeats the id that was asked for, and says nothing about what is there.
+    expect(refs(denied.text)).toEqual([]);
+    expect(denied.text).not.toContain("Quokka");
+    const noContext = await none.call("get_context", { id: card });
+    expect(noContext.isError).toBe(true);
+    expect(refs(noContext.text)).toEqual([]);
+    expect(noContext.text).not.toContain("Quokka");
     expectNone(await ok(none, "recall", { query: "quokka" }), nodes, "stranger recall");
     expectNone(await ok(none, "list_mindmaps", {}), [{ id: board.id, type: "mindmap" }], "stranger list_mindmaps");
     expect(refs(await ok(none, "recall", { query: "quokka" }))).toEqual([]);
