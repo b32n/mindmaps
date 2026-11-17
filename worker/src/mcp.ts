@@ -615,6 +615,8 @@ type NodeLike = { id: string; type: string; board_id: string };
 
 const refTail = (env: McpEnv, n: NodeLike) =>
   ` · type: ${n.type} · mindmap: \`${n.board_id}\` · url: ${nodeUrl(env, n)}`;
+/** A node's key, where it has one: how a later session finds it without its id. */
+const keyTail = (key: string | null | undefined) => (key ? ` · key: \`${key}\`` : "");
 const refLine = (env: McpEnv, n: NodeLike) => `id: \`${n.id}\`${refTail(env, n)}`;
 /** The same, for a mindmap, which is its own mindmap. */
 const boardTail = (env: McpEnv, boardId: string) =>
@@ -964,11 +966,37 @@ async function writableNode(env: McpEnv, userId: string, nodeId: string) {
 // Read tools
 // ---------------------------------------------------------------------------
 
+/** What a mindmap holds besides cards and notes, as ", 2 sheets, 1 file". */
+const KIND_NOUN: Record<string, [string, string]> = {
+  sheet: ["sheet", "sheets"],
+  doc: ["doc", "docs"],
+  deck: ["deck", "decks"],
+  html: ["html page", "html pages"],
+  file: ["file", "files"],
+  folder: ["folder", "folders"],
+};
+
+function othersOf(grouped: string | null): string {
+  const counts = new Map<string, number>();
+  for (const part of String(grouped ?? "").split(",")) {
+    const [type, n] = part.split(":");
+    if (type && n) counts.set(type, Number(n));
+  }
+  return Object.entries(KIND_NOUN)
+    .filter(([type]) => counts.has(type))
+    .map(([type, [one, many]]) => `, ${counts.get(type)} ${counts.get(type) === 1 ? one : many}`)
+    .join("");
+}
+
 async function listMindmaps(env: McpEnv, userId: string) {
   const { results } = await env.DB.prepare(
     `SELECT b.id, b.name, b.status, b.updated_at, b.description, b.labels, b.pinned,
             (SELECT COUNT(*) FROM nodes n WHERE n.board_id = b.id AND n.type = 'card') AS cards,
-            (SELECT COUNT(*) FROM nodes n WHERE n.board_id = b.id AND n.type = 'note') AS notes
+            (SELECT COUNT(*) FROM nodes n WHERE n.board_id = b.id AND n.type = 'note') AS notes,
+            (SELECT group_concat(k.type || ':' || k.c) FROM (
+               SELECT n.type, COUNT(*) AS c FROM nodes n
+                WHERE n.board_id = b.id AND n.type NOT IN ('card','note') AND n.type IN (${INDEXABLE_SQL})
+                GROUP BY n.type) k) AS others
        FROM boards b
       WHERE ${BOARD_READABLE("b")} AND b.parent_id IS NULL
       ORDER BY b.pinned DESC, b.updated_at DESC`,
@@ -989,6 +1017,7 @@ async function listMindmaps(env: McpEnv, userId: string) {
     return (
       `- **${b.name}**${b.pinned ? " ★" : ""} — ${b.cards} card${b.cards === 1 ? "" : "s"}` +
       (b.notes ? `, ${b.notes} note${b.notes === 1 ? "" : "s"}` : "") +
+      othersOf(b.others) +
       `, updated ${new Date(b.updated_at).toISOString().slice(0, 10)}` +
       (labels.length ? `\n  labels: ${labels.join(", ")}` : "") +
       (b.description ? `\n  ${b.description}` : "") +
@@ -1092,6 +1121,10 @@ async function getMindmap(env: McpEnv, userId: string, args: any) {
   // Ink strokes and images carry no text; they'd be noise in a context window.
   const nodes = all.filter((n) => n.type === "card" || n.type === "note");
   const shown = nodes.slice(0, MAX_CARDS_IN_CONTEXT);
+  // Everything else that is on the map and has a name: sheets, documents,
+  // decks, pages, files and folders. Their content is not repeated here;
+  // get_card reads it.
+  const things = all.filter((n) => n.type !== "card" && n.type !== "note" && (isArtefact(n.type) || isFileKind(n.type)));
   const titleOf = new Map(all.map((n) => [n.id, n.title || "(untitled)"]));
 
   const out: string[] = [`# ${board.name}`, boardRefLine(env, board.id), ""];
@@ -1123,6 +1156,18 @@ async function getMindmap(env: McpEnv, userId: string, args: any) {
       }
     }
     out.push("");
+  }
+
+  if (things.length) {
+    out.push("## Artefacts and files", "");
+    for (const n of things.slice(0, MAX_CARDS_IN_CONTEXT))
+      out.push(
+        `### ${n.title || "(untitled)"} (${n.type})`,
+        `id: \`${n.id}\`${keyTail(n.idem_key)}${refTail(env, { ...n, board_id: board.id })}`,
+        "",
+      );
+    if (things.length > MAX_CARDS_IN_CONTEXT)
+      out.push(`_${things.length - MAX_CARDS_IN_CONTEXT} further artefacts and files omitted; use search to find specific ones._`, "");
   }
 
   if (nodes.length > shown.length)
@@ -1275,6 +1320,8 @@ export interface Hit {
   type: string;
   title: string;
   body: string;
+  /** the idempotency key it was written under, if any */
+  key?: string | null;
   board_id: string;
   board_name: string;
   updated_at: number;
@@ -1301,7 +1348,7 @@ async function keywordHits(
   const match = ftsQuery(query, mode);
   if (!match) return [];
   const { results } = await env.DB.prepare(
-    `SELECT n.id, n.type, n.title, n.body, n.board_id, n.updated_at,
+    `SELECT n.id, n.type, n.title, n.body, n.idem_key AS key, n.board_id, n.updated_at,
             b.name AS board_name,
             -bm25(nodes_fts, 6.0, 1.0) AS score
        FROM nodes_fts f
@@ -2516,9 +2563,9 @@ function neighbourLine(env: McpEnv, n: Neighbour, homeBoard: string | null): str
   const away = homeBoard && n.board_id !== homeBoard ? ` _(in ${n.board_name})_` : "";
   const stale = n.superseded ? " ⊘ superseded" : "";
   return (
-    `- **${n.title || "(untitled)"}**${away}${stale}\n` +
+    `- **${n.title || "(untitled)"}** (${n.type})${away}${stale}\n` +
     `  ${n.depth === 1 ? "via" : `${n.depth} hops, via`} *${n.via_label || "a link"}*` +
-    ` · id: \`${n.id}\`${refTail(env, n)}` +
+    ` · id: \`${n.id}\`${keyTail(n.key)}${refTail(env, n)}` +
     (excerpt ? `\n  ${excerpt}${String(n.body ?? "").length > EXCERPT ? "…" : ""}` : "")
   );
 }
@@ -2541,7 +2588,7 @@ async function getContext(env: McpEnv, userId: string, args: any) {
 
   const out: string[] = [
     `# Around: ${node.title || "(untitled)"}`,
-    `Starting card: \`${node.id}\` in *${node.board_name}*`,
+    `Starting card: \`${node.id}\` (${node.type}) in *${node.board_name}*`,
     refLine(env, node),
     "",
   ];
@@ -2640,6 +2687,7 @@ export interface RecallHit {
   id: string;
   type: string;
   title: string;
+  key: string | null;
   board_id: string;
   board_name: string;
   /** The passage that matched, or the head of the document if none did. */
@@ -2648,7 +2696,7 @@ export interface RecallHit {
   /** "wording", "meaning", "connected to another match" */
   why: string[];
   superseded: boolean;
-  links: Array<{ id: string; title: string; label: string; board_id: string; board_name: string }>;
+  links: Array<{ id: string; type: string; key: string | null; title: string; label: string; board_id: string; board_name: string }>;
 }
 
 export interface RecallResult {
@@ -2767,6 +2815,7 @@ export async function rankRecall(
         id: h.id,
         type: h.type,
         title: h.title,
+        key: h.key ?? null,
         board_id: h.board_id,
         board_name: h.board_name,
         passage: excerptOf(passage, RECALL_EXCERPT),
@@ -2775,6 +2824,8 @@ export async function rankRecall(
         superseded: stale.has(h.id),
         links: ((near.get(h.id) ?? []) as Neighbour[]).map((n) => ({
           id: n.id,
+          type: n.type,
+          key: n.key ?? null,
           title: n.title,
           label: n.via_label ?? "",
           board_id: n.board_id,
@@ -2820,7 +2871,7 @@ async function recall(env: McpEnv, userId: string, args: any) {
   for (const h of hits) {
     out.push(
       `## ${h.title || "(untitled)"} (${h.type})${h.superseded ? " ⊘ superseded" : ""}`,
-      `in *${h.board_name}* · id: \`${h.id}\` · matched on ${h.why.join(" + ")}${refTail(env, h)}`,
+      `in *${h.board_name}* · id: \`${h.id}\` · matched on ${h.why.join(" + ")}${keyTail(h.key)}${refTail(env, h)}`,
     );
     if (h.passage) out.push("", h.passage + (h.truncated ? "…" : ""));
     if (h.links.length) {
@@ -2829,7 +2880,7 @@ async function recall(env: McpEnv, userId: string, args: any) {
         out.push(
           `- ${n.title || "(untitled)"}${n.label ? ` — *${n.label}*` : ""}` +
             (n.board_id !== h.board_id ? ` _(in ${n.board_name})_` : "") +
-            ` · \`${n.id}\``,
+            ` · \`${n.id}\` · type: ${n.type}${keyTail(n.key)} · mindmap: \`${n.board_id}\` · url: ${nodeUrl(env, n)}`,
         );
     }
     out.push("");
@@ -2989,7 +3040,7 @@ async function semanticHits(
   const cardIds = [...best.keys()];
   const marks = cardIds.map(() => "?").join(",");
   const { results } = await env.DB.prepare(
-    `SELECT n.id, n.type, n.title, n.body, n.board_id, n.updated_at, b.name AS board_name
+    `SELECT n.id, n.type, n.title, n.body, n.idem_key AS key, n.board_id, n.updated_at, b.name AS board_name
        FROM nodes n JOIN boards b ON b.id = n.board_id
       WHERE n.id IN (${cardIds.map((_, i) => `?${i + 1}`).join(",")})
         AND ${BOARD_READABLE("b", cardIds.length + 1)}
