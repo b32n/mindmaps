@@ -26,7 +26,8 @@ import {
   type Direction, type ExistingNode, type LayoutEdge, type LayoutNode, type PlaceResult,
 } from "./layout";
 import {
-  ARTEFACT_SCHEMAS, INDEXABLE_SQL, isArtefact, payloadFromInput, putArtefact, type ArtefactKind,
+  ARTEFACT_SCHEMAS, ArtefactTooLarge, INDEXABLE_SQL, cellProblem, getArtefact as readArtefact, isArtefact,
+  payloadFromInput, payloadProblem, putArtefact, type ArtefactKind,
 } from "./artefacts";
 import {
   BOARD_READABLE, IN_WORKSPACE, NODE_READABLE, boardRole, canWrite, ensurePersonalWorkspace,
@@ -420,6 +421,7 @@ const TOOLS = [
           description:
             "html only. A complete HTML document. It renders sandboxed on a separate origin with no network access at all, so inline every script and style and embed images as data URIs — a remote <script src> or a fetch() will be blocked. Put the point of the page in visible text, since that is what search reads. A signed URL comes back: render it to show the page.",
         },
+        data: { type: "object", description: "A complete payload for this kind, instead of the simple form: what get_artefact returns, or the shape get_artefact_schema shows. Nothing is rebuilt or filled in, so it keeps styles, tables, layout and everything else. Do not combine with sheets, blocks, slides or html." },
         key: {
           type: "string",
           description:
@@ -432,7 +434,7 @@ const TOOLS = [
   {
     name: "update_artefact",
     description:
-      "Replace an artefact's contents. Takes the same shape as create_artefact and overwrites everything, so send the whole thing rather than a fragment. Read it first with get_card if you are amending rather than replacing. The kind is whatever the artefact already is; you cannot turn a deck into a spreadsheet this way.",
+      "Replace an artefact's contents. Takes the same shape as create_artefact and overwrites everything, so send the whole thing rather than a fragment. To amend rather than replace, read it first with get_artefact and send back what it gave you with your changes: the simple form (sheets, blocks, slides) rebuilds the artefact and loses any styling, layout or formatting a person added, where data keeps it. The kind is whatever the artefact already is; you cannot turn a deck into a spreadsheet this way.",
     inputSchema: {
       type: "object",
       properties: {
@@ -442,9 +444,21 @@ const TOOLS = [
         blocks: { type: "array", items: {} },
         slides: { type: "array", items: {} },
         html: { type: "string" },
+        data: { type: "object", description: "A complete payload for this kind, instead of the simple form: what get_artefact returns, or the shape get_artefact_schema shows. Nothing is rebuilt or filled in, so it keeps styles, tables, layout and everything else. Do not combine with sheets, blocks, slides or html." },
       },
       required: ["id"],
     },
+  },
+  {
+    name: "get_artefact",
+    description:
+      "Read an artefact in full: a sheet, document, deck or page, with its id, type, mindmap and URL. The contents come back as the exact arguments update_artefact takes (id, title, data), so you can change what you need and send it back with nothing lost, styles and layout included. get_card shows only a text snapshot. For a file, use read_file.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string", description: "The artefact's card id." } },
+      required: ["id"],
+    },
+    annotations: { readOnlyHint: true },
   },
   {
     name: "get_artefact_schema",
@@ -835,6 +849,8 @@ async function runTool(id: Id, env: McpEnv, grant: TokenGrant, name: string, arg
       return rpcOk(id, await createArtefact(env, u, args));
     case "update_artefact":
       return rpcOk(id, await updateArtefact(env, u, args));
+    case "get_artefact":
+      return rpcOk(id, await getArtefactTool(env, u, args));
     case "get_artefact_schema": {
       // One kind at a time. Returning all three would put three schemas into
       // the context of an agent that asked about one.
@@ -1980,7 +1996,7 @@ const kindOf = (raw: unknown): ArtefactKind =>
 
 /** The size refusal is for the agent to read; anything else is for the log. */
 function artefactRefusal(err: any): string {
-  if (typeof err?.message === "string" && err.message.startsWith("Artefact is ")) return err.message;
+  if (err instanceof ArtefactTooLarge) return err.message;
   throw err;
 }
 
@@ -1992,9 +2008,12 @@ const isObject = (v: unknown): v is Record<string, unknown> =>
  *
  * `payloadFromInput` assumes the shape the schema describes; a null sheet or a
  * string where a list belongs used to surface as a TypeError about `rows` or
- * `filter`, which names nothing the agent wrote.
+ * `filter`, which names nothing the agent wrote. Everything refused here would
+ * otherwise have been dropped, coerced to "[object Object]" or stored raw.
  */
 function badInput(kind: ArtefactKind, content: unknown[] | string): string | null {
+  const text = (v: unknown) => v === undefined || typeof v === "string" || typeof v === "number";
+
   if (kind === "sheet") {
     const sheets = content as unknown[];
     for (let i = 0; i < sheets.length; i++) {
@@ -2002,6 +2021,27 @@ function badInput(kind: ArtefactKind, content: unknown[] | string): string | nul
       if (!isObject(s)) return `sheets[${i}] must be an object like {name, rows}.`;
       if (s.rows !== undefined && !Array.isArray(s.rows))
         return `sheets[${i}].rows must be a list of rows, each a list of cells.`;
+      const rows = (s.rows ?? []) as unknown[];
+      for (let r = 0; r < rows.length; r++) {
+        if (!Array.isArray(rows[r]))
+          return `sheets[${i}].rows[${r}] must be a list of cells, not ${rows[r] === null ? "null" : typeof rows[r]}.`;
+        const cells = rows[r] as unknown[];
+        for (let c = 0; c < cells.length; c++) {
+          const why = cellProblem(cells[c]);
+          if (why) return `sheets[${i}].rows[${r}][${c}] ${why}`;
+        }
+      }
+    }
+  }
+  if (kind === "doc") {
+    const blocks = content as unknown[];
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (typeof b === "string") continue;
+      if (!isObject(b)) return `blocks[${i}] must be a string (a paragraph) or an object like {heading}, {text}, {bullet}, {number} or {rule: true}.`;
+      for (const key of ["heading", "text", "bullet", "number"])
+        if (!text(b[key])) return `blocks[${i}].${key} must be text.`;
+      if (b.level !== undefined && typeof b.level !== "number") return `blocks[${i}].level must be a number from 1 to 6.`;
     }
   }
   if (kind === "deck") {
@@ -2011,10 +2051,74 @@ function badInput(kind: ArtefactKind, content: unknown[] | string): string | nul
       if (!isObject(s)) return `slides[${i}] must be an object like {title, bullets, notes}.`;
       if (s.bullets !== undefined && !Array.isArray(s.bullets))
         return `slides[${i}].bullets must be a list of strings.`;
+      for (const key of ["title", "notes"])
+        if (!text(s[key])) return `slides[${i}].${key} must be text.`;
     }
   }
   return null;
 }
+
+/**
+ * Arguments that were passed and used by nothing.
+ *
+ * Another kind's field (`slides` on a sheet) and a field that exists on no kind
+ * (`rows` at the top level, `colour`) are both named, so the author learns that
+ * part of the call did nothing instead of finding out when the artefact opens.
+ * The fields that echo a `get_artefact` reply are accepted without comment.
+ */
+function strayArgs(kind: ArtefactKind, args: any, own: string[], echoed: string[] = []): string[] {
+  const fields = Object.values(KINDS).map((k) => k.field);
+  const notes: string[] = [];
+  for (const key of Object.keys(isObject(args) ? args : {})) {
+    if (own.includes(key) || echoed.includes(key)) continue;
+    if (fields.includes(key as any)) {
+      if (key !== KINDS[kind].field)
+        notes.push(`\`${key}\` is for another kind of artefact; this is a ${KINDS[kind].noun}, so it was ignored.`);
+      continue;
+    }
+    notes.push(`\`${key}\` is not a field of this tool, so it was ignored.`);
+  }
+  return notes;
+}
+
+/** A reply with whatever was not used appended, so nothing is dropped quietly. */
+const withNotes = (text: string, notes: string[]) =>
+  notes.length ? `${text}\n\nSome of what you sent was not stored:\n${notes.map((n) => `- ${n}`).join("\n")}` : text;
+
+/**
+ * The payload to write for a call: a complete `data`, or the simple form built
+ * up from `sheets`, `blocks`, `slides` or `html`. A refusal names the field.
+ *
+ * `data` is stored as it is, after the same shape check `PUT /api/artefacts`
+ * makes, which is what lets what `get_artefact` returns go back unchanged.
+ */
+function payloadForCall(
+  kind: ArtefactKind,
+  title: string,
+  args: any,
+  content: unknown[] | string | null,
+): { payload: unknown; notes: string[] } | { refusal: string } {
+  const spec = KINDS[kind];
+  const notes: string[] = [];
+
+  if (args?.data !== undefined) {
+    if (args[spec.field] !== undefined)
+      return { refusal: `Pass either \`data\` or \`${spec.field}\`, not both: they are two ways to give the same contents.` };
+    const wrong = payloadProblem(kind, args.data);
+    if (wrong) return { refusal: `\`data\` is the wrong shape for a ${spec.noun}: ${wrong}` };
+    return { payload: args.data, notes };
+  }
+
+  const bad = badInput(kind, content!);
+  if (bad) return { refusal: bad };
+  return { payload: payloadFromInput(kind, title, inputFor(spec, content!), notes), notes };
+}
+
+/** The arguments each tool uses, so any other is named in the reply. */
+const CREATE_ARGS = ["mindmap_id", "type", "title", "key", "data", "sheets", "blocks", "slides", "html"] as const;
+const UPDATE_ARGS = ["id", "title", "data", "sheets", "blocks", "slides", "html"] as const;
+/** In what `get_artefact` shows about the node, and so harmless to send back. */
+const ECHOED_ARGS = ["type", "mindmap_id", "url"] as const;
 
 /**
  * Create a spreadsheet, document or deck on a mindmap.
@@ -2054,7 +2158,7 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
   const spec = KINDS[kind];
   const title = String(args?.title ?? "").trim() || spec.fallback;
   const content = contentFor(spec, args);
-  if (content === null)
+  if (content === null && args?.data === undefined)
     return toolText(
       `Pass \`${spec.field}\` to write a ${spec.noun}. get_artefact_schema shows the shape.`,
       true,
@@ -2066,11 +2170,12 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
   if (seen && seen.type !== kind) return toolText(keyClash(key, seen, spec.noun), true);
 
   const nodeId = seen?.id ?? crypto.randomUUID();
-  const bad = badInput(kind, content);
-  if (bad) return toolText(bad, true);
+  const built = payloadForCall(kind, title, args, content);
+  if ("refusal" in built) return toolText(built.refusal, true);
+  const notes = [...strayArgs(kind, args, [...CREATE_ARGS]), ...built.notes];
   let stored;
   try {
-    stored = await putArtefact(env, nodeId, kind, payloadFromInput(kind, title, inputFor(spec, content)));
+    stored = await putArtefact(env, nodeId, kind, built.payload);
   } catch (err: any) {
     return toolText(artefactRefusal(err), true);
   }
@@ -2085,8 +2190,11 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
     ]);
     await reindex(env, userId, nodeId);
     return toolText(
-      `Updated **${title}** on ${board.name} — an artefact with key \`${key}\` was already there, so nothing was duplicated.\n\ncard id: \`${nodeId}\`${refTail(env, { id: nodeId, type: kind, board_id: board.id })}` +
-        (await frameLine(env, kind, nodeId)),
+      withNotes(
+        `Updated **${title}** on ${board.name} — an artefact with key \`${key}\` was already there, so nothing was duplicated.\n\ncard id: \`${nodeId}\`${refTail(env, { id: nodeId, type: kind, board_id: board.id })}` +
+          (await frameLine(env, kind, nodeId)),
+        notes,
+      ),
     );
   }
 
@@ -2111,8 +2219,11 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
   await reindex(env, userId, nodeId);
 
   return toolText(
-    `Added **${title}** to ${board.name}: ${spec.count(stored.data)}.\n\ncard id: \`${nodeId}\`${refTail(env, { id: nodeId, type: kind, board_id: board.id })}` +
-      (await frameLine(env, kind, nodeId)),
+    withNotes(
+      `Added **${title}** to ${board.name}: ${spec.count(stored.data)}.\n\ncard id: \`${nodeId}\`${refTail(env, { id: nodeId, type: kind, board_id: board.id })}` +
+        (await frameLine(env, kind, nodeId)),
+      notes,
+    ),
   );
 }
 
@@ -2129,8 +2240,14 @@ async function updateArtefact(env: McpEnv, userId: string, args: any) {
   // into a spreadsheet and silently drop everything that was in it.
   const kind = node.type as ArtefactKind;
   const spec = KINDS[kind];
+  // What `get_artefact` returned rides along harmlessly, but a type that
+  // disagrees with the node's is a sign the id is not the one that was read.
+  if (typeof args?.type === "string" && args.type !== kind)
+    return toolText(`That is a ${kind}, not a ${args.type}. The kind cannot change.`, true);
+
   const content = contentFor(spec, args);
-  if (content === null) {
+  const argNotes = strayArgs(kind, args, [...UPDATE_ARGS], [...ECHOED_ARGS]);
+  if (content === null && args?.data === undefined) {
     // A rename on its own leaves the payload exactly as it is.
     const renamed = String(args?.title ?? "").trim();
     if (!renamed)
@@ -2144,17 +2261,21 @@ async function updateArtefact(env: McpEnv, userId: string, args: any) {
     ]);
     await reindex(env, userId, node.id);
     return toolText(
-      `Renamed to **${renamed.slice(0, 500)}**. The ${spec.noun}'s contents are unchanged.\n\n${refLine(env, node)}` +
-        (await frameLine(env, kind, node.id)),
+      withNotes(
+        `Renamed to **${renamed.slice(0, 500)}**. The ${spec.noun}'s contents are unchanged.\n\n${refLine(env, node)}` +
+          (await frameLine(env, kind, node.id)),
+        argNotes,
+      ),
     );
   }
 
   const title = String(args?.title ?? node.title ?? "").trim() || spec.fallback;
-  const bad = badInput(kind, content);
-  if (bad) return toolText(bad, true);
+  const built = payloadForCall(kind, title, args, content);
+  if ("refusal" in built) return toolText(built.refusal, true);
+  const notes = [...argNotes, ...built.notes];
   let stored;
   try {
-    stored = await putArtefact(env, node.id, kind, payloadFromInput(kind, title, inputFor(spec, content)));
+    stored = await putArtefact(env, node.id, kind, built.payload);
   } catch (err: any) {
     return toolText(artefactRefusal(err), true);
   }
@@ -2168,7 +2289,46 @@ async function updateArtefact(env: McpEnv, userId: string, args: any) {
   await reindex(env, userId, node.id);
 
   return toolText(
-    `Rewrote **${title}**: ${spec.count(stored.data)}.\n\n${refLine(env, node)}` + (await frameLine(env, kind, node.id)),
+    withNotes(
+      `Rewrote **${title}**: ${spec.count(stored.data)}.\n\n${refLine(env, node)}` + (await frameLine(env, kind, node.id)),
+      notes,
+    ),
+  );
+}
+
+/**
+ * An artefact in full, in the form `update_artefact` takes.
+ *
+ * `get_card` gives a text snapshot, which is the right thing to search and the
+ * wrong thing to write back: a sheet's styles, a document's heading levels and
+ * tables, a deck's layout and a page's source are all gone from it, so an agent
+ * that amended from the snapshot erased what a person had done. This returns
+ * the stored payload itself, as `data`, with `id` and `title`; passing that
+ * block to `update_artefact` changes nothing but what the agent edited.
+ *
+ * Compact JSON on one line: it contains no raw newline, so the fence around it
+ * cannot be closed from inside, and it costs a fraction of the pretty form.
+ */
+async function getArtefactTool(env: McpEnv, userId: string, args: any) {
+  const wanted = String(args?.id ?? "").trim();
+  const node = await readableNode(env, userId, wanted);
+  if (!node) return toolText(`No artefact with id ${wanted}.`, true);
+  if (!isArtefact(node.type))
+    return toolText(
+      `That is a ${node.type}, not an artefact.` +
+        (isProse(node.type) ? " Use get_card." : isFileKind(node.type) ? " Use read_file." : ""),
+      true,
+    );
+
+  const payload = await readArtefact(env, node.id);
+  if (payload === null) return toolText(`That artefact's contents are gone.`, true);
+
+  const spec = KINDS[node.type as ArtefactKind];
+  const reply = JSON.stringify({ id: node.id, title: node.title ?? "", data: payload });
+  return toolText(
+    `**${node.title || spec.fallback}**, a ${spec.noun} on ${node.board_name}.\n${refLine(env, node)}\n\n` +
+      `Everything stored, as the arguments for update_artefact. Change what you need and send it back; it replaces the contents, so what you leave alone stays as it is here.\n\n` +
+      "```json\n" + reply + "\n```",
   );
 }
 
