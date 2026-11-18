@@ -95,6 +95,18 @@ export const IN_WORKSPACE = (b = "b", n = "n", pWs = 1, pUser = 2) => `(
               WHERE g.node_id = ${n}.id AND g.user_id = ?${pUser})
 )`;
 
+/**
+ * Restrict boards to one workspace: its own, plus those shared to this user
+ * across a boundary. The board-only sibling of `IN_WORKSPACE`, for listings
+ * that have no node. A null workspace slot disables the filter.
+ */
+export const IN_BOARD_WORKSPACE = (b = "b", pWs = 2, pUser = 1) => `(
+  ?${pWs} IS NULL
+  OR ${b}.workspace_id = ?${pWs}
+  OR EXISTS (SELECT 1 FROM board_shares bs
+              WHERE bs.board_id = ${b}.id AND bs.user_id = ?${pUser})
+)`;
+
 // ---------------------------------------------------------------------------
 // Role lookups
 // ---------------------------------------------------------------------------

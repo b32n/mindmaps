@@ -91,19 +91,23 @@ export class ExpiryWorker {
     await sleep(500);
   }
 
-  /** Backdate trash entries by `days`, with the Worker stopped, then bring it back. */
-  async age(ids: string[], days: number) {
+  /** Run one SQL statement with the Worker stopped, then bring it back on the same state. */
+  async execute(sql: string) {
     await this.stop();
-    const at = Date.now() - days * 24 * 60 * 60 * 1000;
-    const list = ids.map((id) => `'${id.replace(/[^A-Za-z0-9-]/g, "")}'`).join(",");
     const r = spawnSync(
       wrangler,
-      ["d1", "execute", "DB", "--local", "--persist-to", stateDir, "-c", "wrangler.test.toml",
-        "--command", `UPDATE trash SET deleted_at = ${at} WHERE id IN (${list})`],
+      ["d1", "execute", "DB", "--local", "--persist-to", stateDir, "-c", "wrangler.test.toml", "--command", sql],
       { cwd: root, env, encoding: "utf8" },
     );
-    if (r.status !== 0) throw new Error(`could not age trash: ${r.stderr}`);
+    if (r.status !== 0) throw new Error(`could not run ${sql}: ${r.stderr}`);
     await this.start(false);
+  }
+
+  /** Backdate trash entries by `days`, with the Worker stopped, then bring it back. */
+  async age(ids: string[], days: number) {
+    const at = Date.now() - days * 24 * 60 * 60 * 1000;
+    const list = ids.map((id) => `'${id.replace(/[^A-Za-z0-9-]/g, "")}'`).join(",");
+    await this.execute(`UPDATE trash SET deleted_at = ${at} WHERE id IN (${list})`);
   }
 
   client(): Promise<APIRequestContext> {

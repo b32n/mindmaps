@@ -34,6 +34,7 @@
  *   PKCE S256 required. `plain` is refused outright.
  */
 
+import { ensurePersonalWorkspace, workspacesFor, type WorkspaceRow } from "./access";
 import { SESSION_COOKIE, readCookie, userForToken } from "./auth";
 
 const CODE_TTL_MS = 60_000; // codes are used within seconds; a minute is generous
@@ -348,13 +349,28 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
     );
   }
 
+  // The workspaces this person can pick from, Personal first. Created if it is
+  // somehow missing, so there is always at least the one to default to.
+  await ensurePersonalWorkspace(env.DB, user.id);
+  const workspaces = await workspacesFor(env.DB, user.id);
+
   // POST means the user pressed Approve on the consent screen.
   if (req.method === "POST") {
+    // The consent form's one field. Absent or empty is "leave the default",
+    // which is Personal; anything the person does not belong to is refused
+    // rather than quietly replaced, so a tampered form cannot aim a token at
+    // someone else's workspace or at one that does not exist.
+    const chosen = new URLSearchParams(await req.text()).get("workspace") ?? "";
+    const workspace = chosen
+      ? workspaces.find((w) => w.id === chosen)
+      : (workspaces.find((w) => w.personal) ?? workspaces[0]);
+    if (!workspace) return errorPage("Unknown workspace", "That workspace isn't one you belong to. Nothing was connected.");
+
     const code = randomToken();
     await env.DB.prepare(
       `INSERT INTO oauth_codes
-         (code_hash,client_id,user_id,redirect_uri,code_challenge,scope,resource,expires_at,used,created_at)
-       VALUES (?,?,?,?,?,?,?,?,0,?)`,
+         (code_hash,client_id,user_id,redirect_uri,code_challenge,scope,resource,expires_at,used,created_at,workspace_id)
+       VALUES (?,?,?,?,?,?,?,?,0,?,?)`,
     )
       .bind(
         await sha256Hex(code),
@@ -366,12 +382,13 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
         resource ?? resourceOf(req, env),
         now() + CODE_TTL_MS,
         now(),
+        workspace.id,
       )
       .run();
     return back({ code });
   }
 
-  return consentPage(client.client_name, user.email, requested, url.search);
+  return consentPage(client.client_name, user.email, requested, url.search, workspaces);
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +438,7 @@ async function codeGrant(req: Request, env: { DB: D1Database }, form: URLSearchP
   if (resource && resource.replace(/\/$/, "") !== String(row.resource ?? "").replace(/\/$/, ""))
     return oauthError("invalid_target", "resource does not match the authorization request");
 
-  return await issue(env, row.client_id, row.user_id, row.scope, row.resource);
+  return await issue(env, row.client_id, row.user_id, row.scope, row.resource, row.workspace_id ?? null);
 }
 
 async function refreshGrant(req: Request, env: { DB: D1Database }, form: URLSearchParams) {
@@ -446,7 +463,9 @@ async function refreshGrant(req: Request, env: { DB: D1Database }, form: URLSear
     .bind(row.token_hash)
     .run();
 
-  return await issue(env, row.client_id, row.user_id, row.scope, row.resource);
+  // A refresh carries the workspace over as it is, NULL included: a token from
+  // before workspaces were chosen stays one, until its holder connects again.
+  return await issue(env, row.client_id, row.user_id, row.scope, row.resource, row.workspace_id ?? null);
 }
 
 async function issue(
@@ -455,6 +474,7 @@ async function issue(
   userId: string,
   scope: string,
   resource: string | null,
+  workspaceId: string | null,
 ) {
   const access = randomToken();
   const refresh = randomToken();
@@ -462,8 +482,8 @@ async function issue(
 
   await env.DB.prepare(
     `INSERT INTO oauth_tokens
-       (token_hash,refresh_hash,client_id,user_id,scope,resource,expires_at,refresh_expires_at,revoked,created_at)
-     VALUES (?,?,?,?,?,?,?,?,0,?)`,
+       (token_hash,refresh_hash,client_id,user_id,scope,resource,expires_at,refresh_expires_at,revoked,created_at,workspace_id)
+     VALUES (?,?,?,?,?,?,?,?,0,?,?)`,
   )
     .bind(
       await sha256Hex(access),
@@ -475,6 +495,7 @@ async function issue(
       expiresAt,
       now() + REFRESH_TTL_MS,
       now(),
+      workspaceId,
     )
     .run();
 
@@ -523,6 +544,11 @@ export interface TokenGrant {
   userId: string;
   clientId: string;
   scopes: string[];
+  /**
+   * The workspace chosen when this connection was approved. Null on tokens
+   * issued before that choice existed, which keep their original behaviour.
+   */
+  workspaceId: string | null;
 }
 
 export type TokenCheck =
@@ -559,6 +585,7 @@ export async function checkBearer(req: Request, db: D1Database, env: OriginEnv):
       userId: row.user_id,
       clientId: row.client_id,
       scopes: String(row.scope ?? "").split(/\s+/).filter(Boolean),
+      workspaceId: row.workspace_id ?? null,
     },
   };
 }
@@ -600,6 +627,11 @@ const page = (title: string, body: string, status = 200) =>
   button.primary:hover{background:#0c6448}
   a.btn{background:var(--surface);color:var(--ink)}
   a.btn:hover{background:var(--bg)}
+  .ws{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px}
+  .ws b{color:var(--ink)}
+  select{width:100%;padding:10px;border:1px solid var(--line);border-radius:7px;font:inherit;
+         background:var(--surface);color:var(--ink);margin-bottom:8px}
+  .hint{font-size:12px;margin-bottom:18px}
   .warn{color:var(--danger);background:#fdecea;padding:12px;border-radius:7px;font-size:13px}
 </style></head><body><div class="card"><div class="brand">mindmaps</div>${body}</div></body></html>`,
     { status, headers: { "content-type": "text/html; charset=utf-8" } },
@@ -610,7 +642,13 @@ const SCOPE_COPY: Record<string, string> = {
   "mindmaps:write": "Create and update mindmaps, cards and documents",
 };
 
-function consentPage(clientName: string, email: string, scopes: string[], search: string) {
+function consentPage(
+  clientName: string,
+  email: string,
+  scopes: string[],
+  search: string,
+  workspaces: WorkspaceRow[],
+) {
   const items = scopes
     .map((s) => `<li><span>✓</span><b>${esc(SCOPE_COPY[s] ?? s)}</b></li>`)
     .join("");
@@ -620,6 +658,7 @@ function consentPage(clientName: string, email: string, scopes: string[], search
      <p>It's asking for access to your mindmaps. It will never see your password.</p>
      <div class="who">Signed in as ${esc(email)}</div>
      <ul>${items}</ul>
+     ${workspacePicker(workspaces)}
      <form method="POST" action="/oauth/authorize${esc(search)}">
        <div class="row">
          <a class="btn" href="/oauth/deny">Cancel</a>
@@ -627,6 +666,21 @@ function consentPage(clientName: string, email: string, scopes: string[], search
        </div>
      </form>`,
   );
+}
+
+/**
+ * Where this connection will work. Several workspaces get a select, Personal
+ * chosen; a person with only the one is told which it is rather than asked.
+ */
+function workspacePicker(workspaces: WorkspaceRow[]): string {
+  if (workspaces.length < 2) return `<p class="ws">Workspace: <b>${esc(workspaces[0]?.name ?? "Personal")}</b></p>`;
+  const first = workspaces.find((w) => w.personal) ?? workspaces[0]!;
+  const options = workspaces
+    .map((w) => `<option value="${esc(w.id)}"${w.id === first.id ? " selected" : ""}>${esc(w.name)}</option>`)
+    .join("");
+  return `<label class="ws" for="workspace">Workspace it works in</label>
+     <select id="workspace" name="workspace">${options}</select>
+     <p class="hint">New mindmaps go here, and it looks here first. It can still reach your other workspaces when asked.</p>`;
 }
 
 function errorPage(title: string, detail: string) {
