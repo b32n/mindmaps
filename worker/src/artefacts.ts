@@ -72,6 +72,9 @@ export const ARTEFACT_SQL = [...ARTEFACT_TYPES, ...FILE_TYPES]
  */
 const MAX_PAYLOAD_BYTES = 4_000_000;
 
+/** Over the size limit. The only refusal a write makes that is about size. */
+export class ArtefactTooLarge extends Error {}
+
 export const artefactKey = (nodeId: string) => `artefacts/${nodeId}`;
 
 // ---------------------------------------------------------------------------
@@ -92,6 +95,19 @@ export interface SheetInput {
   rows?: unknown[][];
 }
 
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** What a value is, for a sentence: "null", "a list", "an object", "a string". */
+const kindName = (v: unknown): string =>
+  v === null ? "null" : Array.isArray(v) ? "a list" : isObject(v) ? "an object" : `a ${typeof v}`;
+
+/** Keys on `obj` that are not in `known`, as `` `a`, `b` ``. Empty string when there are none. */
+const strays = (obj: Record<string, unknown>, known: readonly string[]): string[] =>
+  Object.keys(obj).filter((k) => !known.includes(k));
+
+const quoted = (keys: string[]) => keys.map((k) => `\`${k}\``).join(", ");
+
 type CellValue = string | number | boolean | null;
 
 interface Cell {
@@ -103,6 +119,83 @@ interface Cell {
 const MIN_ROWS = 100;
 const MIN_COLS = 26;
 
+const SHEET_KEYS = ["name", "rows"] as const;
+const CELL_OBJECT_KEYS = ["text", "formula"] as const;
+
+/**
+ * Is this string a formula, as opposed to text that happens to start with `=`?
+ *
+ * `=SUM(B2:B5)`, `=B2*2`, `=-A1` and `="a"&B1` are; `=== Notes ===`, `= x`, a
+ * lone `=` and `==x` are not. A second `=` or a space straight after the first
+ * is never the start of a formula, and a sheet that opened with its own banner
+ * row used to come out as a formula that could not parse and a null value.
+ */
+const looksLikeFormula = (s: string) => /^=[^=\s]/.test(s);
+
+/**
+ * Why a cell cannot be stored, or null if it can.
+ *
+ * A cell is a string, number, boolean or null. An object is accepted in exactly
+ * two forms, because they are the only way to say what a bare string cannot:
+ * `{text}` (this is text, even if it starts with `=`) and `{formula}`. Anything
+ * else, an array or a nested object, used to be stored raw and break the grid
+ * when it was opened.
+ */
+export function cellProblem(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean") return null;
+  if (Array.isArray(raw))
+    return "is a list. A cell is a string, number, boolean or null, or {text} or {formula} for one that needs saying.";
+  if (isObject(raw)) {
+    const { text, formula } = raw;
+    if (formula !== undefined && text !== undefined) return "has both `text` and `formula`; give one.";
+    if (formula !== undefined)
+      return typeof formula === "string" && formula.startsWith("=")
+        ? null
+        : "has a `formula` that is not text starting with =.";
+    if (text !== undefined)
+      return text === null || ["string", "number", "boolean"].includes(typeof text)
+        ? null
+        : "has a `text` that is not a string, number or boolean.";
+    return "is an object. A cell is a string, number, boolean or null, or {text} or {formula} for one that needs saying.";
+  }
+  return `is ${kindName(raw)}, which a cell cannot hold.`;
+}
+
+/**
+ * One cell, from what an agent wrote. Call `cellProblem` first.
+ *
+ * Nothing here evaluates a formula: the server keeps its text and leaves the
+ * value null, because the value is the editor's to compute and one written here
+ * would go stale the moment a cell it reads changes. A string is a formula only
+ * if it looks like one (`looksLikeFormula`); `'=...` and `{text}` are the ways
+ * to store text that starts with `=`, and `{formula}` the way to force a
+ * formula. When something that started with `=` was kept as text, the author is
+ * told, in case it was meant as a formula.
+ */
+function cellFromInput(raw: unknown, at: string, notes: string[]): Cell | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+
+  if (isObject(raw)) {
+    const extra = strays(raw, CELL_OBJECT_KEYS);
+    if (extra.length) notes.push(`${at}: ${quoted(extra)} dropped; a cell object takes \`text\` or \`formula\`.`);
+    if (typeof raw.formula === "string") return { value: null, formula: raw.formula };
+    return raw.text === null || raw.text === "" ? null : { value: raw.text as CellValue };
+  }
+
+  if (typeof raw === "string") {
+    if (raw.startsWith("'=")) return { value: raw.slice(1) };
+    if (raw.startsWith("=")) {
+      if (looksLikeFormula(raw)) return { value: null, formula: raw };
+      notes.push(
+        `${at}: "${raw.slice(0, 30)}" starts with = but is not a formula, so it was stored as text. If it was one, pass {"formula": "..."}.`,
+      );
+      return { value: raw };
+    }
+  }
+  return { value: raw as CellValue };
+}
+
 /**
  * Expand rows into Spindle's `WorkbookData`.
  *
@@ -110,10 +203,18 @@ const MIN_COLS = 26;
  * keeps a mostly-blank grid small. A string beginning `=` is kept as a formula
  * with a null value, because the value is Spindle's to compute — writing one
  * here would be a guess that goes stale the moment anything it references
- * changes.
+ * changes. Text that merely starts with `=` stays text; see `looksLikeFormula`.
  */
-export function sheetFromInput(title: string, sheets: SheetInput[]): unknown {
+export function sheetFromInput(title: string, sheets: SheetInput[], notes: string[] = []): unknown {
   const list = sheets.length ? sheets : [{ name: "Sheet1", rows: [] }];
+
+  list.forEach((s, si) => {
+    const extra = isObject(s) ? strays(s, SHEET_KEYS) : [];
+    if (extra.length)
+      notes.push(
+        `sheets[${si}]: ${quoted(extra)} ${extra.length === 1 ? "is" : "are"} not a sheet key, so ${extra.length === 1 ? "it was" : "they were"} dropped. A sheet takes \`name\` and \`rows\`; to control styles, widths or formats pass a full payload as \`data\` (get_artefact_schema shows it).`,
+      );
+  });
 
   return {
     id: crypto.randomUUID(),
@@ -131,11 +232,8 @@ export function sheetFromInput(title: string, sheets: SheetInput[]): unknown {
         const cols = Array.isArray(row) ? row : [];
         widest = Math.max(widest, cols.length);
         cols.forEach((raw, ci) => {
-          if (raw === null || raw === undefined || raw === "") return;
-          const cell: Cell =
-            typeof raw === "string" && raw.startsWith("=")
-              ? { value: null, formula: raw }
-              : { value: raw as CellValue };
+          const cell = cellFromInput(raw, `sheets[${si}].rows[${ri}][${ci}]`, notes);
+          if (!cell) return;
           // A first row of labels is the overwhelmingly common shape, and bold
           // headers are what make a sheet readable at a glance.
           cells.push({ key: `${ri}:${ci}`, cell: ri === 0 ? { ...cell, styleId: "header" } as Cell : cell });
@@ -297,6 +395,9 @@ export interface DocBlockInput {
   rule?: boolean;
 }
 
+const DOC_CONTENT_KEYS = ["heading", "bullet", "number", "rule", "text"] as const;
+const DOC_BLOCK_KEYS = [...DOC_CONTENT_KEYS, "level"] as const;
+
 /** Letter portrait with one-inch margins, matching DEFAULT_PAGE_CONFIG. */
 const PAGE_CONFIG = {
   size: { w: 816, h: 1056 },
@@ -312,12 +413,30 @@ const runs = (text: string) => [{ type: "text", text: String(text) }];
  * One section: a document that needs more than one is a document being laid out
  * rather than written, and that is the editor's job, not an agent's.
  */
-export function docFromInput(title: string, blocks: Array<DocBlockInput | string>): unknown {
+export function docFromInput(
+  title: string,
+  blocks: Array<DocBlockInput | string>,
+  notes: string[] = [],
+): unknown {
   const out: unknown[] = [];
 
-  for (const raw of blocks) {
-    const b: DocBlockInput = typeof raw === "string" ? { text: raw } : raw ?? {};
+  blocks.forEach((raw, i) => {
+    const b: DocBlockInput = typeof raw === "string" ? { text: raw } : isObject(raw) ? raw : {};
     const id = crypto.randomUUID();
+    const at = `blocks[${i}]`;
+
+    // Said before the block is built, so a block that is dropped whole and one
+    // that is kept with a key missing are both named.
+    const extra = strays(b as Record<string, unknown>, DOC_BLOCK_KEYS);
+    if (extra.length)
+      notes.push(
+        `${at}: ${quoted(extra)} ${extra.length === 1 ? "is" : "are"} not a block key, so ${extra.length === 1 ? "it was" : "they were"} dropped. A block takes one of heading, text, bullet, number, rule; tables, images, links and bold go in a full \`data\` payload.`,
+      );
+    const used = DOC_CONTENT_KEYS.filter((k) => (k === "rule" ? b.rule === true : b[k] !== undefined));
+    if (used.length > 1)
+      notes.push(`${at}: has ${quoted([...used])}; only \`${used[0]}\` was used. Give one key per block.`);
+    if (b.level !== undefined && b.heading === undefined)
+      notes.push(`${at}: \`level\` only applies to a heading, so it was dropped.`);
 
     if (b.heading !== undefined) {
       const level = Math.min(6, Math.max(1, Math.round(b.level ?? 2)));
@@ -330,8 +449,10 @@ export function docFromInput(title: string, blocks: Array<DocBlockInput | string
       out.push({ id, type: "horizontal-rule" });
     } else if (b.text !== undefined) {
       out.push({ id, type: "paragraph", content: runs(b.text) });
+    } else if (!used.length) {
+      notes.push(`${at}: has none of heading, text, bullet, number or rule, so it was skipped.`);
     }
-  }
+  });
 
   // A document with no blocks still needs somewhere for the cursor to land.
   if (!out.length) out.push({ id: crypto.randomUUID(), type: "paragraph", content: [] });
@@ -428,6 +549,8 @@ export interface SlideInput {
   notes?: string;
 }
 
+const SLIDE_KEYS = ["title", "bullets", "notes"] as const;
+
 /** Matches DEFAULT_SLIDE_SIZE in spindle-slides-core. */
 const SLIDE_W = 1280;
 const SLIDE_H = 720;
@@ -452,8 +575,22 @@ const richText = (lines: string[], list: "none" | "bullet") => ({
  * Two text boxes per slide, laid out on the 1280x720 stage: a title band and a
  * body. Not a layout engine — a starting point someone can drag.
  */
-export function deckFromInput(title: string, slides: SlideInput[]): unknown {
+export function deckFromInput(title: string, slides: SlideInput[], notes: string[] = []): unknown {
   const list = slides.length ? slides : [{ title: title || "Untitled deck" }];
+
+  list.forEach((s, i) => {
+    if (!isObject(s)) return;
+    const extra = strays(s, SLIDE_KEYS);
+    if (extra.length)
+      notes.push(
+        `slides[${i}]: ${quoted(extra)} ${extra.length === 1 ? "is" : "are"} not a slide key, so ${extra.length === 1 ? "it was" : "they were"} dropped. A slide takes \`title\`, \`bullets\` and \`notes\`; layout, images and shapes go in a full \`data\` payload.`,
+      );
+    if (Array.isArray(s.bullets))
+      s.bullets.forEach((b, j) => {
+        if (typeof b !== "string")
+          notes.push(`slides[${i}].bullets[${j}]: is ${kindName(b)}, not text, so it was dropped.`);
+      });
+  });
 
   return {
     id: crypto.randomUUID(),
@@ -632,11 +769,12 @@ export function payloadFromInput(
     slides?: SlideInput[];
     html?: string;
   },
+  notes: string[] = [],
 ): unknown {
-  if (kind === "doc") return docFromInput(title, input.blocks ?? []);
-  if (kind === "deck") return deckFromInput(title, input.slides ?? []);
+  if (kind === "doc") return docFromInput(title, input.blocks ?? [], notes);
+  if (kind === "deck") return deckFromInput(title, input.slides ?? [], notes);
   if (kind === "html") return htmlFromInput(title, input.html ?? "");
-  return sheetFromInput(title, input.sheets ?? []);
+  return sheetFromInput(title, input.sheets ?? [], notes);
 }
 
 /** The snapshot and the counts for a kind. One switch, not three call sites. */
@@ -645,6 +783,78 @@ function derive(kind: ArtefactKind, payload: unknown): { body: string; counts: R
   if (kind === "deck") return { body: deckSnapshot(payload), counts: deckSummary(payload) };
   if (kind === "html") return { body: htmlSnapshot(payload), counts: htmlSummary(payload) };
   return { body: sheetSnapshot(payload), counts: sheetSummary(payload) };
+}
+
+/**
+ * Why a complete payload is the wrong shape for its kind, or null if it is
+ * fine.
+ *
+ * The check is structural and deliberately loose: the collections each editor
+ * walks have to be there and be the right kind of thing, and nothing about what
+ * is inside them (ids, styles, themes) because those are Spindle's to change.
+ * It exists so a stray write (`null`, a list, `{}`) cannot replace a payload
+ * with something the editor cannot open. Used by `PUT /api/artefacts/:id` and
+ * by `data` on the MCP tools, so the two agree.
+ */
+export function payloadProblem(kind: ArtefactKind, payload: unknown): string | null {
+  if (!isObject(payload))
+    return `The payload must be a JSON object, not ${kindName(payload)}.`;
+
+  const list = (v: unknown, at: string): string | null =>
+    Array.isArray(v) ? null : `${at} must be a list, not ${kindName(v)}.`;
+  const each = (items: unknown[], at: string, check?: (item: Record<string, unknown>, at: string) => string | null) => {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (!isObject(item)) return `${at}[${i}] must be an object, not ${kindName(item)}.`;
+      const bad = check?.(item, `${at}[${i}]`);
+      if (bad) return bad;
+    }
+    return null;
+  };
+
+  if (kind === "html") {
+    if (typeof payload.html !== "string") return `html must be a string (the page), not ${kindName(payload.html)}.`;
+    if (payload.title !== undefined && typeof payload.title !== "string")
+      return `title must be a string, not ${kindName(payload.title)}.`;
+    return null;
+  }
+
+  if (kind === "doc") {
+    return (
+      list(payload.sections, "sections") ??
+      each(payload.sections as unknown[], "sections", (sec, at) =>
+        list(sec.blocks, `${at}.blocks`) ?? each(sec.blocks as unknown[], `${at}.blocks`),
+      )
+    );
+  }
+
+  if (kind === "deck") {
+    return (
+      list(payload.slides, "slides") ??
+      each(payload.slides as unknown[], "slides", (slide, at) =>
+        slide.elements === undefined
+          ? null
+          : list(slide.elements, `${at}.elements`) ?? each(slide.elements as unknown[], `${at}.elements`),
+      )
+    );
+  }
+
+  return (
+    list(payload.sheets, "sheets") ??
+    each(payload.sheets as unknown[], "sheets", (sheet, at) =>
+      sheet.cells === undefined
+        ? null
+        : list(sheet.cells, `${at}.cells`) ??
+          each(sheet.cells as unknown[], `${at}.cells`, (entry, cat) => {
+            if (typeof entry.key !== "string") return `${cat}.key must be a string like "0:0".`;
+            if (!isObject(entry.cell)) return `${cat}.cell must be an object like {value}.`;
+            const v = entry.cell.value;
+            return v === undefined || v === null || ["string", "number", "boolean"].includes(typeof v)
+              ? null
+              : `${cat}.cell.value must be a string, number, boolean or null, not ${kindName(v)}.`;
+          }),
+    )
+  );
 }
 
 /**
@@ -661,7 +871,7 @@ export function describeArtefact(
 ): { json: string; stored: StoredArtefact } {
   const json = JSON.stringify(payload);
   if (json.length > MAX_PAYLOAD_BYTES)
-    throw new Error(
+    throw new ArtefactTooLarge(
       `Artefact is ${Math.round(json.length / 1000)} kB, over the ${MAX_PAYLOAD_BYTES / 1_000_000} MB limit.`,
     );
 

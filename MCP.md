@@ -70,15 +70,49 @@ whole server should stay in the low thousands of tokens.
 | `list_mindmaps` | names, status, counts of cards, notes, sheets, documents, decks, pages, files and folders |
 | `get_mindmap(id)` | the mindmap as structured context: cards with documents, checklist state, notes, and labelled edges between them, then every artefact, file and folder on the map with its type, key, id and URL |
 | `get_card(id)` | one card's full document |
+| `get_artefact(id)` | a sheet, document, deck or page in full: id, type, mindmap, URL and its stored payload as `{id, title, data}`, the exact arguments `update_artefact` takes |
 | `search(query, mindmap?)` | matches across titles, documents and notes; ids plus snippets |
 
 ### Write
 
 | Tool | Does |
 |---|---|
+| `create_artefact` / `update_artefact` | a sheet, document, deck or page from a simple form or a complete `data` payload; see "Artefacts" below |
 | `create_mindmap(name, nodes[], edges[])` | the headline one: agent hands over a graph, we lay it out |
 | `add_to_mindmap(id, nodes[], edges[])` | extend an existing map |
 | `add_card` / `update_card` / `append_to_card` | `append_to_card` is the workhorse — "add these findings to the tokenization card" |
+
+#### Artefacts
+
+`get_card` returns a text snapshot, which is what search reads and not
+something to write back. `get_artefact` returns the stored payload as `data`,
+and `update_artefact({id, title, data})` stores it unchanged, so an agent can
+amend a sheet, document, deck or page a person has edited without erasing their
+styling, tables or layout. The simple form (`sheets`, `blocks`, `slides`,
+`html`) rebuilds the artefact and is for writing one from nothing. The result of
+`get_artefact` can be passed back whole: `type`, `mindmap_id` and `url` are
+accepted and ignored, and a `type` that disagrees with the node is refused.
+
+`data` is checked for shape before anything is written (the collections the
+editor walks must exist and be lists of objects; for a sheet each cell is
+`{key, cell}` with a scalar `value`), by the same function the REST route
+uses: `PUT /api/artefacts/:id` answers `400` with the reason for the wrong
+shape (including `null`, a list or malformed JSON) and `413` only for size.
+Passing `data` together with the simple form's field is refused, not merged.
+
+What the simple form could not use is reported, not dropped: unknown keys on a
+sheet, block or slide, a block with several kinds of content, a `level` on
+something that is not a heading, bullets that are not text, and arguments the
+tool does not take come back as a "not stored" list after the result. Input
+that cannot be stored at all (an object or list as a cell, a row that is not a
+list) is refused, naming the row and column.
+
+A leading `=` in a cell is decided deliberately. The server never evaluates a
+formula; it keeps the text and the sheet computes it on open. A string is a
+formula when `=` is followed by something other than another `=` or a space
+(`=SUM(B2:B3)`); otherwise (`=== Notes ===`) it is stored as text and the reply
+says so. `{"text": "=A1"}` or `"'=A1"` forces text; `{"formula": "=A1+1"}` forces
+a formula.
 
 `get_mindmap` deserves more care than it sounds: it's a payload going into
 someone's context window. Markdown, clearly structured, **ids attached** so the

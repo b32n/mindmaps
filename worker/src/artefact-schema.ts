@@ -42,14 +42,30 @@ first row, grid size.
 }
 \`\`\`
 
-A cell is a string, number, boolean, or null. A string starting with \`=\` is
-kept as a formula and evaluated when the sheet is opened. Empty strings and
-nulls are not stored, so a mostly-blank grid costs nothing.
+A cell is a string, number, boolean, or null. Empty strings and nulls are not
+stored, so a mostly-blank grid costs nothing.
+
+**A leading \`=\`.** The server never evaluates anything. A string that looks
+like a formula (\`=\` followed by something other than another \`=\` or a space:
+\`=SUM(B2:B3)\`, \`=B2*2\`) is stored as formula text with no value, and the
+sheet computes it when it is opened. Text that only starts with \`=\`
+(\`"=== Notes ==="\`, \`"= x"\`) is stored as plain text, and the reply says so.
+Two explicit forms remove the guesswork:
+
+- \`{"text": "=A1"}\` or \`"'=A1"\` is text, whatever it starts with
+- \`{"formula": "=A1+1"}\` is a formula
+
+Any other object or list in a cell is refused, naming its row and column.
 
 ## 2. A full payload
 
-Pass \`data\` instead of \`sheets\` to control everything. This is Spindle's
-\`WorkbookData\`:
+Pass \`data\` instead of \`sheets\` to control everything: styles, widths,
+number formats, comments, links. \`get_artefact\` returns exactly this shape for
+an existing sheet, so read, change and send it back with
+\`update_artefact({id, data})\` and nothing a person added is lost. The simple
+form rebuilds the sheet and does lose it. \`data\` is checked for shape
+(\`sheets\` a list of objects, \`cells\` a list of \`{key, cell}\`) and then
+stored as it is. This is Spindle's \`WorkbookData\`:
 
 \`\`\`typescript
 interface WorkbookData {
@@ -155,8 +171,13 @@ repeats it is usually noise.
 
 ## 2. A full payload
 
-Pass \`data\` instead of \`blocks\` to control everything. This is Spindle's
-\`DocumentData\`:
+Pass \`data\` instead of \`blocks\` to control everything: heading levels on
+list items, tables, images, links, bold and the rest. \`get_artefact\` returns
+exactly this shape for an existing document, so read, change and send it back
+with \`update_artefact({id, data})\`. Blocks the simple form cannot say are
+reported back rather than dropped quietly. \`data\` is checked for shape
+(\`sections\` a list, each with a \`blocks\` list) and then stored as it is. This
+is Spindle's \`DocumentData\`:
 
 \`\`\`typescript
 interface DocumentData {
@@ -223,9 +244,12 @@ findable.
 
 ## 2. A full payload
 
-Pass \`data\` instead of \`slides\`. This is Spindle's \`DeckData\`, and it is
-tolerant: ids, z-order indices, the theme and the slide size are all filled in
-on load, so you only supply what you care about.
+Pass \`data\` instead of \`slides\`. \`get_artefact\` returns exactly this shape
+for an existing deck, so read, change and send it back with
+\`update_artefact({id, data})\`. \`data\` is checked for shape (\`slides\` a list,
+each \`elements\` a list if present) and stored as it is. This is Spindle's
+\`DeckData\`, and it is tolerant: ids, z-order indices, the theme and the slide
+size are all filled in on load, so you only supply what you care about.
 
 \`\`\`typescript
 interface DeckData {
@@ -286,7 +310,9 @@ One field: a complete HTML document.
 \`\`\`
 
 A \`<!doctype html>\` is added for you if you leave it off, along with a charset
-and a viewport meta.
+and a viewport meta. To amend a page, read it with \`get_artefact\` and send it
+back as \`update_artefact({id, data})\` where \`data\` is \`{title, html}\`: that
+stores the source exactly as written, with nothing added or trimmed.
 
 ## The mindbox, which you must design around
 

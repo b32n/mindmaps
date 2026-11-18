@@ -153,6 +153,7 @@ uses the same password or Google account as the web app.
 | `list_mindmaps` | read | names, counts of each kind of node, ids, URLs |
 | `get_mindmap` | read | a whole map as markdown (cards, artefacts, files), with ids, URLs and checklist state |
 | `get_card` | read | one card's full document |
+| `get_artefact` | read | a sheet, document, deck or page in full, with id, type, mindmap and URL, as the exact arguments `update_artefact` takes |
 | `search` | read | titles and documents across all maps, ranked by relevance |
 | `get_context` | read | walk outward from a card through its links to cards, artefacts and files, across mindmaps |
 | `create_mindmap` | write | a graph of nodes + labelled edges; positions computed here |
@@ -164,10 +165,19 @@ uses the same password or Google account as the web app.
 | `add_card` | write | one card; takes `open_at` |
 | `update_card` | write | replace title and/or document; takes `open_at` |
 | `append_to_card` | write | add to a document without discarding it |
+| `create_artefact` | write | a sheet, document, deck or page, from a simple form (`sheets`, `blocks`, `slides`, `html`) or a complete `data` payload |
+| `update_artefact` | write | replace an artefact's contents, or rename it; to amend, read it with `get_artefact` and send it back as `data` |
 
 `create_mindmap` and `add_to_mindmap` also take `direction` (`right` or `down`),
 which sets both the layout axis and which sides links attach to. Got it wrong?
 `relayout_mindmap` turns the whole map round afterwards.
+
+To change a sheet, document, deck or page someone has already edited, read it
+with `get_artefact` and send what it returns back to `update_artefact`: the
+`data` it carries is the whole payload, so styling, tables and layout survive.
+Writing from the simple form rebuilds the artefact. Whatever a call could not
+use (an unknown key, a block with two kinds of content, text that starts with
+`=` but is not a formula) is named in its reply rather than dropped quietly.
 
 Pass a stable `key` to `create_mindmap` or `add_card` on anything you might
 record again: a second call with the same key updates what is there instead of
