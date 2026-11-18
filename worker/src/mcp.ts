@@ -27,8 +27,9 @@ import {
 } from "./layout";
 import {
   ARTEFACT_SCHEMAS, ARTEFACT_SQL, ArtefactTooLarge, INDEXABLE_SQL, cellProblem, getArtefact as readArtefact, isArtefact,
-  payloadFromInput, payloadProblem, putArtefact, type ArtefactKind,
+  payloadFromInput, payloadProblem, type ArtefactKind,
 } from "./artefacts";
+import { cardEditStmts, cardInsertStmts, mcpActor, versionLine, writeArtefact, writeCard, type Actor } from "./versions";
 import {
   BOARD_READABLE, IN_BOARD_WORKSPACE, IN_WORKSPACE, NODE_READABLE, boardRole, canWrite, ensurePersonalWorkspace,
   workspacesFor, type WorkspaceRow,
@@ -838,8 +839,15 @@ async function callTool(id: Id, env: McpEnv, grant: TokenGrant, params: any): Pr
   }
 }
 
+/** The tools that change a card, an artefact or a file, and so need to say who is writing. */
+const WRITERS = new Set([
+  "create_artefact", "update_artefact", "put_file", "create_mindmap", "add_to_mindmap", "add_card",
+  "update_card", "append_to_card",
+]);
+
 async function runTool(id: Id, env: McpEnv, grant: TokenGrant, name: string, args: any): Promise<Response> {
   const u = grant.userId;
+  const actor = WRITERS.has(name) ? await mcpActor(env, grant) : (null as unknown as Actor);
   switch (name) {
     case "recall":
       return rpcOk(id, await recall(env, u, args, grant));
@@ -856,9 +864,9 @@ async function runTool(id: Id, env: McpEnv, grant: TokenGrant, name: string, arg
     case "update_mindmap":
       return rpcOk(id, await updateMindmap(env, u, args));
     case "create_artefact":
-      return rpcOk(id, await createArtefact(env, u, args));
+      return rpcOk(id, await createArtefact(env, u, args, actor));
     case "update_artefact":
-      return rpcOk(id, await updateArtefact(env, u, args));
+      return rpcOk(id, await updateArtefact(env, u, args, actor));
     case "get_artefact":
       return rpcOk(id, await getArtefactTool(env, u, args));
     case "get_artefact_schema": {
@@ -877,21 +885,21 @@ async function runTool(id: Id, env: McpEnv, grant: TokenGrant, name: string, arg
       );
     }
     case "put_file":
-      return rpcOk(id, await putFileTool(env, u, args));
+      return rpcOk(id, await putFileTool(env, u, args, actor));
     case "list_files":
       return rpcOk(id, await listFilesTool(env, u, args));
     case "read_file":
       return rpcOk(id, await readFileTool(env, u, args));
     case "create_mindmap":
-      return rpcOk(id, await createMindmap(env, u, args, grant.clientId, grant));
+      return rpcOk(id, await createMindmap(env, u, args, actor, grant));
     case "add_to_mindmap":
-      return rpcOk(id, await addToMindmap(env, u, args, grant.clientId));
+      return rpcOk(id, await addToMindmap(env, u, args, actor));
     case "add_card":
-      return rpcOk(id, await addCard(env, u, args, grant.clientId));
+      return rpcOk(id, await addCard(env, u, args, actor));
     case "update_card":
-      return rpcOk(id, await updateCard(env, u, args));
+      return rpcOk(id, await updateCard(env, u, args, actor));
     case "append_to_card":
-      return rpcOk(id, await appendToCard(env, u, args));
+      return rpcOk(id, await appendToCard(env, u, args, actor));
     case "relayout_mindmap":
       return rpcOk(id, await relayoutMindmap(env, u, args));
     case "link_cards":
@@ -1374,6 +1382,8 @@ async function getCard(env: McpEnv, userId: string, args: any) {
     /* a malformed blob is not worth failing a read over */
   }
 
+  const version = await versionLine(env, node.id);
+
   return toolText(
     [
       `# ${node.title || "(untitled)"}`,
@@ -1382,7 +1392,8 @@ async function getCard(env: McpEnv, userId: string, args: any) {
         (node.idem_key ? ` · key: \`${node.idem_key}\`` : "") +
         (total ? ` · checklist ${done}/${total}` : "") +
         wrote +
-        refTail(env, node),
+        refTail(env, node) +
+        (version ? ` · ${version}` : ""),
       ...(replacedBy.length
         ? [
             "",
@@ -1702,17 +1713,19 @@ const moveStmts = (env: McpEnv, moved: Array<{ key: string; x: number; y: number
       .bind(m.x, m.y, now(), m.key),
   );
 
-const insertNodeStmt = (
+/** A new card's row and its first version. */
+const insertNodeStmts = (
   env: McpEnv,
+  actor: Actor,
   boardId: string,
   r: any,
   data: string = "{}",
   idemKey: string | null = null,
 ) =>
-  env.DB.prepare(
-    `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at,idem_key)
-     VALUES (?,?,?,?,?,?,?,?,260,150,?,?,?,?)`,
-  ).bind(r.id, boardId, r.type, r.title, r.body, r.doc, r.x, r.y, data, now(), now(), idemKey);
+  cardInsertStmts(env, actor, {
+    id: r.id, board_id: boardId, type: r.type, title: r.title, body: r.body, doc: r.doc,
+    x: r.x, y: r.y, data, idem_key: idemKey,
+  });
 
 /** What `prepare` produces: a row ready to insert, plus the agent's key for it. */
 type PreparedRow = ReturnType<typeof prepare>["rows"][number];
@@ -1804,7 +1817,8 @@ async function candidateHomes(
     .join("\n");
 }
 
-async function createMindmap(env: McpEnv, userId: string, args: any, clientId: string | undefined, grant: TokenGrant) {
+async function createMindmap(env: McpEnv, userId: string, args: any, actor: Actor, grant: TokenGrant) {
+  const clientId = actor.clientId ?? undefined;
   const name = String(args?.name ?? "").trim();
   if (!name) return toolText("A name is required.", true);
   const nodes: IncomingNode[] = Array.isArray(args?.nodes) ? args.nodes : [];
@@ -1830,7 +1844,7 @@ async function createMindmap(env: McpEnv, userId: string, args: any, clientId: s
         .first<{ id: string; name: string }>()
     : null;
 
-  if (prior) return await mergeIntoMindmap(env, userId, prior.id, name, args, clientId);
+  if (prior) return await mergeIntoMindmap(env, userId, prior.id, name, args, actor);
 
   /*
    * From here a genuinely new mindmap is about to exist, and it is only the
@@ -1899,9 +1913,11 @@ async function createMindmap(env: McpEnv, userId: string, args: any, clientId: s
         : null,
       workspaceId,
     ),
-    ...rows.map((r) =>
-      insertNodeStmt(env, boardId, r, dataFor(null, clientId), mapKey ? r.key : null),
-    ),
+    ...(
+      await Promise.all(
+        rows.map((r) => insertNodeStmts(env, actor, boardId, r, dataFor(null, clientId), mapKey ? r.key : null)),
+      )
+    ).flat(),
   ];
 
   let linked = 0;
@@ -1942,7 +1958,7 @@ async function mergeIntoMindmap(
   boardId: string,
   name: string,
   args: any,
-  clientId?: string,
+  actor: Actor,
 ) {
   const nodes: IncomingNode[] = Array.isArray(args?.nodes) ? args.nodes : [];
   const direction = directionOf(args);
@@ -1960,8 +1976,8 @@ async function mergeIntoMindmap(
   const existing = await existingByKey(env, boardId, rows.map((r) => r.key));
   const clash = proseClash(rows, existing);
   if (clash) return toolText(clash, true);
-  const { stmts, ids, added, updated } = upsertNodeStmts(
-    env, boardId, rows, true, existing, clientId,
+  const { stmts, ids, added, updated } = await upsertNodeStmts(
+    env, actor, boardId, rows, true, existing,
   );
 
   // The key now resolves to whichever id already holds it, so edges written in
@@ -2014,7 +2030,7 @@ async function mergeIntoMindmap(
   );
 }
 
-async function addToMindmap(env: McpEnv, userId: string, args: any, clientId?: string) {
+async function addToMindmap(env: McpEnv, userId: string, args: any, actor: Actor) {
   const board = await writableBoard(env, userId, String(args?.id ?? ""));
   if (!board) return toolText(await writeDenial(env, userId, "mindmap", String(args?.id ?? "")), true);
   const nodes: IncomingNode[] = Array.isArray(args?.nodes) ? args.nodes : [];
@@ -2036,8 +2052,8 @@ async function addToMindmap(env: McpEnv, userId: string, args: any, clientId?: s
   const prior = keyed ? await existingByKey(env, board.id, rows.map((r) => r.key)) : new Map();
   const clash = proseClash(rows, prior);
   if (clash) return toolText(clash, true);
-  const { stmts, ids, added, updated } = upsertNodeStmts(
-    env, board.id, rows, keyed, prior, clientId,
+  const { stmts, ids, added, updated } = await upsertNodeStmts(
+    env, actor, board.id, rows, keyed, prior,
   );
   const keyToId = new Map<string, string>();
   rows.forEach((r, i) => keyToId.set(r.key, ids[i]));
@@ -2302,7 +2318,7 @@ async function frameLine(env: McpEnv, kind: string, nodeId: string): Promise<str
   return `\n\nRender this in your canvas (expires in an hour): ${url}`;
 }
 
-async function createArtefact(env: McpEnv, userId: string, args: any) {
+async function createArtefact(env: McpEnv, userId: string, args: any, actor: Actor) {
   const board = await writableBoard(env, userId, String(args?.mindmap_id ?? ""));
   if (!board) return toolText(await writeDenial(env, userId, "mindmap", String(args?.mindmap_id ?? "")), true);
 
@@ -2325,21 +2341,16 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
   const built = payloadForCall(kind, title, args, content);
   if ("refusal" in built) return toolText(built.refusal, true);
   const notes = [...strayArgs(kind, args, [...CREATE_ARGS]), ...built.notes];
+  const touchBoard = [env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id)];
   let stored;
-  try {
-    stored = await putArtefact(env, nodeId, kind, built.payload);
-  } catch (err: any) {
-    return toolText(artefactRefusal(err), true);
-  }
 
   if (seen) {
     // Keyed and already here: replace the contents, leave where the user put it.
-    await env.DB.batch([
-      env.DB.prepare(
-        `UPDATE nodes SET title = ?, body = ?, data = ?, updated_at = ? WHERE id = ?`,
-      ).bind(title, stored.body, JSON.stringify(stored.data), now(), nodeId),
-      env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id),
-    ]);
+    try {
+      stored = await writeArtefact(env, actor, { nodeId, kind, payload: built.payload, title, extra: touchBoard });
+    } catch (err: any) {
+      return toolText(artefactRefusal(err), true);
+    }
     await reindex(env, userId, nodeId);
     return toolText(
       withNotes(
@@ -2358,16 +2369,15 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
   );
   const at = rows[0];
 
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at,idem_key)
-       VALUES (?,?,?,?,?,NULL,?,?,260,150,?,?,?,?)`,
-    ).bind(
-      nodeId, board.id, kind, title, stored.body, at.x, at.y,
-      JSON.stringify(stored.data), now(), now(), key || null,
-    ),
-    env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id),
-  ]);
+  try {
+    stored = await writeArtefact(env, actor, {
+      nodeId, kind, payload: built.payload, title,
+      create: { boardId: board.id, x: at.x, y: at.y, idemKey: key || null },
+      extra: touchBoard,
+    });
+  } catch (err: any) {
+    return toolText(artefactRefusal(err), true);
+  }
   await reindex(env, userId, nodeId);
 
   return toolText(
@@ -2379,7 +2389,7 @@ async function createArtefact(env: McpEnv, userId: string, args: any) {
   );
 }
 
-async function updateArtefact(env: McpEnv, userId: string, args: any) {
+async function updateArtefact(env: McpEnv, userId: string, args: any, actor: Actor) {
   const node = await writableNode(env, userId, String(args?.id ?? ""));
   if (!node) return toolText(await writeDenial(env, userId, "artefact", String(args?.id ?? "")), true);
   if (!isArtefact(node.type))
@@ -2407,8 +2417,7 @@ async function updateArtefact(env: McpEnv, userId: string, args: any) {
         `Pass \`${spec.field}\` to write the contents (this replaces them rather than merging), or just \`title\` to rename.`,
         true,
       );
-    await env.DB.batch([
-      env.DB.prepare(`UPDATE nodes SET title = ?, updated_at = ? WHERE id = ?`).bind(renamed.slice(0, 500), now(), node.id),
+    await writeCard(env, actor, { nodeId: node.id, set: { title: renamed.slice(0, 500) } }, [
       env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id),
     ]);
     await reindex(env, userId, node.id);
@@ -2427,17 +2436,13 @@ async function updateArtefact(env: McpEnv, userId: string, args: any) {
   const notes = [...argNotes, ...built.notes];
   let stored;
   try {
-    stored = await putArtefact(env, node.id, kind, built.payload);
+    stored = await writeArtefact(env, actor, {
+      nodeId: node.id, kind, payload: built.payload, title,
+      extra: [env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id)],
+    });
   } catch (err: any) {
     return toolText(artefactRefusal(err), true);
   }
-
-  await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE nodes SET title = ?, body = ?, data = ?, updated_at = ? WHERE id = ?`,
-    ).bind(title, stored.body, JSON.stringify(stored.data), now(), node.id),
-    env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id),
-  ]);
   await reindex(env, userId, node.id);
 
   return toolText(
@@ -2477,14 +2482,16 @@ async function getArtefactTool(env: McpEnv, userId: string, args: any) {
 
   const spec = KINDS[node.type as ArtefactKind];
   const reply = JSON.stringify({ id: node.id, title: node.title ?? "", data: payload });
+  const version = await versionLine(env, node.id);
   return toolText(
-    `**${node.title || spec.fallback}**, a ${spec.noun} on ${node.board_name}.\n${refLine(env, node)}\n\n` +
+    `**${node.title || spec.fallback}**, a ${spec.noun} on ${node.board_name}.\n${refLine(env, node)}${version ? ` · ${version}` : ""}\n\n` +
       `Everything stored, as the arguments for update_artefact. Change what you need and send it back; it replaces the contents, so what you leave alone stays as it is here.\n\n` +
       "```json\n" + reply + "\n```",
   );
 }
 
-async function addCard(env: McpEnv, userId: string, args: any, clientId?: string) {
+async function addCard(env: McpEnv, userId: string, args: any, actor: Actor) {
+  const clientId = actor.clientId ?? undefined;
   const board = await writableBoard(env, userId, String(args?.mindmap_id ?? ""));
   if (!board) return toolText(await writeDenial(env, userId, "mindmap", String(args?.mindmap_id ?? "")), true);
 
@@ -2514,11 +2521,12 @@ async function addCard(env: McpEnv, userId: string, args: any, clientId?: string
   if (seen && !isProse(seen.type)) return toolText(keyClash(cardKey, seen, "card"), true);
 
   if (seen) {
-    await env.DB.batch([
-      env.DB.prepare(`UPDATE nodes SET title = ?, body = ?, doc = ?, updated_at = ? WHERE id = ?`)
-        .bind(rows[0].title, rows[0].body, rows[0].doc, now(), seen.id),
-      env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id),
-    ]);
+    await writeCard(
+      env,
+      actor,
+      { nodeId: seen.id, set: { title: rows[0].title, body: rows[0].body, doc: rows[0].doc } },
+      [env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id)],
+    );
     await reindex(env, userId, seen.id);
     return toolText(
       `Updated **${rows[0].title || "(untitled)"}** on ${board.name} — a card with key \`${cardKey}\` was already there, so nothing was duplicated.\n\ncard id: \`${seen.id}\`${refTail(env, { id: seen.id, type: seen.type, board_id: board.id })}`,
@@ -2526,7 +2534,7 @@ async function addCard(env: McpEnv, userId: string, args: any, clientId?: string
   }
 
   await env.DB.batch([
-    insertNodeStmt(env, board.id, rows[0], dataFor(args, clientId), cardKey || null),
+    ...(await insertNodeStmts(env, actor, board.id, rows[0], dataFor(args, clientId), cardKey || null)),
     ...(anchored
       ? [insertEdgeStmt(env, connectTo, rows[0].id, String(args?.label ?? ""), "right")]
       : []),
@@ -2551,21 +2559,17 @@ function notACard(node: { type: string; title?: string }): string {
   return `That is a ${node.type}, not a card, so update_card and append_to_card leave it alone.`;
 }
 
-async function updateCard(env: McpEnv, userId: string, args: any) {
+async function updateCard(env: McpEnv, userId: string, args: any, actor: Actor) {
   const node = await writableNode(env, userId, String(args?.id ?? ""));
   if (!node) return toolText(await writeDenial(env, userId, "card", String(args?.id ?? "")), true);
   if (!isProse(node.type)) return toolText(notACard(node), true);
 
-  const sets: string[] = [];
-  const vals: unknown[] = [];
-  if (args?.title !== undefined) {
-    sets.push("title = ?");
-    vals.push(String(args.title).slice(0, 500));
-  }
+  const set: { title?: string; doc?: string; body?: string; data?: string } = {};
+  if (args?.title !== undefined) set.title = String(args.title).slice(0, 500);
   if (args?.content !== undefined) {
     const { doc, body } = normaliseContent(args.content);
-    sets.push("doc = ?", "body = ?");
-    vals.push(doc, body);
+    set.doc = doc;
+    set.body = body;
   }
   if (args?.open_at !== undefined) {
     if (args.open_at !== "top" && args.open_at !== "bottom")
@@ -2578,22 +2582,20 @@ async function updateCard(env: McpEnv, userId: string, args: any) {
     } catch {
       /* a malformed blob is not worth failing the write over */
     }
-    sets.push("data = ?");
-    vals.push(JSON.stringify({ ...data, open_at: args.open_at }));
+    set.data = JSON.stringify({ ...data, open_at: args.open_at });
   }
-  if (!sets.length)
+  if (!Object.keys(set).length)
     return toolText("Nothing to update — pass a title, content, or open_at.", true);
 
-  sets.push("updated_at = ?");
-  vals.push(now(), node.id);
-  await env.DB.prepare(`UPDATE nodes SET ${sets.join(", ")} WHERE id = ?`).bind(...vals).run();
-  await env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id).run();
+  await writeCard(env, actor, { nodeId: node.id, set }, [
+    env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id),
+  ]);
   await reindex(env, userId, node.id);
 
   return toolText(`Updated **${args?.title ?? (node.title || "(untitled)")}**.\n\n${refLine(env, node)}`);
 }
 
-async function appendToCard(env: McpEnv, userId: string, args: any) {
+async function appendToCard(env: McpEnv, userId: string, args: any, actor: Actor) {
   const node = await writableNode(env, userId, String(args?.id ?? ""));
   if (!node) return toolText(await writeDenial(env, userId, "card", String(args?.id ?? "")), true);
   if (!isProse(node.type)) return toolText(notACard(node), true);
@@ -2608,10 +2610,9 @@ async function appendToCard(env: McpEnv, userId: string, args: any) {
   const merged = [...existing, ...added];
   const body = blocksToMarkdown(merged);
 
-  await env.DB.prepare(`UPDATE nodes SET doc = ?, body = ?, updated_at = ? WHERE id = ?`)
-    .bind(JSON.stringify(merged), body, now(), node.id)
-    .run();
-  await env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id).run();
+  await writeCard(env, actor, { nodeId: node.id, set: { doc: JSON.stringify(merged), body } }, [
+    env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), node.board_id),
+  ]);
   await reindex(env, userId, node.id);
 
   const { done, total } = progressOf(merged);
@@ -3587,14 +3588,14 @@ function proseClash(rows: PreparedRow[], existing: Map<string, Existing>): strin
  *   data       carries open_at and the original author; a re-run restates the
  *              content, not who first wrote it
  */
-function upsertNodeStmts(
+async function upsertNodeStmts(
   env: McpEnv,
+  actor: Actor,
   boardId: string,
   rows: PreparedRow[],
   keyed: boolean,
   existing: Map<string, Existing>,
-  clientId?: string,
-): { stmts: D1PreparedStatement[]; ids: string[]; added: number; updated: number } {
+): Promise<{ stmts: D1PreparedStatement[]; ids: string[]; added: number; updated: number }> {
   const stmts: D1PreparedStatement[] = [];
   const ids: string[] = [];
   let added = 0;
@@ -3603,15 +3604,11 @@ function upsertNodeStmts(
   for (const r of rows) {
     const prior = keyed ? existing.get(r.key) : undefined;
     if (prior) {
-      stmts.push(
-        env.DB.prepare(
-          `UPDATE nodes SET title = ?, body = ?, doc = ?, updated_at = ? WHERE id = ?`,
-        ).bind(r.title, r.body, r.doc, now(), prior.id),
-      );
+      stmts.push(...(await cardEditStmts(env, actor, { nodeId: prior.id, set: { title: r.title, body: r.body, doc: r.doc } })));
       ids.push(prior.id);
       updated += 1;
     } else {
-      stmts.push(insertNodeStmt(env, boardId, r, dataFor(null, clientId), keyed ? r.key : null));
+      stmts.push(...(await insertNodeStmts(env, actor, boardId, r, dataFor(null, actor.clientId ?? undefined), keyed ? r.key : null)));
       ids.push(r.id);
       added += 1;
     }
@@ -3688,7 +3685,7 @@ const readableSize = (bytes: number) =>
     ? `${(bytes / 1_000_000).toFixed(1)} MB`
     : `${Math.max(1, Math.round(bytes / 1000))} kB`;
 
-async function putFileTool(env: McpEnv, userId: string, args: any) {
+async function putFileTool(env: McpEnv, userId: string, args: any, actor: Actor) {
   const name = String(args?.name ?? "").trim();
   if (!name) return toolText("Pass `name` — the filename, with its extension.", true);
 
@@ -3739,7 +3736,7 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
       const row = await storeFile(env as any, {
         nodeId: folderId, kind: "folder", title: node.title ?? "",
         name, contentType, description, size: bytes.byteLength,
-        uploadedBy: userId, source: bytes,
+        uploadedBy: userId, actor, source: bytes,
       });
       await reindex(env, userId, folderId);
       return toolText(
@@ -3784,11 +3781,14 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
         placerFor(surface, "right", false),
       ).rows[0];
 
+      // No version yet: the node is empty until the upload below fills it, and
+      // that write is its first (`first`), so a refused upload leaves no trace.
       await env.DB.batch([
-        env.DB.prepare(
-          `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at)
-           VALUES (?,?,'folder',?,'',NULL,?,?,260,150,'{}',?,?)`,
-        ).bind(folderNodeId, board.id, folderName, placed.x, placed.y, now(), now()),
+        ...(await cardInsertStmts(
+          env, actor,
+          { id: folderNodeId, board_id: board.id, type: "folder", title: folderName, body: "", doc: null, x: placed.x, y: placed.y, data: "{}" },
+          { record: false },
+        )),
         env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id),
       ]);
     }
@@ -3797,7 +3797,7 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
       const row = await storeFile(env as any, {
         nodeId: folderNodeId, kind: "folder", title: folderName,
         name, contentType, description, size: bytes.byteLength,
-        uploadedBy: userId, source: bytes,
+        uploadedBy: userId, actor, first: !found, source: bytes,
       });
       await reindex(env, userId, folderNodeId);
       return toolText(
@@ -3824,10 +3824,11 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
   // The node first, because `files.node_id` references it, then the file —
   // which also writes the summary and the snapshot back onto the row.
   await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at)
-       VALUES (?,?,'file',?,'',NULL,?,?,260,150,'{}',?,?)`,
-    ).bind(nodeId, board.id, name, at.x, at.y, now(), now()),
+    ...(await cardInsertStmts(
+      env, actor,
+      { id: nodeId, board_id: board.id, type: "file", title: name, body: "", doc: null, x: at.x, y: at.y, data: "{}" },
+      { record: false },
+    )),
     env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), board.id),
   ]);
 
@@ -3835,7 +3836,7 @@ async function putFileTool(env: McpEnv, userId: string, args: any) {
     const row = await storeFile(env as any, {
       nodeId, kind: "file", title: name,
       name, contentType, description, size: bytes.byteLength,
-      uploadedBy: userId, source: bytes,
+      uploadedBy: userId, actor, first: true, source: bytes,
     });
     await reindex(env, userId, nodeId);
     return toolText(

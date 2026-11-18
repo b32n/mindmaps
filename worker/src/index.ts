@@ -33,11 +33,11 @@ import {
 } from "./trash";
 import {
   ARTEFACT_SQL, ArtefactTooLarge, INDEXABLE_SQL, artefactKey, describeArtefact, getArtefact, isArtefact, payloadFromInput, payloadProblem,
-  putArtefact,
   type ArtefactKind,
 } from "./artefacts";
 import { blocksToMarkdown, parseDoc } from "./markdown";
 import { createStarterBoard } from "./starter";
+import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
 export interface Env {
   DB: D1Database;
@@ -906,31 +906,20 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     }
 
     try {
-      await env.DB.prepare(
-        `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at,index_dirty)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      )
-        .bind(...Object.values(node), markIndex(node.type, node.title, node.body))
-        .run();
+      // Row first, bytes second: only the request whose insert succeeded may
+      // write the object, so a refused create can never change anyone's payload.
+      // If the write itself fails the row goes again rather than pointing at
+      // nothing. See insertNode.
+      await insertNode(
+        env,
+        webActor(user.id),
+        { ...node, index_dirty: markIndex(node.type, node.title, node.body) },
+        { payload: toWrite ?? (isArtefact(node.type) ? "existing" : undefined) },
+      );
     } catch (err) {
       // Lost a race for the same id: still a refusal, and R2 was never touched.
       if (isUniqueViolation(err)) return json(env, { error: "A node with that id already exists." }, 409);
       throw err;
-    }
-
-    // Row first, bytes second: only the request whose insert succeeded may
-    // write the object, so a refused create can never change anyone's payload.
-    // If the write itself fails the row goes again rather than pointing at
-    // nothing.
-    if (toWrite) {
-      try {
-        await env.ARTEFACTS.put(toWrite.key, toWrite.json, {
-          httpMetadata: { contentType: "application/json" },
-        });
-      } catch (err) {
-        await env.DB.prepare(`DELETE FROM nodes WHERE id = ?`).bind(node.id).run();
-        throw err;
-      }
     }
 
     /*
@@ -945,7 +934,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     if (isFileKind(node.type)) {
       const back = await restoreFileRows(env, user.id, node.id);
       if (back) {
-        const refreshed = await refreshFileNode(env, node.id, node.type, node.title);
+        const refreshed = await refreshFileNode(env, node.id, node.type, node.title, webActor(user.id));
         node.data = JSON.stringify(refreshed.data);
         node.body = refreshed.body;
       }
@@ -960,21 +949,15 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       if (deny) return deny;
     }
     const p = await req.json<any>();
-    const allowed = ["title", "body", "doc", "x", "y", "w", "h", "type"];
-    const sets: string[] = [];
-    const vals: unknown[] = [];
-    for (const k of allowed) {
+    const set: CardEdit["set"] = {};
+    for (const k of ["title", "body", "doc", "x", "y", "w", "h", "type"] as const) {
       if (p[k] === undefined) continue;
       // A `doc` always wins: the markdown projection is derived from it here so
       // there is one implementation of that conversion, not one per client.
       if (k === "body" && p.doc !== undefined) continue;
-      sets.push(`${k} = ?`);
-      vals.push(k === "body" ? p[k] : p[k]);
+      (set as Record<string, unknown>)[k] = p[k];
     }
-    if (p.doc !== undefined) {
-      sets.push("body = ?");
-      vals.push(bodyFromDoc(p.doc));
-    }
+    if (p.doc !== undefined) set.body = bodyFromDoc(p.doc);
     /*
      * A position in a PATCH means a human dragged this card, and that pins it.
      *
@@ -983,39 +966,24 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
      * unambiguous and needs no flag from the client. Every client gets the
      * behaviour for free, including ones we have not written.
      *
-     * `data` is set in exactly one clause whichever branch runs. Assigning the
-     * same column twice in one SET list is not something to rely on, and the
-     * right-hand sides would both read the pre-update row anyway, so a merge
-     * has to happen on one side or the other rather than across two clauses.
+     * `data` is set in exactly one clause whichever branch runs, and the merge
+     * with `placed` happens in `writeCard`.
      */
     const dragged = p.x !== undefined || p.y !== undefined;
-    if (p.data !== undefined) {
-      sets.push(dragged ? "data = json_set(?, '$.placed', 'hand')" : "data = ?");
-      vals.push(JSON.stringify(p.data));
-    } else if (dragged) {
-      // `json_valid` rather than COALESCE: `json_set` raises on malformed input,
-      // and a card whose `data` somehow went bad must still be draggable.
-      sets.push(
-        "data = json_set(CASE WHEN json_valid(data) THEN data ELSE '{}' END, '$.placed', 'hand')",
-      );
-    }
-    if (!sets.length) return json(env, { ok: true });
-    sets.push("updated_at = ?");
-    vals.push(now());
+    if (p.data !== undefined) set.data = JSON.stringify(p.data);
+    if (!Object.keys(set).length && !dragged) return json(env, { ok: true });
 
     // Mark for re-embedding only when the *prose* changed. A drag sends x/y on
     // every drop, and a resize sends w/h; marking on those would queue an
     // inference call for moving a card across the canvas. `title`, `body` and
     // `doc` are the only fields the index is derived from.
-    if (["title", "body", "doc"].some((k) => p[k] !== undefined)) {
-      sets.push("index_dirty = ?");
-      vals.push(now());
-    }
-
-    vals.push(b);
-    await env.DB.prepare(`UPDATE nodes SET ${sets.join(",")} WHERE id = ?`)
-      .bind(...vals)
-      .run();
+    const prose = ["title", "body", "doc"].some((k) => p[k] !== undefined);
+    await writeCard(env, webActor(user.id), {
+      nodeId: b,
+      set,
+      placed: dragged,
+      reindex: prose ? now() : undefined,
+    });
     return json(env, { ok: true });
   }
 
@@ -1067,12 +1035,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     if (wrong) return json(env, { error: wrong }, 400);
 
     try {
-      const stored = await putArtefact(env, b, kind, payload);
-      await env.DB.prepare(
-        `UPDATE nodes SET data = ?, body = ?, index_dirty = ?, updated_at = ? WHERE id = ?`,
-      )
-        .bind(JSON.stringify(stored.data), stored.body, now(), now(), b)
-        .run();
+      const stored = await writeArtefact(env, webActor(user.id), { nodeId: b, kind, payload });
       return json(env, { ok: true, ...stored.data });
     } catch (err: any) {
       if (err instanceof ArtefactTooLarge) return json(env, { error: err.message }, 413);
@@ -1149,6 +1112,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
         description,
         size,
         uploadedBy: user.id,
+        actor: webActor(user.id),
         source: buffered ? await req.arrayBuffer() : req.body,
       });
       const refreshed = await env.DB.prepare(`SELECT data, body FROM nodes WHERE id = ?`)
@@ -1196,7 +1160,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       .first<{ type: string; title: string }>();
     if (!node || !isFileKind(node.type)) return json(env, { error: "not found" }, 404);
 
-    await removeFile(env, row, node.type, node.title);
+    await removeFile(env, row, node.type, node.title, webActor(user.id));
     return json(env, { ok: true });
   }
 
@@ -1222,7 +1186,7 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       .bind(row.node_id)
       .first<{ type: string; title: string }>();
     if (node && isFileKind(node.type))
-      await refreshFileNode(env, row.node_id, node.type, node.title);
+      await refreshFileNode(env, row.node_id, node.type, node.title, webActor(user.id));
     return json(env, { ok: true });
   }
 
@@ -1674,7 +1638,7 @@ async function authRoute(
 
     // Awaited, not fire-and-forget: the redirect lands on /app immediately and
     // a board that appears a beat later reads as a bug. It cannot throw.
-    await createStarterBoard(env.DB, uid, issuerOf(req, env));
+    await createStarterBoard(env, uid, issuerOf(req, env));
     return signIn(req, env, uid);
   }
 
@@ -1853,7 +1817,7 @@ async function authRoute(
         .run();
       // Only inside this branch: `existing` means a returning account, and a
       // second Google sign-in is not a signup.
-      await createStarterBoard(env.DB, uid, issuerOf(req, env));
+      await createStarterBoard(env, uid, issuerOf(req, env));
     }
 
     const { token, expiresAt } = await createSession(

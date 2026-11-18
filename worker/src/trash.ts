@@ -17,6 +17,7 @@
 import { boardRole, canWrite } from "./access";
 import { isArtefact, artefactKey } from "./artefacts";
 import { filesOf, isFileKind, type FileEnv } from "./files";
+import { reinsertNode, webActor } from "./versions";
 import { imageKeyFrom, trashObject, untrashNode, RETENTION_MS, type TrashEnv } from "./r2trash";
 
 export interface TrashRow {
@@ -360,7 +361,7 @@ export async function restoreTrash(
     // Re-embed after restore. The chunk rows and their vectors were removed
     // when the node was, so without this the card comes back visible on the
     // board and invisible to recall.
-    await reinsert(env.DB, "nodes", { ...n, index_dirty: Date.now() });
+    await reinsertNode(env, webActor(userId), { ...n, index_dirty: Date.now() });
     await untrashNode(env, String(n.id));
   }
   for (const e of edges) await reinsert(env.DB, "edges", e);

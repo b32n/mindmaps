@@ -99,3 +99,20 @@ export const migrationFiles = (): string[] =>
   existsSync(`${root}worker/migrations`) ? readdirSync(`${root}worker/migrations`).sort() : [];
 
 export const migrationSql = (name: string) => readFileSync(`${root}worker/migrations/${name}`, "utf8");
+
+/** The bytes of an R2 object in the local ARTEFACTS bucket, as text, or null. */
+export async function r2Text(key: string, stateDir = MAIN_STATE): Promise<string | null> {
+  const dir = `${root}${stateDir}/v3/r2`;
+  const meta = `${dir}/miniflare-R2BucketObject`;
+  const f = readdirSync(meta).find((n) => n.endsWith(".sqlite") && n !== "metadata.sqlite");
+  if (!f) return null;
+  const db = new DatabaseSync(`${meta}/${f}`, { readOnly: true });
+  try {
+    const row = db.prepare(`SELECT blob_id FROM _mf_objects WHERE key = ?`).get(key) as { blob_id: string } | undefined;
+    if (!row) return null;
+    const bucket = readdirSync(dir).find((n) => n !== "miniflare-R2BucketObject")!;
+    return readFileSync(`${dir}/${bucket}/blobs/${row.blob_id}`, "utf8");
+  } finally {
+    db.close();
+  }
+}

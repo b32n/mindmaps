@@ -1,7 +1,7 @@
 import { test, expect } from "../../fixtures";
 import { connectMcp } from "../../support/mcp";
 import { createArtefact, createBoard, createNode, deleteNode, listFiles, trash, uploadFile } from "../../support/api";
-import { expectVersions, headOf, query, versionsOf } from "../../support/versions";
+import { expectVersions, headOf, query, r2Text, versionsOf } from "../../support/versions";
 
 // Every way a card, an artefact or a file changes records a version: who wrote
 // it, through which door, and when. Nothing reads the history yet, so these read
@@ -72,7 +72,7 @@ test.describe("REST writes by the app", () => {
     void account;
     const board = await createBoard(request, "H3");
     const card = await createNode(request, board.id, { title: "Doc" });
-    const doc = JSON.stringify([{ id: "a", type: "paragraph", text: "hello versions" }]);
+    const doc = JSON.stringify([{ type: "paragraph", content: [{ type: "text", text: "hello versions", styles: {} }] }]);
     expect((await request.patch(`/api/nodes/${card.id}`, { data: { doc } })).ok()).toBe(true);
     const [v] = await expectVersions(card.id, 1);
     expect(v!.doc).toBe(doc);
@@ -221,8 +221,9 @@ test.describe("MCP writes by an agent", () => {
   test("create_mindmap and add_to_mindmap record a version for every card", async ({ account, request }) => {
     void account;
     const mcp = await connectMcp(request, { clientName: "builder" });
+    await mcp.call("recall", { query: `nothing-${Date.now()}` }); // create_mindmap refuses until the agent has looked
     const made = await mcp.call("create_mindmap", {
-      name: "Built", cards: [{ key: "a", title: "A", content: "x" }, { key: "b", title: "B", content: "y" }], links: [{ from: "a", to: "b" }],
+      name: "Built", key: "built-map", nodes: [{ key: "a", title: "A", content: "x" }, { key: "b", title: "B", content: "y" }], edges: [{ from: "a", to: "b" }],
     });
     expect(made.isError, made.text).toBe(false);
     const board = (await (await request.get("/api/boards")).json()).find((b: any) => b.name === "Built");
@@ -230,7 +231,7 @@ test.describe("MCP writes by an agent", () => {
     expect(nodes).toHaveLength(2);
     for (const n of nodes) expect((await expectVersions(n.id, 1))[0]).toMatchObject({ op: "create", actor_client_name: "builder" });
 
-    const more = await mcp.call("add_to_mindmap", { mindmap_id: board.id, cards: [{ key: "a", title: "A", content: "changed" }, { key: "c", title: "C", content: "z" }] });
+    const more = await mcp.call("add_to_mindmap", { id: board.id, nodes: [{ key: "a", title: "A", content: "changed" }, { key: "c", title: "C", content: "z" }] });
     expect(more.isError, more.text).toBe(false);
     const after = (await (await request.get(`/api/boards/${board.id}/contents`)).json()).nodes;
     expect(after).toHaveLength(3);
@@ -277,7 +278,7 @@ test.describe("MCP writes by an agent", () => {
     const f1 = await mcp.call("put_file", { mindmap_id: board.id, folder: "Box", name: "a.md", content: "# a", description: "a" });
     const folder = idIn(f1.text);
     await expectVersions(folder, 1);
-    await mcp.call("put_file", { id: folder, name: "b.md", content: "# b", description: "b" });
+    await mcp.call("put_file", { folder_id: folder, name: "b.md", content: "# b", description: "b" });
     const fr = await expectVersions(folder, 2);
     expect(JSON.parse(fr[1]!.data_json!)).toMatchObject({ files: 2 });
   });
@@ -329,6 +330,11 @@ test.describe("provenance and windows across people and doors", () => {
     expect(rows[0]!.payload_key).toMatch(new RegExp(`^versions/${sheet.id}/`));
     expect(rows[1]).toMatchObject({ seq: 2, status: "sealed", actor_client_name: "overwriter" });
     expect(rows[1]!.payload_key).not.toBe(rows[0]!.payload_key);
+    // the sealed objects hold what each writer left: the person's edit, then the agent's
+    expect(await r2Text(rows[0]!.payload_key!)).toContain(`"value":99`);
+    expect(await r2Text(rows[1]!.payload_key!)).toContain("gone");
+    expect(await r2Text(rows[0]!.payload_key!)).not.toContain("gone");
+    expect(JSON.stringify(await (await request.get(`/api/artefacts/${sheet.id}`)).json())).toContain("gone");
   });
 
   test("a different person writing never folds into someone else's open version", async ({ account, request, makePerson }) => {

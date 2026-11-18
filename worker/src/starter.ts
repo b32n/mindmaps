@@ -19,6 +19,7 @@
  */
 
 import { markdownToBlocks, blocksToMarkdown, type Block } from "./markdown";
+import { SYSTEM, cardInsertStmts, type HistoryEnv } from "./versions";
 
 /** Board and node ids are per-user, but the keys that identify them are fixed. */
 const BOARD_KEY = "start-here";
@@ -126,7 +127,7 @@ const links: Array<[string, string, string, string, string]> = [
  * exactly where they were before this existed.
  */
 export async function createStarterBoard(
-  db: D1Database,
+  env: HistoryEnv,
   userId: string,
   origin: string,
 ): Promise<void> {
@@ -137,6 +138,7 @@ export async function createStarterBoard(
     const rows = cards(origin);
     for (const c of rows) ids.set(c.key, id());
 
+    const db = env.DB;
     const statements = [
       db
         .prepare(
@@ -149,19 +151,21 @@ export async function createStarterBoard(
         )
         .bind(boardId, "Start here", "active", null, null, t, t, userId, 0, BOARD_KEY, userId),
 
-      ...rows.map((c) => {
-        const blocks: Block[] = markdownToBlocks(c.md);
-        // `body` is the markdown projection search and get_context read from;
-        // `doc` is what the editor renders. Both, always — see MCP.md §4-5.
-        const doc = JSON.stringify(blocks);
-        const body = blocksToMarkdown(blocks);
-        return db
-          .prepare(
-            `INSERT INTO nodes (id,board_id,type,title,body,doc,x,y,w,h,data,created_at,updated_at,idem_key)
-             VALUES (?,?,?,?,?,?,?,?,260,150,'{}',?,?,?)`,
-          )
-          .bind(ids.get(c.key)!, boardId, c.type, c.title, body, doc, c.x, c.y, t, t, c.key);
-      }),
+      ...(
+        await Promise.all(
+          rows.map(async (c) => {
+            const blocks: Block[] = markdownToBlocks(c.md);
+            // `body` is the markdown projection search and get_context read from;
+            // `doc` is what the editor renders. Both, always — see MCP.md §4-5.
+            const doc = JSON.stringify(blocks);
+            const body = blocksToMarkdown(blocks);
+            return cardInsertStmts(env, SYSTEM, {
+              id: ids.get(c.key)!, board_id: boardId, type: c.type, title: c.title, body, doc,
+              x: c.x, y: c.y, data: "{}", idem_key: c.key,
+            });
+          }),
+        )
+      ).flat(),
 
       ...links.map(([from, to, label, sourceHandle, targetHandle]) =>
         db

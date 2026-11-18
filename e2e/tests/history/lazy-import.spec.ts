@@ -96,3 +96,18 @@ test("a write made while no version was being recorded is captured before the ne
   ]);
   expect(rows[1]).toMatchObject({ status: "sealed", actor_via: "system" });
 });
+
+test("an open version stops taking edits once its window has lapsed", async () => {
+  test.setTimeout(240_000);
+  const request = await worker.client();
+  await register(request, newUser("window"));
+  const board = await createBoard(request, "Window");
+  const card = await createNode(request, board.id, { title: "Morning" });
+  expect((await request.patch(`/api/nodes/${card.id}`, { data: { title: "Still morning" } })).ok()).toBe(true);
+  expect((await vs(card.id)).map((r) => r.title)).toEqual(["Still morning"]);
+
+  await worker.execute(`UPDATE versions SET created_at = created_at - ${11 * 60 * 1000} WHERE node_id = '${card.id}'`);
+  expect((await request.patch(`/api/nodes/${card.id}`, { data: { title: "Afternoon" } })).ok()).toBe(true);
+  const rows = await vs(card.id);
+  expect(rows.map((r) => [r.seq, r.status, r.title])).toEqual([[1, "sealed", "Still morning"], [2, "open", "Afternoon"]]);
+});

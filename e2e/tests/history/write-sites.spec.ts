@@ -26,6 +26,11 @@ const ALLOWED: Allowed[] = [
     why: "remarkdown repairs the derived markdown of a document that did not change",
   },
   {
+    file: "artefacts.ts",
+    contains: "ARTEFACTS.put(stored.data.r2",
+    why: "putArtefact itself; the pattern above fails if anything but versions.ts calls it",
+  },
+  {
     file: "files.ts",
     contains: "ARTEFACTS.put(key, body",
     why: "uploaded bytes go to a new key per upload and never overwrite; the node write that follows goes through the choke point",
