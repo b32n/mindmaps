@@ -29,7 +29,7 @@
  * good. That is why nothing calls these without checking.
  */
 
-import { BOARD_READABLE } from "./access";
+import { NODE_READABLE } from "./access";
 import { chunksFor, embeddableChunk, MAX_CHUNKS } from "./chunk";
 
 export interface SemanticEnv {
@@ -425,7 +425,7 @@ async function freshHits(
         AND c.embedding IS NOT NULL
         AND EXISTS (
           SELECT 1 FROM nodes n JOIN boards b ON b.id = n.board_id
-           WHERE n.id = c.node_id AND ${BOARD_READABLE("b", 2)}
+           WHERE n.id = c.node_id AND ${NODE_READABLE("n", "b", 2)}
         )
       ORDER BY c.embedded_at DESC
       LIMIT ?3`,

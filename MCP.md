@@ -67,11 +67,11 @@ whole server should stay in the low thousands of tokens.
 
 | Tool | Returns |
 |---|---|
-| `list_mindmaps` | names, status, counts of cards, notes, sheets, documents, decks, pages, files and folders |
+| `list_mindmaps` | names, status, counts of cards, notes, sheets, documents, decks, pages, files and folders; then a "Shared with you" section for artefacts granted to you on their own, on mindmaps you cannot open (id, type, whether you can edit; the mindmap itself is not named) |
 | `get_mindmap(id)` | the mindmap as structured context: cards with documents, checklist state, notes, and labelled edges between them, then every artefact, file and folder on the map with its type, key, id and URL |
 | `get_card(id)` | one card's full document |
 | `get_artefact(id)` | a sheet, document, deck or page in full: id, type, mindmap, URL and its stored payload as `{id, title, data}`, the exact arguments `update_artefact` takes |
-| `search(query, mindmap?)` | matches across titles, documents and notes; ids plus snippets |
+| `search(query, mindmap?)` | matches across titles, documents and notes; ids plus snippets. Includes artefacts shared with you on their own, as does `recall` |
 
 ### Write
 
