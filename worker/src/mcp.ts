@@ -30,7 +30,8 @@ import {
   payloadFromInput, payloadProblem, putArtefact, type ArtefactKind,
 } from "./artefacts";
 import {
-  BOARD_READABLE, IN_WORKSPACE, NODE_READABLE, boardRole, canWrite, ensurePersonalWorkspace,
+  BOARD_READABLE, IN_BOARD_WORKSPACE, IN_WORKSPACE, NODE_READABLE, boardRole, canWrite, ensurePersonalWorkspace,
+  workspacesFor, type WorkspaceRow,
   nodeRole, recallScope,
 } from "./access";
 import {
@@ -171,6 +172,12 @@ const OPEN_AT_SCHEMA = {
     "Where the card opens when a person clicks it. Use `bottom` for a running log or task list you keep appending to, so the newest entries are what they see.",
 } as const;
 
+const WORKSPACE_SCHEMA = {
+  type: "string",
+  description:
+    "A workspace you belong to, by name or id. Omit to use the one this connection was set up for. Your Personal workspace is only used when you name it.",
+} as const;
+
 const TOOLS = [
   {
     name: "recall",
@@ -179,11 +186,12 @@ const TOOLS = [
       type: "object",
       properties: {
         query: { type: "string", description: "what you are trying to remember" },
-        mindmap_id: { type: "string", description: "restrict to one mindmap; omit to search everything" },
+        mindmap_id: { type: "string", description: "restrict to one mindmap; omit to search the whole workspace" },
         depth: {
           type: "integer",
           description: "How far to follow links from each match. 0 for matches only, 1 (default) to include what they connect to.",
         },
+        workspace: WORKSPACE_SCHEMA,
       },
       required: ["query"],
     },
@@ -192,7 +200,7 @@ const TOOLS = [
   {
     name: "list_mindmaps",
     description: "List the user's mindmaps with card counts. Start here to find what already exists before creating anything.",
-    inputSchema: { type: "object", properties: {} },
+    inputSchema: { type: "object", properties: { workspace: WORKSPACE_SCHEMA } },
     annotations: { readOnlyHint: true },
   },
   {
@@ -239,12 +247,13 @@ const TOOLS = [
   },
   {
     name: "search",
-    description: "Search titles and card documents across all mindmaps. Returns ids and matching snippets.",
+    description: "Search titles and card documents across the mindmaps of the workspace this connection works in. Returns ids and matching snippets.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string" },
         mindmap_id: { type: "string", description: "restrict to one mindmap" },
+        workspace: WORKSPACE_SCHEMA,
       },
       required: ["query"],
     },
@@ -270,6 +279,7 @@ const TOOLS = [
         nodes: { type: "array", items: NODE_SCHEMA },
         edges: { type: "array", items: EDGE_SCHEMA },
         direction: DIRECTION_SCHEMA,
+        workspace: WORKSPACE_SCHEMA,
       },
       required: ["name", "nodes"],
     },
@@ -832,15 +842,15 @@ async function runTool(id: Id, env: McpEnv, grant: TokenGrant, name: string, arg
   const u = grant.userId;
   switch (name) {
     case "recall":
-      return rpcOk(id, await recall(env, u, args));
+      return rpcOk(id, await recall(env, u, args, grant));
     case "list_mindmaps":
-      return rpcOk(id, await listMindmaps(env, u));
+      return rpcOk(id, await listMindmaps(env, u, args, grant));
     case "get_mindmap":
       return rpcOk(id, await getMindmap(env, u, args));
     case "get_card":
       return rpcOk(id, await getCard(env, u, args));
     case "search":
-      return rpcOk(id, await search(env, u, args));
+      return rpcOk(id, await search(env, u, args, grant));
     case "get_context":
       return rpcOk(id, await getContext(env, u, args));
     case "update_mindmap":
@@ -873,7 +883,7 @@ async function runTool(id: Id, env: McpEnv, grant: TokenGrant, name: string, arg
     case "read_file":
       return rpcOk(id, await readFileTool(env, u, args));
     case "create_mindmap":
-      return rpcOk(id, await createMindmap(env, u, args, grant.clientId));
+      return rpcOk(id, await createMindmap(env, u, args, grant.clientId, grant));
     case "add_to_mindmap":
       return rpcOk(id, await addToMindmap(env, u, args, grant.clientId));
     case "add_card":
@@ -979,6 +989,58 @@ async function writableNode(env: McpEnv, userId: string, nodeId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Workspaces
+//
+// The workspace was chosen when the agent connected. It is where a new mindmap
+// goes and what the tools that look across mindmaps look at, so an agent
+// connected for a team does not file the team's work in the user's personal
+// space or answer from it. Naming another workspace is the only way to leave
+// it, and the personal workspace is no exception.
+// ---------------------------------------------------------------------------
+
+type WorkspaceChoice =
+  | { ok: true; workspace: WorkspaceRow | null }
+  | { ok: false; error: string };
+
+/**
+ * The workspace a call means: the `workspace` argument, else the one this
+ * connection was approved for, else none (a token from before workspaces were
+ * chosen, which keeps its old reach).
+ *
+ * An argument is looked up among the workspaces the user belongs to only, by id
+ * first and then by name without regard to case. One they cannot see and one
+ * that does not exist therefore give the same answer, so ids stay
+ * unenumerable. A name two of their workspaces share is refused rather than
+ * guessed at.
+ */
+async function chooseWorkspace(env: McpEnv, userId: string, grant: TokenGrant, args: any): Promise<WorkspaceChoice> {
+  const asked = typeof args?.workspace === "string" ? args.workspace.trim() : "";
+  if (!asked && !grant.workspaceId) return { ok: true, workspace: null };
+
+  const mine = await workspacesFor(env.DB, userId);
+  if (!asked) {
+    const home = mine.find((w) => w.id === grant.workspaceId);
+    return home
+      ? { ok: true, workspace: home }
+      : {
+          ok: false,
+          error:
+            "The workspace this connection was set up for is no longer available to you. Name another with the `workspace` argument, or connect again and choose one.",
+        };
+  }
+
+  const byId = mine.find((w) => w.id === asked);
+  if (byId) return { ok: true, workspace: byId };
+  const named = mine.filter((w) => w.name.toLowerCase() === asked.toLowerCase());
+  if (named.length > 1)
+    return {
+      ok: false,
+      error: `More than one of your workspaces is called "${asked}". Use its id: ${named.map((w) => `\`${w.id}\``).join(", ")}.`,
+    };
+  return named.length ? { ok: true, workspace: named[0]! } : { ok: false, error: `No workspace "${asked}".` };
+}
+
+// ---------------------------------------------------------------------------
 // Read tools
 // ---------------------------------------------------------------------------
 
@@ -1004,9 +1066,13 @@ function othersOf(grouped: string | null): string {
     .join("");
 }
 
-async function listMindmaps(env: McpEnv, userId: string) {
+async function listMindmaps(env: McpEnv, userId: string, args: any, grant: TokenGrant) {
+  const chosen = await chooseWorkspace(env, userId, grant, args);
+  if (!chosen.ok) return toolText(chosen.error, true);
+  const ws = chosen.workspace;
   const { results } = await env.DB.prepare(
     `SELECT b.id, b.name, b.status, b.updated_at, b.description, b.labels, b.pinned,
+            (SELECT w.name FROM workspaces w WHERE w.id = b.workspace_id) AS workspace_name,
             (SELECT COUNT(*) FROM nodes n WHERE n.board_id = b.id AND n.type = 'card') AS cards,
             (SELECT COUNT(*) FROM nodes n WHERE n.board_id = b.id AND n.type = 'note') AS notes,
             (SELECT group_concat(k.type || ':' || k.c) FROM (
@@ -1015,15 +1081,20 @@ async function listMindmaps(env: McpEnv, userId: string) {
                 GROUP BY n.type) k) AS others
        FROM boards b
       WHERE ${BOARD_READABLE("b")} AND b.parent_id IS NULL
+        AND ${IN_BOARD_WORKSPACE("b", 2)}
       ORDER BY b.pinned DESC, b.updated_at DESC`,
   )
-    .bind(userId)
+    .bind(userId, ws?.id ?? null)
     .all<any>();
 
   const rows = results ?? [];
   const shared = await sharedArtefacts(env, userId);
   if (!rows.length && !shared)
-    return toolText("No mindmaps yet. create_mindmap makes the first one.");
+    return toolText(
+      ws
+        ? `No mindmaps in **${ws.name}** yet. create_mindmap makes the first one there.`
+        : "No mindmaps yet. create_mindmap makes the first one.",
+    );
   if (!rows.length) return toolText(shared);
 
   // The description is the whole reason this listing is worth reading before
@@ -1033,7 +1104,7 @@ async function listMindmaps(env: McpEnv, userId: string) {
   const lines = rows.map((b) => {
     const labels = labelsOf(b.labels);
     return (
-      `- **${b.name}**${b.pinned ? " ★" : ""} — ${b.cards} card${b.cards === 1 ? "" : "s"}` +
+      `- **${b.name}**${b.pinned ? " ★" : ""} (${b.workspace_name ?? "no workspace"}) — ${b.cards} card${b.cards === 1 ? "" : "s"}` +
       (b.notes ? `, ${b.notes} note${b.notes === 1 ? "" : "s"}` : "") +
       othersOf(b.others) +
       `, updated ${new Date(b.updated_at).toISOString().slice(0, 10)}` +
@@ -1044,12 +1115,22 @@ async function listMindmaps(env: McpEnv, userId: string) {
   });
   const undescribed = rows.filter((b: any) => !b.description).length;
   return toolText(
-    `${rows.length} mindmap${rows.length === 1 ? "" : "s"}:\n\n${lines.join("\n")}` +
+    `${rows.length} mindmap${rows.length === 1 ? "" : "s"}${ws ? ` in **${ws.name}**` : ""}:\n\n${lines.join("\n")}` +
       (undescribed
         ? `\n\n_${undescribed} of these have no description. update_mindmap can add one, which is what makes the next choice of where to put something easy._`
         : "") +
-      (shared ? `\n\n${shared}` : ""),
+      (shared ? `\n\n${shared}` : "") +
+      (await otherWorkspaces(env, userId, ws)),
   );
+}
+
+/** A line naming the other workspaces, so an agent scoped to one knows how to reach the rest. */
+async function otherWorkspaces(env: McpEnv, userId: string, current: WorkspaceRow | null): Promise<string> {
+  if (!current) return "";
+  const others = (await workspacesFor(env.DB, userId)).filter((w) => w.id !== current.id);
+  return others.length
+    ? `\n\n_Other workspaces you can reach: ${others.map((w) => w.name).join(", ")}. Pass \`workspace\` to look in one._`
+    : "";
 }
 
 /**
@@ -1418,17 +1499,34 @@ async function keywordHits(
   return results ?? [];
 }
 
-async function search(env: McpEnv, userId: string, args: any) {
+/**
+ * The workspace a search or recall stays inside, or null for "wherever the user
+ * can read".
+ *
+ * A mindmap named by id is looked at wherever it is, as it always was, unless
+ * the call also names a workspace, so the connection's default never hides a
+ * board the agent asked for directly.
+ */
+async function searchWorkspace(env: McpEnv, userId: string, grant: TokenGrant, args: any): Promise<WorkspaceChoice> {
+  const named = typeof args?.workspace === "string" && args.workspace.trim();
+  if (args?.mindmap_id && !named) return { ok: true, workspace: null };
+  return chooseWorkspace(env, userId, grant, args);
+}
+
+async function search(env: McpEnv, userId: string, args: any, grant: TokenGrant) {
   const query = String(args?.query ?? "").trim();
   if (!query) return toolText("A query is required.", true);
   const scope = args?.mindmap_id ? String(args.mindmap_id) : null;
+  const chosen = await searchWorkspace(env, userId, grant, args);
+  if (!chosen.ok) return toolText(chosen.error, true);
+  const wsId = chosen.workspace?.id ?? null;
 
   // All terms first; if that finds nothing, widen to any of them rather than
   // reporting "no matches" for a query that was merely over-specific.
-  let hits = await keywordHits(env, userId, query, scope, MAX_SEARCH_HITS, "all");
+  let hits = await keywordHits(env, userId, query, scope, MAX_SEARCH_HITS, "all", wsId);
   let widened = false;
   if (!hits.length) {
-    hits = await keywordHits(env, userId, query, scope, MAX_SEARCH_HITS, "any");
+    hits = await keywordHits(env, userId, query, scope, MAX_SEARCH_HITS, "any", wsId);
     widened = hits.length > 0;
   }
   if (!hits.length) return toolText(`Nothing matches "${query}".`);
@@ -1682,15 +1780,21 @@ const RECALL_WINDOW_MS = 60 * 60 * 1000;
  * descriptions that say what belongs on them is what makes the choice
  * answerable rather than a guess.
  */
-async function candidateHomes(env: McpEnv, userId: string, limit = 6): Promise<string> {
+async function candidateHomes(
+  env: McpEnv,
+  userId: string,
+  limit = 6,
+  workspaceId: string | null = null,
+): Promise<string> {
   const { results } = await env.DB.prepare(
     `SELECT b.name, b.description
        FROM boards b
       WHERE ${BOARD_READABLE("b")} AND b.status != 'trashed' AND b.parent_id IS NULL
+        AND ${IN_BOARD_WORKSPACE("b", 3)}
       ORDER BY b.updated_at DESC
       LIMIT ?2`,
   )
-    .bind(userId, limit)
+    .bind(userId, limit, workspaceId)
     .all<any>();
 
   const rows = results ?? [];
@@ -1700,11 +1804,18 @@ async function candidateHomes(env: McpEnv, userId: string, limit = 6): Promise<s
     .join("\n");
 }
 
-async function createMindmap(env: McpEnv, userId: string, args: any, clientId?: string) {
+async function createMindmap(env: McpEnv, userId: string, args: any, clientId: string | undefined, grant: TokenGrant) {
   const name = String(args?.name ?? "").trim();
   if (!name) return toolText("A name is required.", true);
   const nodes: IncomingNode[] = Array.isArray(args?.nodes) ? args.nodes : [];
   if (!nodes.length) return toolText("At least one node is required.", true);
+
+  // Where it goes: the workspace named, else the one chosen at connect time,
+  // else (a token from before that choice) the personal workspace as ever.
+  const chosen = await chooseWorkspace(env, userId, grant, args);
+  if (!chosen.ok) return toolText(chosen.error, true);
+  if (chosen.workspace && !canWrite(chosen.workspace.role))
+    return toolText(`You have view-only access to the workspace **${chosen.workspace.name}**, so a mindmap cannot be created there.`, true);
 
   const mapKey = String(args?.key ?? "").trim();
   const direction = directionOf(args);
@@ -1743,7 +1854,7 @@ async function createMindmap(env: McpEnv, userId: string, args: any, clientId?: 
     .first();
 
   if (!looked) {
-    const homes = await candidateHomes(env, userId);
+    const homes = await candidateHomes(env, userId, 6, chosen.workspace?.id ?? null);
     return toolText(
       "Call `recall` before creating a mindmap — a second map on a subject you already have is the one mistake here that editing cannot undo." +
         (homes
@@ -1766,10 +1877,10 @@ async function createMindmap(env: McpEnv, userId: string, args: any, clientId?: 
     .bind(userId)
     .first<{ top: number }>();
 
-  // An agent creates in the user's personal workspace. It has no notion of
-  // which workspace a request "means", and guessing would put work in front of
-  // colleagues who were never asked.
-  const workspaceId = await ensurePersonalWorkspace(env.DB, userId);
+  // Never guessed: the workspace was chosen by a person (at connect time) or
+  // named by the agent. Only a token that predates the choice falls back to the
+  // personal workspace, so work does not land in front of colleagues unasked.
+  const workspaceId = chosen.workspace?.id ?? (await ensurePersonalWorkspace(env.DB, userId));
 
   const stmts = [
     env.DB.prepare(
@@ -3037,14 +3148,17 @@ export async function rankRecall(
   };
 }
 
-async function recall(env: McpEnv, userId: string, args: any) {
+async function recall(env: McpEnv, userId: string, args: any, grant: TokenGrant) {
   const query = String(args?.query ?? "").trim();
   if (!query) return toolText("A query is required — what are you trying to remember?", true);
+  const chosen = await searchWorkspace(env, userId, grant, args);
+  if (!chosen.ok) return toolText(chosen.error, true);
+  const wsId = chosen.workspace?.id ?? null;
 
   const scope = args?.mindmap_id ? String(args.mindmap_id) : null;
   const depth = Math.max(0, Math.min(2, Number.isFinite(args?.depth) ? Number(args.depth) : 1));
 
-  const { hits, found, degraded } = await rankRecall(env, userId, query, scope, depth);
+  const { hits, found, degraded } = await rankRecall(env, userId, query, scope, depth, wsId);
 
   if (!hits.length) {
     await logRecall(env, userId, query, scope, 0, 0);
@@ -3054,7 +3168,7 @@ async function recall(env: McpEnv, userId: string, args: any) {
      * session. Naming the maps and what each is for is what makes the choice
      * answerable; "check list_mindmaps" is another call and a guess.
      */
-    const homes = await candidateHomes(env, userId);
+    const homes = await candidateHomes(env, userId, 6, wsId);
     return toolText(
       `Nothing recorded about "${query}".` +
         (degraded

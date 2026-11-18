@@ -63,22 +63,48 @@ where nothing is fighting a platform constraint.
 Deliberately small. Every tool schema is context tax on every session — the
 whole server should stay in the low thousands of tokens.
 
+### Workspaces: chosen at connect time
+
+The OAuth consent page asks which of the person's workspaces the agent works in
+(Personal preselected; a person with one workspace is just told which). The choice
+is stored on the authorization code and the token (`workspace_id`, nullable),
+carried through every refresh, and becomes the default for:
+
+- `create_mindmap` (the only tool that makes a new mindmap): the new map lands in it;
+- `list_mindmaps`, `recall` and `search`: they look in it, plus mindmaps and
+  artefacts shared into the person's view from elsewhere. `list_mindmaps` names the
+  workspace on every line and ends with the other workspaces that can be reached.
+
+An optional `workspace` argument (name, any case, or id) on those four tools
+targets another workspace the person belongs to. **Personal is only used when
+named**, unless it is the workspace chosen at connect time. A workspace the person
+does not belong to gets the same `No workspace "x".` as one that does not exist. A
+view-only member can look in a workspace but not create there. If the workspace the
+connection was set up for is no longer reachable, the tools say so instead of
+falling back to another.
+
+Not changed: a tool given an explicit mindmap or card id (`add_card`,
+`get_mindmap`, `recall` or `search` narrowed with `mindmap_id`, …) works on it
+wherever it is, gated by the person's role on it as before. Tokens issued before
+this existed have no workspace and keep their old behaviour: create in Personal,
+read across everything reachable, until the person connects again.
+
 ### Read
 
 | Tool | Returns |
 |---|---|
-| `list_mindmaps` | names, status, counts of cards, notes, sheets, documents, decks, pages, files and folders; then a "Shared with you" section for artefacts granted to you on their own, on mindmaps you cannot open (id, type, whether you can edit; the mindmap itself is not named) |
+| `list_mindmaps(workspace?)` | names, workspace, status, counts of cards, notes, sheets, documents, decks, pages, files and folders; then a "Shared with you" section for artefacts granted to you on their own, on mindmaps you cannot open (id, type, whether you can edit; the mindmap itself is not named) |
 | `get_mindmap(id)` | the mindmap as structured context: cards with documents, checklist state, notes, and labelled edges between them, then every artefact, file and folder on the map with its type, key, id and URL |
 | `get_card(id)` | one card's full document |
 | `get_artefact(id)` | a sheet, document, deck or page in full: id, type, mindmap, URL and its stored payload as `{id, title, data}`, the exact arguments `update_artefact` takes |
-| `search(query, mindmap?)` | matches across titles, documents and notes; ids plus snippets. Includes artefacts shared with you on their own, as does `recall` |
+| `search(query, mindmap?, workspace?)` | matches across titles, documents and notes; ids plus snippets. Includes artefacts shared with you on their own, as does `recall` |
 
 ### Write
 
 | Tool | Does |
 |---|---|
 | `create_artefact` / `update_artefact` | a sheet, document, deck or page from a simple form or a complete `data` payload; see "Artefacts" below |
-| `create_mindmap(name, nodes[], edges[])` | the headline one: agent hands over a graph, we lay it out |
+| `create_mindmap(name, nodes[], edges[], workspace?)` | the headline one: agent hands over a graph, we lay it out |
 | `add_to_mindmap(id, nodes[], edges[])` | extend an existing map |
 | `add_card` / `update_card` / `append_to_card` | `append_to_card` is the workhorse — "add these findings to the tokenization card" |
 
