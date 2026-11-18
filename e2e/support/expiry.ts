@@ -37,6 +37,10 @@ export class ExpiryWorker {
   get url() {
     return `http://127.0.0.1:${this.port}`;
   }
+  /** The state dir, for reading its database directly (see support/versions.ts). */
+  get state() {
+    return stateDir;
+  }
 
   /** Empty database, migrations applied, Worker listening. */
   async start(fresh = true) {
@@ -100,6 +104,18 @@ export class ExpiryWorker {
       { cwd: root, env, encoding: "utf8" },
     );
     if (r.status !== 0) throw new Error(`could not run ${sql}: ${r.stderr}`);
+    await this.start(false);
+  }
+
+  /** The same, for a whole SQL file (a migration re-applied over data). */
+  async executeFile(file: string) {
+    await this.stop();
+    const r = spawnSync(
+      wrangler,
+      ["d1", "execute", "DB", "--local", "--persist-to", stateDir, "-c", "wrangler.test.toml", "--file", file],
+      { cwd: root, env, encoding: "utf8" },
+    );
+    if (r.status !== 0) throw new Error(`could not run ${file}: ${r.stderr}`);
     await this.start(false);
   }
 

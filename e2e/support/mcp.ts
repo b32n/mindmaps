@@ -17,6 +17,8 @@ export interface McpClient {
 }
 
 export interface ConnectOptions {
+  /** The name the client registers under; shown as the author of what it writes. */
+  clientName?: string;
   /** The workspace picked on the consent page. Omitted: the page's default, as pressing Approve unchanged. */
   workspace?: string;
 }
@@ -29,8 +31,8 @@ export async function consentPage(request: APIRequestContext): Promise<string> {
   return await res.text();
 }
 
-async function startAuthorize(request: APIRequestContext) {
-  const reg = await request.post("/oauth/register", { data: { client_name: "e2e", redirect_uris: [REDIRECT] } });
+async function startAuthorize(request: APIRequestContext, clientName = "e2e") {
+  const reg = await request.post("/oauth/register", { data: { client_name: clientName, redirect_uris: [REDIRECT] } });
   expect(reg.status(), "register client").toBe(201);
   const clientId = (await reg.json()).client_id as string;
   const verifier = randomBytes(32).toString("base64url");
@@ -48,7 +50,7 @@ async function startAuthorize(request: APIRequestContext) {
 
 /** Connect an MCP client on behalf of the person `request` is signed in as. */
 export async function connectMcp(request: APIRequestContext, opts: ConnectOptions = {}): Promise<McpClient> {
-  const { clientId, verifier, query } = await startAuthorize(request);
+  const { clientId, verifier, query } = await startAuthorize(request, opts.clientName);
   // The consent form's one field is the workspace select, posted urlencoded.
   const approved = await request.post(`/oauth/authorize?${query}`, {
     maxRedirects: 0,
