@@ -82,7 +82,7 @@ test.describe("inviting someone who already has an account", () => {
     expect((await membersOf(request, "workspaces", ws.id)).members).toHaveLength(1);
   });
 
-  test("inviting again with another role changes the role (there is no per-row role control)", async ({
+  test("inviting again with another role changes the role, and the row's role control shows it", async ({
     page,
     account,
     request,
@@ -93,9 +93,9 @@ test.describe("inviting someone who already has an account", () => {
     await addMember(request, "workspaces", ws.id, existing.user.email, "viewer");
     await page.goto("/app");
     const { panel } = await openWorkspacePeople(page, "Re-roled");
-    await expect(panel.row(existing.user.email)).toContainText("Can view");
+    await expect(panel.row(existing.user.email).getByRole("combobox")).toHaveValue("viewer");
     await panel.invite(existing.user.email, "Can edit");
-    await expect(panel.row(existing.user.email)).toContainText("Can edit");
+    await expect(panel.row(existing.user.email).getByRole("combobox")).toHaveValue("editor");
     const { members } = await membersOf(request, "workspaces", ws.id);
     expect(members).toHaveLength(1);
     expect(members[0].role).toBe("editor");
@@ -113,7 +113,7 @@ test.describe("inviting someone who already has an account", () => {
     const { status } = await panel.invite("not-an-address");
     expect(status).toBe(400);
     await expect(dialog.getByText("That does not look like an email address.")).toBeVisible();
-    expect(await membersOf(request, "workspaces", ws.id)).toEqual({ members: [], pending: [] });
+    expect(await membersOf(request, "workspaces", ws.id)).toMatchObject({ members: [], pending: [] });
   });
 
   test("inviting your own address changes nothing", async ({ page, account, request }) => {
@@ -121,7 +121,7 @@ test.describe("inviting someone who already has an account", () => {
     await page.goto("/app");
     const { panel } = await openWorkspacePeople(page, "Just me");
     await panel.invite(account.email);
-    expect(await membersOf(request, "workspaces", ws.id)).toEqual({ members: [], pending: [] });
+    expect(await membersOf(request, "workspaces", ws.id)).toMatchObject({ members: [], pending: [] });
     await expect(panel.rows()).toHaveText(["YouOwner"]);
   });
 });
@@ -248,11 +248,11 @@ test.describe("removing and leaving", () => {
     expect((await listWorkspaces(other.request)).map((w) => w.name)).toContain("Leavable");
   });
 
-  test("the owner is not a member row, so cannot leave their own workspace", async ({ account, request }) => {
+  test("the owner cannot leave their own workspace: it is refused until ownership is transferred", async ({ account, request }) => {
     void account;
     const ws = await createWorkspace(request, "Mine");
     const me = (await (await request.get("/api/auth/me")).json()).user.id;
-    expect((await request.delete(`/api/workspaces/${ws.id}/members/${me}`)).status()).toBe(404);
+    expect((await request.delete(`/api/workspaces/${ws.id}/members/${me}`)).status()).toBe(409);
     expect((await listWorkspaces(request)).map((w) => w.name)).toContain("Mine");
   });
 

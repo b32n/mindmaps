@@ -22,7 +22,8 @@ import {
   wantsSnippet,
 } from "./files";
 import {
-  canGrant, claimInvites, invite, membersOf, removeMember, revokeInvite, type Target,
+  canGrant, changeMemberRole, claimInvites, invite, membersOf, removeMember, removeWorkspaceMember, revokeInvite,
+  transferOwnership, type Target,
 } from "./members";
 import {
   createShare, noteView, resolveShare, revokeShare, sharesFor, type ShareEnv,
@@ -37,7 +38,7 @@ import {
 } from "./artefacts";
 import { blocksToMarkdown, parseDoc } from "./markdown";
 import { createStarterBoard } from "./starter";
-import { deleteAccount, exportAccount, exportFilename, finishDeletions, type AccountEnv } from "./account";
+import { deleteAccount, deletionBlockers, exportAccount, exportFilename, finishDeletions, type AccountEnv } from "./account";
 import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
 export interface Env {
@@ -383,6 +384,12 @@ async function route(
    * `{ password }`; the cookie alone is not enough to erase an account, or a
    * session left open on a shared machine could do it in one request.
    */
+  // What would stop this account being deleted right now, for the settings
+  // dialog to say so before anyone types a confirmation.
+  if (a === "account" && b === "delete-blockers" && !c && m === "GET") {
+    return json(env, { workspaces: await deletionBlockers(env.DB, user.id) });
+  }
+
   if (a === "account" && !b && m === "DELETE") {
     const body = await req.json<any>().catch(() => ({}));
     const outcome = await deleteAccount(env as unknown as AccountEnv, user.id, body ?? {});
@@ -703,20 +710,44 @@ async function route(
       if (!(await canGrant(env, user.id, target, b)))
         return json(env, { error: "You cannot share that." }, 403);
       const body = await req.json<any>().catch(() => ({}));
+      // Admins are appointed from existing members (PATCH), never invited: an
+      // invite for someone with no account yet cannot carry the role.
+      if (target === "workspace" && body?.role === "admin")
+        return json(env, { error: "Invite as editor or viewer, then make them an admin." }, 400);
       const role = body?.role === "viewer" ? "viewer" : "editor";
       const result = await invite(env, user.id, target, b, String(body?.email ?? ""), role);
       if (!result) return json(env, { error: "That does not look like an email address." }, 400);
+      if (result.denied) return json(env, { error: result.denied.error }, result.denied.status);
       return json(env, result, 201);
     }
   }
 
   if ((a === "workspaces" || a === "boards" || a === "artefacts") && b && c === "members" && d && m === "DELETE") {
     const target: Target = a === "workspaces" ? "workspace" : a === "boards" ? "board" : "node";
+    if (target === "workspace") {
+      const res = await removeWorkspaceMember(env, user.id, b, d);
+      return res.ok ? json(env, { ok: true }) : json(env, { error: res.error }, res.status);
+    }
     // Leaving is always allowed; removing someone else needs the right to grant.
     if (d !== user.id && !(await canGrant(env, user.id, target, b)))
       return json(env, { error: "You cannot change who has access." }, 403);
     const gone = await removeMember(env, target, b, d);
     return gone ? json(env, { ok: true }) : json(env, { error: "not found" }, 404);
+  }
+
+  // Change a member's role. Workspaces only: board shares and artefact grants
+  // top out at editor and are changed by inviting again.
+  if (a === "workspaces" && b && c === "members" && d && m === "PATCH") {
+    const body = await req.json<any>().catch(() => ({}));
+    const res = await changeMemberRole(env, user.id, b, d, body?.role);
+    return res.ok ? json(env, { ok: true, role: res.role }) : json(env, { error: res.error }, res.status);
+  }
+
+  // Move ownership to an existing member; the old owner stays on as an admin.
+  if (a === "workspaces" && b && c === "transfer" && !d && m === "POST") {
+    const body = await req.json<any>().catch(() => ({}));
+    const res = await transferOwnership(env, user.id, b, body?.user_id);
+    return res.ok ? json(env, { ok: true, owner_id: res.ownerId }) : json(env, { error: res.error }, res.status);
   }
 
   if (a === "invites" && b && m === "DELETE") {
@@ -1621,7 +1652,7 @@ async function canWriteBoard(env: Env, user: SessionUser, boardId?: string): Pro
   return canWrite(await boardRole(env.DB, user.id, boardId));
 }
 
-/** May this user delete this mindmap, or manage who is on it? Owners only. */
+/** May this user delete this mindmap, or manage who is on it? Owners and admins. */
 async function canAdminBoard(env: Env, user: SessionUser, boardId?: string): Promise<boolean> {
   if (!boardId) return false;
   return canAdmin(await boardRole(env.DB, user.id, boardId));

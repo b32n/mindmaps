@@ -24,16 +24,35 @@ const NOUN: Record<Kind, string> = {
   artefacts: "artefact",
 };
 
+type MyRole = "owner" | "admin" | "editor" | "viewer";
+
+const LABEL: Record<MyRole, string> = {
+  owner: "Owner",
+  admin: "Admin",
+  editor: "Can edit",
+  viewer: "Can view",
+};
+
 export function MembersPanel({
   kind,
   id,
   ownerId,
+  myRole: initialRole,
+  onTransferred,
 }: {
   kind: Kind;
   id: string;
   /** Shown as the owner row, which no membership table contains. */
   ownerId?: string;
+  /** Workspaces: the viewer's role, which decides what the rows offer. */
+  myRole?: MyRole;
+  /** Called after ownership moves, so the caller can refresh its own copy of the roles. */
+  onTransferred?: () => void;
 }) {
+  const [myRole, setMyRole] = useState<MyRole | undefined>(initialRole);
+  const [owner, setOwner] = useState<{ user_id: string; email: string; name: string | null } | null>(null);
+  // the member a "Make owner" is waiting on a confirmation for
+  const [confirming, setConfirming] = useState<string | null>(null);
   const [members, setMembers] = useState<Member[] | null>(null);
   const [pending, setPending] = useState<PendingInvite[]>([]);
   const [email, setEmail] = useState("");
@@ -48,6 +67,7 @@ export function MembersPanel({
       .then((r) => {
         setMembers(r.members);
         setPending(r.pending);
+        setOwner(r.owner ?? null);
       })
       .catch((e) => setError((e as Error).message));
   }, [kind, id]);
@@ -90,6 +110,32 @@ export function MembersPanel({
     }
   };
 
+  const changeRole = async (userId: string, next: "admin" | "editor" | "viewer") => {
+    setError(null);
+    try {
+      await api.setMemberRole(id, userId, next);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+    load();
+  };
+
+  const transfer = async (userId: string) => {
+    setError(null);
+    setNote(null);
+    try {
+      await api.transferWorkspace(id, userId);
+      setConfirming(null);
+      // This person is an admin now; the rows must stop offering owner powers.
+      setMyRole("admin");
+      onTransferred?.();
+    } catch (e) {
+      setError((e as Error).message);
+      setConfirming(null);
+    }
+    load();
+  };
+
   const revoke = async (token: string) => {
     setPending((xs) => xs.filter((p) => p.token !== token));
     try {
@@ -128,25 +174,78 @@ export function MembersPanel({
       {error && <p className="trash-error">{error}</p>}
 
       <ul className="members-list">
-        {ownerId && (
-          <li className="members-row">
-            <span className="members-who">You</span>
+        {kind === "workspaces" && owner ? (
+          <li className="members-row" data-testid="owner-row">
+            <span className="members-who">
+              {myRole === "owner" ? "You" : owner.name || owner.email}
+              {myRole !== "owner" && owner.name && <span className="members-email-quiet">{owner.email}</span>}
+            </span>
             <span className="members-what">Owner</span>
           </li>
+        ) : (
+          ownerId && (
+            <li className="members-row">
+              <span className="members-who">You</span>
+              <span className="members-what">Owner</span>
+            </li>
+          )
         )}
 
-        {(members ?? []).map((m) => (
-          <li key={m.user_id} className="members-row">
-            <span className="members-who">
-              {m.name || m.email}
-              {m.name && <span className="members-email-quiet">{m.email}</span>}
-            </span>
-            <span className="members-what">{m.role === "editor" ? "Can edit" : "Can view"}</span>
-            <button className="btn btn-small btn-quiet" onClick={() => void remove(m.user_id)}>
-              Remove
-            </button>
-          </li>
-        ))}
+        {(members ?? []).map((m) => {
+          const who = m.name || m.email;
+          // Workspace rows carry role controls for whoever may use them: owners
+          // for everyone, admins for editors and viewers only.
+          const manage =
+            kind === "workspaces" && (myRole === "owner" || (myRole === "admin" && m.role !== "admin"));
+          return (
+            <li key={m.user_id} className="members-row">
+              <span className="members-who">
+                {who}
+                {m.name && <span className="members-email-quiet">{m.email}</span>}
+              </span>
+              {confirming === m.user_id ? (
+                <>
+                  <span className="members-what">
+                    Make {who} the owner? You will become an admin.
+                  </span>
+                  <button className="btn btn-small btn-danger" onClick={() => void transfer(m.user_id)}>
+                    Confirm transfer
+                  </button>
+                  <button className="btn btn-small btn-quiet" onClick={() => setConfirming(null)}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  {manage ? (
+                    <select
+                      className="members-role"
+                      aria-label={`Role for ${who}`}
+                      value={m.role === "owner" ? "editor" : m.role}
+                      onChange={(e) => void changeRole(m.user_id, e.target.value as "admin" | "editor" | "viewer")}
+                    >
+                      <option value="editor">Can edit</option>
+                      <option value="viewer">Can view</option>
+                      {myRole === "owner" && <option value="admin">Admin</option>}
+                    </select>
+                  ) : (
+                    <span className="members-what">{LABEL[m.role]}</span>
+                  )}
+                  {kind === "workspaces" && myRole === "owner" && (
+                    <button className="btn btn-small btn-quiet" onClick={() => setConfirming(m.user_id)}>
+                      Make owner
+                    </button>
+                  )}
+                  {(kind !== "workspaces" || manage) && (
+                    <button className="btn btn-small btn-quiet" onClick={() => void remove(m.user_id)}>
+                      Remove
+                    </button>
+                  )}
+                </>
+              )}
+            </li>
+          );
+        })}
 
         {pending.map((p) => (
           <li key={p.token} className="members-row pending">

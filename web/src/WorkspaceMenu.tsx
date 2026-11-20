@@ -105,11 +105,11 @@ export function WorkspaceMenu({
                 {/* Personal needs no role: there is only ever one of you in it. */}
                 {!w.personal && (
                   <span className="ws-item-role">
-                    {w.role === "owner" ? "Owner" : w.role === "editor" ? "Can edit" : "Can view"}
+                    {w.role === "owner" ? "Owner" : w.role === "admin" ? "Admin" : w.role === "editor" ? "Can edit" : "Can view"}
                   </span>
                 )}
               </span>
-              {!w.personal && w.role === "owner" && (
+              {!w.personal && (w.role === "owner" || w.role === "admin") && (
                 <span
                   className="ws-item-people"
                   title="People"
