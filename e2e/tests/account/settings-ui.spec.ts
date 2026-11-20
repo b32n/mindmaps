@@ -105,12 +105,11 @@ test.describe("delete account", () => {
 
     await openSettings(page);
     const s = settings(page);
-    await s.getByRole("button", { name: "Delete account…" }).click();
-    await s.getByLabel(/Type your email address/).fill(account.email);
-    await s.getByRole("button", { name: "Delete my account" }).click();
-
-    await expect(s.locator(".modal-warn")).toContainText("Team room");
-    await expect(s.locator(".modal-warn")).toContainText(/transfer|remove/i);
+    // the reason is shown up front, and the button that would start the
+    // deletion is disabled (the refusal after typing is covered in org/people-ui)
+    await expect(s.getByTestId("delete-blockers")).toContainText("Team room");
+    await expect(s.getByTestId("delete-blockers")).toContainText(/transfer|remove/i);
+    await expect(s.getByRole("button", { name: "Delete account…" })).toBeDisabled();
     await expect(page).toHaveURL(/\/app/);
     expect((await page.request.get("/api/auth/me").then((r) => r.json())).user.email).toBe(account.email);
   });
