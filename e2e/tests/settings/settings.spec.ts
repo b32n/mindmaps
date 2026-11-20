@@ -9,7 +9,7 @@ test.describe("settings dialog", () => {
     await page.goto("/app");
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await expect(settings(page)).toBeVisible();
-    await expect(settings(page).getByRole("heading", { name: "Account" })).toBeVisible();
+    await expect(settings(page).getByRole("heading", { name: "Account", exact: true })).toBeVisible();
     await expect(settings(page).locator("dd")).toHaveText([account.name, account.email]);
   });
 
@@ -52,13 +52,14 @@ test.describe("settings dialog", () => {
     await expect(settings(page)).toBeVisible();
   });
 
-  test("there is no password change or account deletion in the app", async ({ page, account }) => {
-    // Deliberately recorded: the suite covers every control the UI has, and these
-    // are not among them (see e2e/README.md, "not covered").
+  test("there is no password change in the app", async ({ page, account }) => {
+    // Deliberately recorded: the suite covers every control the UI has, and this
+    // is not among them (see e2e/README.md, "not covered"). Account export and
+    // deletion are, in e2e/tests/account.
     void account;
     await page.goto("/app");
     await page.getByRole("button", { name: "Settings", exact: true }).click();
-    await expect(settings(page).getByText(/password|delete account/i)).toHaveCount(0);
+    await expect(settings(page).getByText(/password/i)).toHaveCount(0);
   });
 });
 
