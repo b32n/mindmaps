@@ -25,6 +25,7 @@
  */
 
 import { trashObject, type TrashEnv } from "./r2trash";
+import { writeCard, type Actor } from "./versions";
 
 export interface FileEnv {
   DB: D1Database;
@@ -283,16 +284,15 @@ export async function refreshFileNode(
   nodeId: string,
   kind: FileKind,
   title: string,
+  actor: Actor,
+  /** The node was made empty a moment ago for this upload: its first version is this one. */
+  first = false,
 ): Promise<{ data: Record<string, unknown>; body: string }> {
   const rows = await filesOf(env, nodeId);
   const body = fileSnapshot(kind, title, rows);
   const data = { kind, ...fileSummary(kind, rows) };
 
-  await env.DB.prepare(
-    `UPDATE nodes SET data = ?, body = ?, index_dirty = 1, updated_at = ? WHERE id = ?`,
-  )
-    .bind(JSON.stringify(data), body, Date.now(), nodeId)
-    .run();
+  await writeCard(env, actor, { nodeId, set: { data: JSON.stringify(data), body }, reindex: 1, first });
 
   return { data, body };
 }
@@ -311,6 +311,10 @@ export interface UploadInput {
   description: string;
   size: number;
   uploadedBy: string | null;
+  /** Who is writing, for the version this upload makes. */
+  actor: Actor;
+  /** The node was created for this upload, so this is its first version. */
+  first?: boolean;
   /**
    * The bytes. A buffer when we mean to read the text out of it, a stream when
    * we do not — the caller decides with `wantsSnippet`, because a stream can
@@ -404,7 +408,7 @@ export async function storeFile(env: FileEnv, input: UploadInput): Promise<FileR
     )
     .run();
 
-  await refreshFileNode(env, input.nodeId, input.kind, input.title);
+  await refreshFileNode(env, input.nodeId, input.kind, input.title, input.actor, input.first);
   return row;
 }
 
@@ -420,10 +424,11 @@ export async function removeFile(
   row: FileRow,
   kind: FileKind,
   title: string,
+  actor: Actor,
 ): Promise<void> {
   await trashObject(env, "ARTEFACTS", row.r2_key, row.node_id);
   await env.DB.prepare(`DELETE FROM files WHERE id = ?`).bind(row.id).run();
-  await refreshFileNode(env, row.node_id, kind, title);
+  await refreshFileNode(env, row.node_id, kind, title, actor);
 }
 
 /**

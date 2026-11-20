@@ -95,8 +95,8 @@ read across everything reachable, until the person connects again.
 |---|---|
 | `list_mindmaps(workspace?)` | names, workspace, status, counts of cards, notes, sheets, documents, decks, pages, files and folders; then a "Shared with you" section for artefacts granted to you on their own, on mindmaps you cannot open (id, type, whether you can edit; the mindmap itself is not named) |
 | `get_mindmap(id)` | the mindmap as structured context: cards with documents, checklist state, notes, and labelled edges between them, then every artefact, file and folder on the map with its type, key, id and URL |
-| `get_card(id)` | one card's full document |
-| `get_artefact(id)` | a sheet, document, deck or page in full: id, type, mindmap, URL and its stored payload as `{id, title, data}`, the exact arguments `update_artefact` takes |
+| `get_card(id)` | one card's full document, and which version it is at and who wrote it ("v3 by agent-two (MCP), 4 min ago") |
+| `get_artefact(id)` | a sheet, document, deck or page in full: id, type, mindmap, URL, the same version line, and its stored payload as `{id, title, data}`, the exact arguments `update_artefact` takes |
 | `search(query, mindmap?, workspace?)` | matches across titles, documents and notes; ids plus snippets. Includes artefacts shared with you on their own, as does `recall` |
 
 ### Write
@@ -676,7 +676,33 @@ uses what agents already write.
 
 `nodes.data.by` records which connected harness wrote a card, resolved to a
 name on read. The cheapest possible version of Graphiti's episode lineage: not
-which conversation produced it, but at least what did.
+which conversation produced it, but at least what did. It is the *creator*
+only; the version history below is what knows the last writer.
+
+### Version history (recording only)
+
+Every change to a card, note, artefact, file or folder is recorded as a version
+(`versions`, `version_heads`; migration `0027`), by one module,
+`worker/src/versions.ts`, that every write goes through: the REST routes, every
+MCP write tool, file uploads, trash restores and the starter mindmap. Each row
+is a full snapshot with the writer's user, the MCP client (name snapshotted) or
+the app, and the time.
+
+- A person's autosaves inside ten minutes update one *open* version in place.
+- A different writer, a lapsed window, or any write by an agent *seals* the
+  previous version first; an agent's write is always its own sealed version and
+  is never folded into a person's, nor a person's into it.
+- A write that changes nothing (same content hash) records nothing, and moving
+  a card is not a content change.
+- An artefact's open version needs no extra R2 write; sealing copies its bytes to
+  `versions/<nodeId>/<hash>` before the write that replaces them.
+- A node with no versions, or one a previous Worker changed without recording,
+  gets its current state recorded (`op = import`) the first time it is written.
+
+What an agent sees today is one line in `get_card` and `get_artefact`: `v3 by
+agent-two (MCP), 4 min ago` (`by <name> (web)` for a person using the app). There
+are no tools to list, read, diff or restore versions yet, and a write does not
+take a `base_version`; those come later.
 
 ## 9. What this still deletes from the current build
 

@@ -103,8 +103,14 @@ Three stores, each holding the thing it is good at.
 D1   nodes.data   {"r2":"artefacts/<nodeId>","kind":"sheet","sheets":2,"cells":412}
      nodes.body   derived text snapshot            -> FTS + node_chunks
 R2   artefacts/<nodeId>     the WorkbookData JSON, fetched only by the editor
+R2   versions/<nodeId>/<hash>  a sealed earlier payload (see "Version history" in MCP.md);
+                            written by worker/src/versions.ts, never read yet
 Vectorize                   passage vectors, exactly as for cards today
 ```
+
+Every write to the payload and the row goes through `writeArtefact` in
+`worker/src/versions.ts`, which records who wrote it as a version (`versions`,
+`version_heads`) and seals the previous payload before replacing it.
 
 ### Why the payload goes to R2, not a D1 column
 
