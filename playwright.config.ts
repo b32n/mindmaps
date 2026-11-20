@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { CLOSED_PORT, MAIN_PORT as PORT, mindboxWorker, originWorker } from "./e2e/support/hosts";
+import { CLOSED_PORT, MAIN_PORT as PORT, MODE_CASES, mindboxWorker, modeWorkers, originWorker } from "./e2e/support/hosts";
 
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 // The second Worker: same app, sign-up closed (wrangler.test-closed.toml).
@@ -97,6 +97,21 @@ export default defineConfig({
       stdout: "pipe",
       stderr: "pipe",
     },
+    // One Worker per MINDMAPS_MODE setting (see e2e/support/hosts.ts). The
+    // invalid one answers 500 to everything, so readiness is the port, not a URL.
+    ...MODE_CASES.map((name) => ({
+      command: "node e2e/support/serve.mjs",
+      env: {
+        E2E_PORT: String(modeWorkers[name].port),
+        E2E_STATE_DIR: `.e2e-state-mode-${name}`,
+        E2E_VARS: JSON.stringify({ MINDMAPS_MODE: modeWorkers[name].value }),
+      },
+      port: modeWorkers[name].port,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe" as const,
+      stderr: "pipe" as const,
+    })),
   ],
   projects: [
     { name: "setup", testDir: "./e2e/setup", testMatch: /.*\.setup\.ts/ },
@@ -136,6 +151,16 @@ export default defineConfig({
       testMatch: /mindbox-origin\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: mindboxWorker.baseURL },
     },
+    // Specs about MINDMAPS_MODE: each runs against the Workers above, picking
+    // the one it needs by address (the main Worker leaves the var unset).
+    {
+      name: "modes",
+      testDir: "./e2e/modes",
+      testMatch: /.*\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
+    },
+    // The installer's script and helpers; no browser, no Worker.
+    { name: "installer", testDir: "./e2e/installer", testMatch: /.*\.spec\.ts/ },
     // Add engines here when the suite is ready for them:
     //   { name: "firefox", use: { ...devices["Desktop Firefox"] }, dependencies: ["setup"] },
     //   { name: "webkit",  use: { ...devices["Desktop Safari"] },  dependencies: ["setup"] },

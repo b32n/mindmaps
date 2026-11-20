@@ -1,10 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import { auth, type User } from "./api";
+import { auth, type Mode, type User } from "./api";
 
 interface AuthState {
   user: User | null;
   googleEnabled: boolean;
+  /** the instance's deployment mode; null until /auth/me lands */
+  mode: Mode | null;
   /** null until the first /auth/me lands — distinct from "signed out" */
   loading: boolean;
   signIn: (u: User) => void;
@@ -16,6 +18,7 @@ const Ctx = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [mode, setMode] = useState<Mode | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -24,10 +27,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .then((r) => {
         setUser(r.user);
         setGoogleEnabled(r.googleEnabled);
+        setMode(r.mode);
       })
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
+
+  // Available to CSS and to anything outside React; nothing styles on it yet.
+  useEffect(() => {
+    if (mode) document.documentElement.dataset.mindmapsMode = mode;
+    else delete document.documentElement.dataset.mindmapsMode;
+  }, [mode]);
 
   const signOut = useCallback(async () => {
     await auth.logout().catch(() => {});
@@ -35,7 +45,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <Ctx.Provider value={{ user, googleEnabled, loading, signIn: setUser, signOut }}>
+    <Ctx.Provider value={{ user, googleEnabled, mode, loading, signIn: setUser, signOut }}>
       {children}
     </Ctx.Provider>
   );
@@ -45,6 +55,11 @@ export function useAuth(): AuthState {
   const v = useContext(Ctx);
   if (!v) throw new Error("useAuth outside AuthProvider");
   return v;
+}
+
+/** The deployment mode, or null until the first /auth/me answer lands. */
+export function useMode(): Mode | null {
+  return useAuth().mode;
 }
 
 /**
