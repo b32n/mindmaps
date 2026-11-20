@@ -389,6 +389,11 @@ both eras are supported — they're different method names over one dispatcher,
 so the cost is a few lines. `GET`/`DELETE /mcp` return 405, as the spec directs
 a modern-only server to do.
 
+**Deployment mode.** Both `server/discover` and `initialize` results carry the
+instance's mode (`personal`, `org` or `multitenant`, from `MINDMAPS_MODE`) as
+`_meta["mindmaps/mode"]`. It is read-only and changes no tool schema; nothing in
+the tools acts on it yet. See [docs/MODES.md](./docs/MODES.md).
+
 Every tool is a couple of D1 queries, so responses are always a single JSON
 object rather than an SSE stream. The spec lets the server choose per request,
 and there is no progress to report on a 3ms query.

@@ -7,6 +7,8 @@ Goal: deploy this repo to the **user's own** Cloudflare account. Do this:
 1. Check `node -v` is 20+. If not, tell the user to install it from nodejs.org.
 2. `npm install`
 3. `npm run install:cloudflare -- --yes --json`
+   - Add `--mode personal` or `--mode org` if the user said which; with `--yes`
+     and no `--mode` it installs `personal` (see docs/MODES.md).
    - It runs `wrangler login`, which opens a browser. **Tell the user to approve
      it**; you cannot. Wait for it to finish.
    - Progress goes to stderr; the last stdout line is JSON:
