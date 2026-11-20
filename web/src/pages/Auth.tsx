@@ -98,6 +98,9 @@ export function LoginPage() {
       <form className="auth-card" onSubmit={submit}>
         <Link to="/" className="auth-brand">mindmaps</Link>
         <h1>Welcome back</h1>
+        {params.get("notice") === "deleted" && (
+          <p className="auth-alt">Your account and everything in it have been deleted.</p>
+        )}
         {connecting && (
           <p className="auth-alt">Sign in to connect <strong>{connecting}</strong> to your mindmaps.</p>
         )}

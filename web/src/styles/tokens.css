@@ -119,6 +119,7 @@
 .btn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--muted); }
 .btn:active:not(:disabled) { transform: translateY(0.5px); }
 .btn:disabled { opacity: 0.42; cursor: default; }
+a.btn { text-decoration: none; }
 
 .btn-primary {
   background: var(--accent);

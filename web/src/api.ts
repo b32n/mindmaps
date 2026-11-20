@@ -208,6 +208,12 @@ export const auth = {
   connections: () => req<Connection[]>("/auth/connections"),
   disconnect: (clientId: string) =>
     req<{ ok: true; revoked: number }>(`/auth/connections/${clientId}`, { method: "DELETE" }),
+
+  /** Where the browser fetches the export from: a plain GET that answers with a zip. */
+  exportUrl: `${BASE}/api/account/export`,
+  /** Delete the account. The typed email is the confirmation. */
+  deleteAccount: (email: string) =>
+    req<{ ok: true }>("/account", { method: "DELETE", body: JSON.stringify({ email }) }),
 };
 
 export interface Connection {

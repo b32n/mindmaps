@@ -37,6 +37,7 @@ import {
 } from "./artefacts";
 import { blocksToMarkdown, parseDoc } from "./markdown";
 import { createStarterBoard } from "./starter";
+import { deleteAccount, exportAccount, exportFilename, finishDeletions, type AccountEnv } from "./account";
 import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
 export interface Env {
@@ -195,7 +196,7 @@ export default {
       if (seg[1] === "auth") return await authRoute(req, env, seg, user);
 
       if (!user) return json(env, { error: "not signed in" }, 401);
-      return await route(req, env, seg, user);
+      return await route(req, env, seg, user, ctx);
     } catch (err: any) {
       console.error(err);
       return json(env, { error: String(err?.message ?? err) }, 500);
@@ -231,6 +232,16 @@ export default {
           if (n) console.log(`reaped ${n} expired object${n === 1 ? "" : "s"}`);
         },
         (err) => console.error("trash reap failed", err),
+      ),
+    );
+    // A deletion that stopped between closing the account and deleting what it
+    // owned. Normally finds nothing: one indexed read.
+    ctx.waitUntil(
+      finishDeletions(env as unknown as AccountEnv).then(
+        (n) => {
+          if (n) console.log(`finished ${n} interrupted account deletion${n === 1 ? "" : "s"}`);
+        },
+        (err) => console.error("account deletion sweep failed", err),
       ),
     );
     // The archived rows themselves. Kept separate from the object reap above so
@@ -335,9 +346,52 @@ async function mcpSurface(
   return await handleMcp(new Request(req, { body: raw }), { ...env, PUBLIC_ORIGIN: issuerOf(req, env) } as typeof env, check.grant);
 }
 
-async function route(req: Request, env: Env, seg: string[], user: SessionUser): Promise<Response> {
+async function route(
+  req: Request,
+  env: Env,
+  seg: string[],
+  user: SessionUser,
+  ctx: ExecutionContext,
+): Promise<Response> {
   const [, a, b, c, d] = seg; // seg[0] === "api"
   const m = req.method;
+
+  // --- the account itself --------------------------------------------------
+
+  /*
+   * Everything this user owns, as one zip. A GET with a session cookie and no
+   * side effects, so a plain link (`<a href download>`) is all the app needs.
+   * `no-store`: the body is the user's whole account and must not sit in a
+   * shared cache or the browser's.
+   */
+  if (a === "account" && b === "export" && m === "GET") {
+    const { body, done } = exportAccount(env as unknown as AccountEnv, user);
+    ctx.waitUntil(done);
+    return new Response(body, {
+      headers: {
+        "content-type": "application/zip",
+        "content-disposition": `attachment; filename="${exportFilename()}"`,
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        ...cors(env),
+      },
+    });
+  }
+
+  /*
+   * Delete the account. The body carries the confirmation, `{ email }` or
+   * `{ password }`; the cookie alone is not enough to erase an account, or a
+   * session left open on a shared machine could do it in one request.
+   */
+  if (a === "account" && !b && m === "DELETE") {
+    const body = await req.json<any>().catch(() => ({}));
+    const outcome = await deleteAccount(env as unknown as AccountEnv, user.id, body ?? {});
+    if (!outcome.ok)
+      return json(env, { error: outcome.error, ...(outcome.workspaces ? { workspaces: outcome.workspaces } : {}) }, outcome.status);
+    return new Response(JSON.stringify({ ok: true }), {
+      headers: { "content-type": "application/json", "set-cookie": clearCookie(req), ...cors(env) },
+    });
+  }
 
   // --- boards --------------------------------------------------------------
 
@@ -1662,7 +1716,7 @@ async function authRoute(
     const { email, password } = await req.json<any>();
     const addr = String(email ?? "").trim().toLowerCase();
     const row = await env.DB.prepare(
-      `SELECT id, password_hash, password_salt FROM users WHERE email = ?`,
+      `SELECT id, password_hash, password_salt FROM users WHERE email = ? AND status = 'active'`,
     )
       .bind(addr)
       .first<{ id: string; password_hash: string | null; password_salt: string | null }>();
@@ -1807,11 +1861,11 @@ async function authRoute(
 
     // Match on google_sub first, then fall back to email so an existing
     // password account links rather than duplicating.
-    let existing = await env.DB.prepare(`SELECT id FROM users WHERE google_sub = ?`)
+    let existing = await env.DB.prepare(`SELECT id FROM users WHERE google_sub = ? AND status = 'active'`)
       .bind(sub)
       .first<{ id: string }>();
     if (!existing) {
-      existing = await env.DB.prepare(`SELECT id FROM users WHERE email = ?`)
+      existing = await env.DB.prepare(`SELECT id FROM users WHERE email = ? AND status = 'active'`)
         .bind(email)
         .first<{ id: string }>();
       if (existing) {

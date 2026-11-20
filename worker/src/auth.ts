@@ -172,7 +172,7 @@ export async function userForToken(
     .prepare(
       `SELECT u.id, u.email, u.name, u.avatar_url
          FROM auth_sessions s JOIN users u ON u.id = s.user_id
-        WHERE s.token_hash = ? AND s.expires_at > ?`,
+        WHERE s.token_hash = ? AND s.expires_at > ? AND u.status = 'active'`,
     )
     .bind(await sha256(token), Date.now())
     .first<SessionUser>();

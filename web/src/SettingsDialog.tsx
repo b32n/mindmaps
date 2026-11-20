@@ -9,7 +9,8 @@ import { Modal } from "./ui/Modal";
  * ended up on the card instead, because it describes a particular card (a
  * running log) rather than the whole account. What genuinely belongs at this
  * level is the list of harnesses holding an OAuth token, which until now could
- * only be revoked with a curl command.
+ * only be revoked with a curl command. Since then the two things an account
+ * owes its owner: a way to take everything out, and a way to leave.
  */
 export function SettingsDialog({
   open,
@@ -23,11 +24,14 @@ export function SettingsDialog({
   const [connections, setConnections] = useState<Connection[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // the delete-account form: closed, or open with what has been typed so far
+  const [deleting, setDeleting] = useState<{ typed: string; busy: boolean; error: string | null } | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setConnections(null);
     setError(null);
+    setDeleting(null);
     auth
       .connections()
       .then(setConnections)
@@ -49,7 +53,23 @@ export function SettingsDialog({
     }
   }
 
+  async function deleteAccount() {
+    if (!deleting) return;
+    setDeleting({ ...deleting, busy: true, error: null });
+    try {
+      await auth.deleteAccount(deleting.typed.trim());
+      // A full navigation rather than a route change: nothing in memory should
+      // outlive the account, and the sign-in page must load with no session.
+      window.location.assign("/login?notice=deleted");
+    } catch (e) {
+      setDeleting({ ...deleting, busy: false, error: (e as Error).message });
+    }
+  }
+
   if (!open) return null;
+
+  const matches =
+    !!user && !!deleting && deleting.typed.trim().toLowerCase() === user.email.toLowerCase();
 
   return (
     <Modal open title="Settings" onClose={onClose} width={520}>
@@ -99,6 +119,77 @@ export function SettingsDialog({
             </button>
           </div>
         ))}
+      </section>
+
+      <section className="set-block">
+        <h3>Your data</h3>
+        <p className="set-hint">
+          Download everything you own as one zip: your mindmaps, cards, links, sheets,
+          documents, decks, pages, files and images, with their version history. What
+          other people have shared with you is listed by reference only.
+        </p>
+        <div>
+          <a className="btn" href={auth.exportUrl} download>
+            Download my data
+          </a>
+        </div>
+      </section>
+
+      <section className="set-block">
+        <h3>Delete account</h3>
+        <p className="set-hint">
+          Deletes your account and everything you own, and ends every session and
+          connected app at once. Anything you have shared with others stops working.
+          This cannot be undone; download your data first if you want a copy.
+        </p>
+        {!deleting && (
+          <div>
+            <button
+              className="btn btn-danger"
+              onClick={() => setDeleting({ typed: "", busy: false, error: null })}
+            >
+              Delete account…
+            </button>
+          </div>
+        )}
+        {deleting && (
+          <form
+            className="set-confirm"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (matches && !deleting.busy) void deleteAccount();
+            }}
+          >
+            <label>
+              Type your email address ({user?.email}) to confirm
+              <input
+                type="email"
+                value={deleting.typed}
+                autoComplete="off"
+                autoFocus
+                onChange={(e) => setDeleting({ ...deleting, typed: e.target.value, error: null })}
+              />
+            </label>
+            {deleting.error && <p className="modal-warn">{deleting.error}</p>}
+            <div className="set-confirm-actions">
+              <button
+                type="submit"
+                className="btn btn-confirm-danger"
+                disabled={!matches || deleting.busy}
+              >
+                {deleting.busy ? "Deleting…" : "Delete my account"}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={deleting.busy}
+                onClick={() => setDeleting(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
       </section>
     </Modal>
   );

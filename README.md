@@ -145,6 +145,30 @@ That's the whole setup. **No API key.** The first tool call returns a 401 with a
 board and approve, and it gets an OAuth token scoped to your account. Sign-in
 uses the same password or Google account as the web app.
 
+### Your data: export and deletion
+
+Both are in **Settings** in the app, and both are plain endpoints for anyone who
+would rather script them (they use the browser session cookie).
+
+- **Export**: `GET /api/account/export` answers with one zip (`mindmaps-export-YYYY-MM-DD.zip`)
+  of JSON plus the original bytes. Everything you own: `mindmaps.json`, `cards.json`,
+  `links.json`, `workspaces.json`, `artefacts.json` with each payload under `artefacts/`,
+  `files.json` with each file under `files/`, images under `images/`, `versions.json`
+  (version history metadata: who, when, through what; not each version's content) and a
+  `manifest.json` with counts and anything that could not be read. What other people
+  shared with you is in `shared-with-me.json` by id and role only, and what you shared
+  is counted in `sharing.json` without naming anyone or including link tokens.
+  Owned means in a workspace you own.
+- **Deletion**: `DELETE /api/account` with `{ "email": "<your address>" }` (or
+  `{ "password": "…" }`). It ends every session and MCP token immediately, refuses
+  sign-in, revokes every link, grant and share to anything you owned, deletes your
+  mindmaps and what is on them, files their stored objects for the next cron sweep,
+  redacts the content of your version history (the rows stay), and scrubs the account
+  row (email, name, avatar, password hash, Google id), so the same address can sign up
+  again. The row itself stays, marked `status = 'deleted'` with a `deleted_at`, because
+  other people's data refers to it. A workspace you own that has other people in it
+  blocks the deletion (409): remove them first.
+
 ### Tools
 
 | Tool | Scope | Does |
