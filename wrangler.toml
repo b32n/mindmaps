@@ -67,6 +67,18 @@ crons = ["* * * * *"]
 #   PUBLIC_ORIGIN / APP_ORIGIN   https://notes.example.com
 #   MINDBOX_ORIGIN               https://box.example.com   (optional second hostname for HTML artefacts)
 #
+# What kind of instance this is (docs/MODES.md). One of:
+#   personal      just you, plus the people you invite
+#   org           a team or company's own instance
+#   multitenant   the hosted service (many unrelated customers)
+# Unset or empty means multitenant, which is how installs behaved before this
+# setting existed. Anything else makes the Worker answer every request with a
+# 500 naming this variable. `npm run install:cloudflare` writes it into
+# wrangler.local.toml (--mode, or personal with --yes); to set it by hand, add
+# it under a single [vars] table:
+#   [vars]
+#   MINDMAPS_MODE = "personal"
+#
 # Secrets (`npx wrangler secret put NAME`, never committed):
 #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   optional Google sign-in
 #   MINDBOX_SECRET   optional; signs HTML-artefact URLs. Generated and kept in D1
