@@ -42,8 +42,13 @@ const REAP_PER_RUN = 100;
 /**
  * File an object for deletion.
  *
- * `INSERT OR REPLACE` so re-deleting a restored node refreshes the clock rather
- * than failing on the primary key or keeping the older, nearly-expired row.
+ * An upsert so re-deleting a restored node refreshes the clock rather than
+ * failing on the primary key or keeping the older, nearly-expired row. Only the
+ * clock moves, and only forward: `node_id` stays what the first filing said. An
+ * image's key comes from a url in the node's own data, which the caller writes,
+ * so a node can name an object that belongs to another node. Replacing the row
+ * would re-point it at the stranger's node, and the owner's undo would stop
+ * un-filing the object (and the reaper would then delete it under them).
  */
 export async function trashObject(
   env: TrashEnv,
@@ -52,7 +57,8 @@ export async function trashObject(
   nodeId: string,
 ): Promise<void> {
   await env.DB.prepare(
-    `INSERT OR REPLACE INTO r2_trash (bucket, key, node_id, deleted_at) VALUES (?,?,?,?)`,
+    `INSERT INTO r2_trash (bucket, key, node_id, deleted_at) VALUES (?,?,?,?)
+     ON CONFLICT(bucket, key) DO UPDATE SET deleted_at = MAX(r2_trash.deleted_at, excluded.deleted_at)`,
   )
     .bind(bucket, key, nodeId, Date.now())
     .run();

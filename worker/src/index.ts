@@ -28,7 +28,7 @@ import {
   createShare, noteView, resolveShare, revokeShare, sharesFor, type ShareEnv,
 } from "./shares";
 import {
-  archiveBoard, archiveNode, emptyTrash, listTrash, purgeTrash, mayRestoreNode, restoreFileRows, restoreTrash,
+  archiveBoard, archiveNode, emptyTrash, listTrash, purgeTrash, mayRestoreNode, restoreFileRows, restoreTrash, dropNodeEntry,
   sweepTrash,
 } from "./trash";
 import {
@@ -884,6 +884,13 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
           slides: p.slides,
           html: p.html,
         });
+      // A complete payload handed in as `data.workbook` is held to the same
+      // shape check as a PUT, so this route cannot store what the editor
+      // cannot open.
+      if (!existing && p.data?.workbook) {
+        const wrong = payloadProblem(kind, payload);
+        if (wrong) return json(env, { error: wrong }, 400);
+      }
       const { json: payloadJson, stored } = describeArtefact(node.id, kind, payload);
       // A restore rewrites nothing: the object is already there and is the
       // source of `payload`. A create must not land on an object that already
@@ -939,6 +946,9 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
         node.body = refreshed.body;
       }
     }
+
+    // The node is live again, so the entry that undo just took back is stale.
+    if (mayRestore) await dropNodeEntry(env, node.id);
 
     return json(env, hydrateNode(node), 201);
   }
@@ -1015,9 +1025,9 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
       const deny = await requireNodeWrite(env, user, b);
       if (deny) return deny;
     }
-    const row = await env.DB.prepare(`SELECT type FROM nodes WHERE id = ?`)
+    const row = await env.DB.prepare(`SELECT type, board_id FROM nodes WHERE id = ?`)
       .bind(b)
-      .first<{ type: string }>();
+      .first<{ type: string; board_id: string }>();
     if (!row || !isArtefact(row.type)) return json(env, { error: "not an artefact" }, 400);
 
     // 400 for a body that is not an artefact of this kind, 413 for one that is
@@ -1035,7 +1045,13 @@ async function route(req: Request, env: Env, seg: string[], user: SessionUser): 
     if (wrong) return json(env, { error: wrong }, 400);
 
     try {
-      const stored = await writeArtefact(env, webActor(user.id), { nodeId: b, kind, payload });
+      // Same as every other write to an artefact: the mindmap it sits on moved.
+      const stored = await writeArtefact(env, webActor(user.id), {
+        nodeId: b,
+        kind,
+        payload,
+        extra: [env.DB.prepare(`UPDATE boards SET updated_at = ? WHERE id = ?`).bind(now(), row.board_id)],
+      });
       return json(env, { ok: true, ...stored.data });
     } catch (err: any) {
       if (err instanceof ArtefactTooLarge) return json(env, { error: err.message }, 413);

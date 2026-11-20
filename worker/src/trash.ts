@@ -14,7 +14,7 @@
  *           it should be one action too
  */
 
-import { boardRole, canWrite } from "./access";
+import { boardRole, canWrite, workspaceRole } from "./access";
 import { isArtefact, artefactKey } from "./artefacts";
 import { filesOf, isFileKind, type FileEnv } from "./files";
 import { reinsertNode, webActor } from "./versions";
@@ -56,6 +56,46 @@ async function reinsert(db: D1Database, table: string, row: Row): Promise<void> 
       `INSERT OR IGNORE INTO ${table} (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`,
     )
     .bind(...cols.map((c) => row[c] as never))
+    .run();
+}
+
+/**
+ * File a trash entry without ever disturbing someone else's.
+ *
+ * The id is the node's or mindmap's own, and a node id can be chosen by the
+ * caller, so a second user can end up deleting something that carries the id of
+ * an entry already sitting in another user's trash. This used to be
+ * `INSERT OR REPLACE`, which handed that entry to whoever deleted last: the
+ * original owner lost their undo and the new row, with its payload, was the
+ * stranger's to restore from.
+ *
+ * Now an existing entry is only ever refreshed by the user who owns it, or
+ * replaced once it is past the retention window (dead, just not swept yet). In
+ * every other case the original stays exactly as it was and this archive is not
+ * kept, which costs only the one who reused the id an undo.
+ */
+async function fileEntry(
+  env: TrashEnv,
+  kind: "node" | "board",
+  userId: string,
+  e: {
+    id: string; label: string | null; nodeType: string | null; context: string | null;
+    summary: string | null; payload: string;
+  },
+): Promise<void> {
+  const t = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO trash (id,kind,user_id,label,node_type,context,summary,deleted_at,payload)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+     ON CONFLICT(id) DO UPDATE SET
+       kind = excluded.kind, user_id = excluded.user_id, label = excluded.label,
+       node_type = excluded.node_type, context = excluded.context,
+       summary = excluded.summary, deleted_at = excluded.deleted_at,
+       payload = excluded.payload
+     WHERE trash.user_id = excluded.user_id AND trash.kind = excluded.kind
+        OR trash.deleted_at <= ?10`,
+  )
+    .bind(e.id, kind, userId, e.label, e.nodeType, e.context, e.summary, t, e.payload, t - RETENTION_MS)
     .run();
 }
 
@@ -148,21 +188,14 @@ export async function archiveNode(
     .bind(node.board_id as string)
     .first<{ name: string }>();
 
-  await env.DB.prepare(
-    `INSERT OR REPLACE INTO trash (id,kind,user_id,label,node_type,context,summary,deleted_at,payload)
-     VALUES (?,'node',?,?,?,?,?,?,?)`,
-  )
-    .bind(
-      nodeId,
-      userId,
-      (node.title as string) || null,
-      String(node.type ?? "node"),
-      board?.name ?? null,
-      null,
-      Date.now(),
-      JSON.stringify({ node, edges: edges.results ?? [], files: files.results ?? [] }),
-    )
-    .run();
+  await fileEntry(env, "node", userId, {
+    id: nodeId,
+    label: (node.title as string) || null,
+    nodeType: String(node.type ?? "node"),
+    context: board?.name ?? null,
+    summary: null,
+    payload: JSON.stringify({ node, edges: edges.results ?? [], files: files.results ?? [] }),
+  });
 
   await trashObjectsFor(env, [node]);
   return true;
@@ -231,20 +264,14 @@ export async function archiveBoard(
     files = found.results ?? [];
   }
 
-  await env.DB.prepare(
-    `INSERT OR REPLACE INTO trash (id,kind,user_id,label,node_type,context,summary,deleted_at,payload)
-     VALUES (?,'board',?,?,NULL,?,?,?,?)`,
-  )
-    .bind(
-      boardId,
-      userId,
-      (root.name as string) || null,
-      boards.length > 1 ? `${boards.length - 1} sub-mindmap${boards.length === 2 ? "" : "s"}` : null,
-      describe(rows),
-      Date.now(),
-      JSON.stringify({ boards, nodes: rows, edges, files }),
-    )
-    .run();
+  await fileEntry(env, "board", userId, {
+    id: boardId,
+    label: (root.name as string) || null,
+    nodeType: null,
+    context: boards.length > 1 ? `${boards.length - 1} sub-mindmap${boards.length === 2 ? "" : "s"}` : null,
+    summary: describe(rows),
+    payload: JSON.stringify({ boards, nodes: rows, edges, files }),
+  });
 
   await trashObjectsFor(env, rows);
   return true;
@@ -293,6 +320,41 @@ export async function mayRestoreNode(
   return canWrite(await boardRole(env.DB, userId, row.board_id));
 }
 
+/**
+ * May this user write where an archive would land?
+ *
+ * A node goes back onto the mindmap it left, which is still there (the
+ * deleted-mindmap case is answered separately, so "not there" passes here). A
+ * mindmap goes back under its parent if that is still live, and otherwise into
+ * the workspace it was in. A row with no workspace is a legacy personal one,
+ * writable by its own creator.
+ */
+async function mayWriteTarget(
+  env: TrashEnv,
+  userId: string,
+  kind: string,
+  boards: Row[],
+  nodes: Row[],
+): Promise<boolean> {
+  if (kind === "node" || !boards.length) {
+    const boardId = nodes[0]?.board_id;
+    if (!boardId) return true;
+    const role = await boardRole(env.DB, userId, String(boardId));
+    if (role) return canWrite(role);
+    const live = await env.DB.prepare(`SELECT 1 AS hit FROM boards WHERE id = ?`).bind(String(boardId)).first();
+    return !live;
+  }
+  const root = boards[0];
+  if (root.parent_id) {
+    const role = await boardRole(env.DB, userId, String(root.parent_id));
+    if (role) return canWrite(role);
+    const live = await env.DB.prepare(`SELECT 1 AS hit FROM boards WHERE id = ?`).bind(String(root.parent_id)).first();
+    if (live) return false;
+  }
+  if (root.workspace_id) return canWrite(await workspaceRole(env.DB, userId, String(root.workspace_id)));
+  return root.user_id === userId;
+}
+
 export interface RestoreResult {
   ok: boolean;
   /** Where to send the user afterwards. */
@@ -331,6 +393,22 @@ export async function restoreTrash(
   const nodes = payload.nodes ?? (payload.node ? [payload.node] : []);
   const edges = payload.edges ?? [];
   const files = payload.files ?? [];
+
+  /*
+   * Restoring is writing, so it needs write access to where the item goes back
+   * *now*. Owning the entry is not enough: it was filed when the user could
+   * still write there, and they may since have been removed, demoted to viewer,
+   * or had the mindmap unshared. Refused rather than redirected to the user's
+   * home — the same choice as the deleted-mindmap case below, because dropping
+   * something on a map the user did not pick is worse than telling them why it
+   * cannot go back. The entry is left in place, so it can be retried if access
+   * returns.
+   */
+  if (!(await mayWriteTarget(env, userId, row.kind as string, boards, nodes)))
+    return {
+      ok: false,
+      error: "You no longer have edit access to the mindmap this came from, so it cannot be restored there.",
+    };
 
   // A node cannot go back onto a mindmap that is no longer there. This is the
   // one case a restore can legitimately refuse, and saying so beats dropping
@@ -374,6 +452,18 @@ export async function restoreTrash(
     ok: true,
     boardId: boards.length ? String(boards[0].id) : String(nodes[0]?.board_id ?? ""),
   };
+}
+
+/**
+ * Forget a node's trash entry because the node is live again.
+ *
+ * Called when a create under a trashed id was allowed to take it back (undo).
+ * Left in place, the entry is stale: it still belongs to whoever deleted
+ * first, and would collide with the next deletion of the same node by someone
+ * else, which `fileEntry` rightly refuses to overwrite.
+ */
+export async function dropNodeEntry(env: TrashEnv, nodeId: string): Promise<void> {
+  await env.DB.prepare(`DELETE FROM trash WHERE id = ? AND kind = 'node'`).bind(nodeId).run();
 }
 
 /**
