@@ -37,14 +37,14 @@ export interface Workspace {
   name: string;
   owner_id: string;
   personal: number;
-  role: "owner" | "editor" | "viewer";
+  role: "owner" | "admin" | "editor" | "viewer";
 }
 
 export interface Member {
   user_id: string;
   email: string;
   name: string | null;
-  role: "owner" | "editor" | "viewer";
+  role: "owner" | "admin" | "editor" | "viewer";
   created_at: number;
 }
 
@@ -214,6 +214,8 @@ export const auth = {
   /** Delete the account. The typed email is the confirmation. */
   deleteAccount: (email: string) =>
     req<{ ok: true }>("/account", { method: "DELETE", body: JSON.stringify({ email }) }),
+  /** Shared workspaces this account owns that other people are in; they stop deletion. */
+  deleteBlockers: () => req<{ workspaces: Array<{ id: string; name: string }> }>("/account/delete-blockers"),
 };
 
 export interface Connection {
@@ -278,7 +280,12 @@ export const api = {
 
   /** `kind` is the route segment: workspaces, boards or artefacts. */
   members: (kind: "workspaces" | "boards" | "artefacts", id: string) =>
-    req<{ members: Member[]; pending: PendingInvite[] }>(`/${kind}/${id}/members`),
+    req<{
+      members: Member[];
+      pending: PendingInvite[];
+      /** Workspaces only: the owner, who is in no membership row. */
+      owner?: { user_id: string; email: string; name: string | null };
+    }>(`/${kind}/${id}/members`),
 
   addMember: (
     kind: "workspaces" | "boards" | "artefacts",
@@ -293,6 +300,17 @@ export const api = {
 
   removeMember: (kind: "workspaces" | "boards" | "artefacts", id: string, userId: string) =>
     req<{ ok: true }>(`/${kind}/${id}/members/${userId}`, { method: "DELETE" }),
+
+  /** Change a workspace member's role. Admin is the owner's to give. */
+  setMemberRole: (id: string, userId: string, role: "admin" | "editor" | "viewer") =>
+    req<{ ok: true }>(`/workspaces/${id}/members/${userId}`, { method: "PATCH", body: JSON.stringify({ role }) }),
+
+  /** Make an existing member the owner; the caller stays on as an admin. */
+  transferWorkspace: (id: string, userId: string) =>
+    req<{ ok: true; owner_id: string }>(`/workspaces/${id}/transfer`, {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId }),
+    }),
 
   revokeInvite: (token: string) => req<{ ok: true }>(`/invites/${token}`, { method: "DELETE" }),
 
