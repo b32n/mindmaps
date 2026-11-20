@@ -127,6 +127,10 @@ test.describe("what the archive leaves out", () => {
     await addMember(other.request, "artefacts", grantSheet.id, account.email, "editor");
     const ws = await createWorkspace(other.request, "OTHER-WORKSPACE-8841");
     await addMember(other.request, "workspaces", ws.id, account.email, "editor");
+    // ...with a mindmap in it that this user can open: readable is not owned
+    const wsBoard = await createBoard(other.request, "OTHER-WS-BOARD-8841", { workspace_id: ws.id });
+    const wsCard = await createNode(other.request, wsBoard.id, { title: "OTHER-WS-CARD-8841", body: "OTHER-WS-BODY-8841" });
+    expect((await request.get(`/api/nodes/${wsCard.id}`)).status()).toBe(200);
 
     // What this user has, shared outward to the other person.
     const mine = await createBoard(request, "Mine");
@@ -141,7 +145,7 @@ test.describe("what the archive leaves out", () => {
     // none of the other person's content or identity
     for (const needle of [
       "OTHER-BOARD-NAME-8841", "OTHER-CARD-TITLE-8841", "OTHER-CARD-BODY-8841", "OTHER-SHARED-CARD-8841",
-      "OTHER-SHARED-BODY-8841", "OTHER-SHEET-8841", other.user.email, other.user.name, otherId,
+      "OTHER-SHARED-BODY-8841", "OTHER-SHEET-8841", "OTHER-WS-BOARD-8841", "OTHER-WS-CARD-8841", "OTHER-WS-BODY-8841", other.user.email, other.user.name, otherId,
     ])
       expect(text.includes(needle), `archive mentions ${needle}`).toBe(false);
     // nor the secret a link share is made of
