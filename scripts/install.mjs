@@ -14,7 +14,11 @@
 //   --name <worker>        Worker name (default: mindmaps)
 //   --domain <host>        serve from your own domain (must be on this Cloudflare account)
 //   --mindbox-domain <h>   optional: serve HTML artefacts from a second hostname (extra isolation)
+//   --mode <mode>          personal | org (asked if omitted; --yes picks personal on a first
+//                          install, and a re-run keeps the mode it has). multitenant is the
+//                          hosted-service mode: accepted here, never offered. See docs/MODES.md
 //   --no-search            skip the meaning-based search index
+//   --dry-run              work out the choices and print the config; touch nothing, sign in nowhere
 //   --json                 print one JSON object at the end (url, mcp, next steps)
 
 import { spawnSync } from "node:child_process";
@@ -23,6 +27,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+
+import { MODES, chooseMode, localToml, modeInToml, parseMode } from "./lib/install-config.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const LOCAL = join(ROOT, "wrangler.local.toml");
@@ -36,9 +42,10 @@ const opt = (n) => {
 };
 const YES = flag("yes") || !process.stdin.isTTY;
 const JSON_OUT = flag("json");
+const DRY = flag("dry-run");
 
 // --- output -----------------------------------------------------------------
-const say = (m = "") => (JSON_OUT ? console.error(m) : console.log(m));
+const say = (m = "") => (JSON_OUT || DRY ? console.error(m) : console.log(m));
 const step = (m) => say(`\n▸ ${m}`);
 const die = (m) => {
   console.error(`\n✗ ${m}`);
@@ -74,24 +81,33 @@ async function ask(q, dflt) {
 // --- 0. prerequisites -------------------------------------------------------
 const major = Number(process.versions.node.split(".")[0]);
 if (major < 20) die(`Node 20 or newer is required (you have ${process.versions.node}). Get it at https://nodejs.org`);
-if (!existsSync(WR)) die("Run `npm install` first, then re-run this.");
+// Refuse a bad --mode before anything is created or signed in to.
+if (flag("mode"))
+  try {
+    parseMode(opt("mode"));
+  } catch (e) {
+    die(e.message);
+  }
+if (!DRY && !existsSync(WR)) die("Run `npm install` first, then re-run this.");
 
 say("mindmaps → your Cloudflare account");
 
 // --- 1. sign in -------------------------------------------------------------
-step("Signing in to Cloudflare");
-let who = wrangler(["whoami"], { config: false });
-if (!/You are logged in|Account ID/i.test(who.out) || /not authenticated/i.test(who.out)) {
-  say("A browser tab will open. Sign in (or create a free account) and click Allow.");
-  if (!wrangler(["login"], { inherit: true, config: false }).ok) die("Cloudflare sign-in didn't finish. Run it again.");
-  who = wrangler(["whoami"], { config: false });
+if (!DRY) {
+  step("Signing in to Cloudflare");
+  let who = wrangler(["whoami"], { config: false });
+  if (!/You are logged in|Account ID/i.test(who.out) || /not authenticated/i.test(who.out)) {
+    say("A browser tab will open. Sign in (or create a free account) and click Allow.");
+    if (!wrangler(["login"], { inherit: true, config: false }).ok) die("Cloudflare sign-in didn't finish. Run it again.");
+    who = wrangler(["whoami"], { config: false });
+  }
+  const accountIds = [...new Set([...who.out.matchAll(/\b([0-9a-f]{32})\b/g)].map((m) => m[1]))];
+  if (accountIds.length > 1 && !process.env.CLOUDFLARE_ACCOUNT_ID)
+    die(
+      `This login has several Cloudflare accounts:\n  ${accountIds.join("\n  ")}\nPick one: CLOUDFLARE_ACCOUNT_ID=<id> npm run install:cloudflare`,
+    );
+  say("  signed in");
 }
-const accountIds = [...new Set([...who.out.matchAll(/\b([0-9a-f]{32})\b/g)].map((m) => m[1]))];
-if (accountIds.length > 1 && !process.env.CLOUDFLARE_ACCOUNT_ID)
-  die(
-    `This login has several Cloudflare accounts:\n  ${accountIds.join("\n  ")}\nPick one: CLOUDFLARE_ACCOUNT_ID=<id> npm run install:cloudflare`,
-  );
-say("  signed in");
 
 // --- 2. choices -------------------------------------------------------------
 const name = opt("name") ?? (await ask("Name for your Worker?", "mindmaps"));
@@ -105,6 +121,33 @@ if (domain === undefined && !YES) {
 const mindbox = opt("mindbox-domain");
 if (mindbox && !domain) die("--mindbox-domain needs --domain too.");
 if (mindbox && mindbox === domain) die("The mindbox must be a DIFFERENT hostname from the app. See INSTALL.md.");
+
+let chosen;
+try {
+  chosen = await chooseMode({
+    flag: flag("mode") ? opt("mode") : undefined,
+    yes: YES,
+    existing: existsSync(LOCAL) ? { mode: modeInToml(readFileSync(LOCAL, "utf8")) } : null,
+    ask,
+  });
+} catch (e) {
+  die(e.message);
+}
+const mode = chosen.mode;
+if (chosen.source === "existing")
+  say(
+    mode
+      ? `  keeping mode ${mode} (change it with --mode ${MODES.join("|")})`
+      : "  this install has no MINDMAPS_MODE set, so it runs as multitenant, as before (set one with --mode personal|org)",
+  );
+
+if (DRY) {
+  const config = localToml(readFileSync(join(ROOT, "wrangler.toml"), "utf8"), {
+    name, dbId: "<database-id>", search: !flag("no-search"), domain, mindbox, mode,
+  });
+  console.log(JSON.stringify({ dryRun: true, name, domain: domain ?? null, mindbox: mindbox ?? null, mode: mode ?? null, source: chosen.source, config }));
+  process.exit(0);
+}
 
 // --- 3. resources -----------------------------------------------------------
 step("Creating your database and storage");
@@ -147,17 +190,7 @@ if (search) {
 
 // --- 4. config --------------------------------------------------------------
 step("Writing wrangler.local.toml (your IDs, never committed)");
-let toml = readFileSync(join(ROOT, "wrangler.toml"), "utf8");
-toml = toml.replace(/^name = ".*"$/m, `name = "${name}"`);
-toml = toml.replace(/^(database_name = "mindmaps")$/m, `$1\ndatabase_id = "${dbId}"`);
-if (!search) toml = toml.replace(/\[\[vectorize\]\][^\[]*/m, "").replace(/\[ai\][^\[]*/m, "");
-if (domain) {
-  const routes = [`[[routes]]\npattern = "${domain}"\ncustom_domain = true`];
-  if (mindbox) routes.push(`[[routes]]\npattern = "${mindbox}"\ncustom_domain = true`);
-  toml = toml.replace(/^(compatibility_date = ".*")$/m, `$1\n\n${routes.join("\n\n")}`);
-  toml += `\n[vars]\nPUBLIC_ORIGIN = "https://${domain}"\nAPP_ORIGIN = "https://${domain}"\nALLOWED_ORIGIN = "https://${domain}"\n`;
-  if (mindbox) toml += `MINDBOX_ORIGIN = "https://${mindbox}"\n`;
-}
+const toml = localToml(readFileSync(join(ROOT, "wrangler.toml"), "utf8"), { name, dbId, search, domain, mindbox, mode });
 writeFileSync(LOCAL, toml);
 
 // --- 5. build, migrate, deploy ---------------------------------------------
@@ -189,10 +222,10 @@ if (mindbox) {
 
 // --- 6. done ----------------------------------------------------------------
 const mcp = url ? `${url}/mcp` : "<your-url>/mcp";
-writeFileSync(join(ROOT, ".install.json"), JSON.stringify({ name, url, domain, mindbox, search, dbId }, null, 2));
+writeFileSync(join(ROOT, ".install.json"), JSON.stringify({ name, url, domain, mindbox, search, mode, dbId }, null, 2));
 
 if (JSON_OUT) {
-  console.log(JSON.stringify({ ok: true, url, mcp, search, htmlArtefacts: true, next: [
+  console.log(JSON.stringify({ ok: true, url, mcp, search, mode: mode ?? "multitenant", htmlArtefacts: true, next: [
     `Open ${url} and create your account (the first account is yours).`,
     `claude mcp add --transport http mindmaps ${mcp}`,
   ] }));
