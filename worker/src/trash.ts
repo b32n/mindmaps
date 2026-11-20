@@ -118,12 +118,12 @@ function describe(nodes: Row[]): string {
  * Artefacts and images are the two types with bytes behind them. Anything else
  * lives entirely in its row and needs nothing here.
  */
-async function trashObjectsFor(env: TrashEnv, nodes: Row[]): Promise<void> {
+export async function trashObjectsFor(env: TrashEnv, nodes: Row[], deletedAt = Date.now()): Promise<void> {
   for (const n of nodes) {
     const id = String(n.id);
     const type = String(n.type ?? "");
     if (isArtefact(type)) {
-      await trashObject(env, "ARTEFACTS", artefactKey(id), id);
+      await trashObject(env, "ARTEFACTS", artefactKey(id), id, deletedAt);
       continue;
     }
     if (isFileKind(type)) {
@@ -131,7 +131,7 @@ async function trashObjectsFor(env: TrashEnv, nodes: Row[]): Promise<void> {
       // keys come from the table rather than from a key function. Read here
       // while the rows still exist: they cascade the moment the node goes.
       for (const f of await filesOf(env as unknown as FileEnv, id)) {
-        await trashObject(env, "ARTEFACTS", f.r2_key, id);
+        await trashObject(env, "ARTEFACTS", f.r2_key, id, deletedAt);
       }
       continue;
     }
@@ -143,7 +143,7 @@ async function trashObjectsFor(env: TrashEnv, nodes: Row[]): Promise<void> {
         url = null;
       }
       const key = imageKeyFrom(url);
-      if (key) await trashObject(env, "IMAGES", key, id);
+      if (key) await trashObject(env, "IMAGES", key, id, deletedAt);
     }
   }
 }

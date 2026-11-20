@@ -219,6 +219,15 @@ Everything the UI exposes in these areas, on Chromium:
   id cannot be claimed, but its owner's undo still works), moving a link's end
   onto a card you cannot write, the same links over MCP (`update_link`,
   `unlink_cards`), invite matching.
+- **Account export and deletion** (`tests/account/`): the zip's contents (mindmaps,
+  cards, links, artefact payloads, files, images, version metadata) read back with
+  an independent zip reader that checks every CRC; that nothing of another person's
+  appears, and what is shared with the user is only a reference; deletion's
+  confirmation (email or password), sessions and MCP tokens dying at once, sign-in
+  refused, links, grants and shares to others no longer working, the email usable
+  again, the scrubbed row, R2 objects filed as due for the reaper, version history
+  redacted, a workspace with members blocking it, and the Settings dialog's two
+  controls; plus a static check that the migration only adds.
 - **Basics only**: settings dialog, the Artefacts list, the research-thread
   section (no thread is started).
 
@@ -250,9 +259,13 @@ database for other tests.
 - **Things that do not exist in the product**, so are not tested: renaming or
   deleting a workspace, moving a mindmap between workspaces, a role control on
   a member's row (a role is changed by inviting again), a "Leave" button (the
-  API allows leaving), deleting an account (so "deleting a workspace's owner
-  removes the workspace" cannot be reached from the app), e-mail verification,
+  API allows leaving), transferring a workspace to someone else (account deletion
+  asks the owner to remove the members instead), e-mail verification,
   and sending of any e-mail. The research routes need credentials this test Worker does not have.
+- **The cron's half of deletion.** The test Workers have no cron trigger, so
+  the reaper that removes the queued R2 objects, and the sweep that finishes an
+  interrupted deletion, do not run: the specs assert the objects are filed as
+  due in `r2_trash`, not that the bytes are gone.
 - **Cell-by-cell rendering of the sheet.** It is drawn on a canvas; the tests
   read the formula bar and what the editor saves, not pixels.
 - **Per-user preferences.** Order and pinning of a mindmap are one value shared

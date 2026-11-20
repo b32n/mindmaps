@@ -55,12 +55,18 @@ export async function trashObject(
   bucket: TrashBucket,
   key: string,
   nodeId: string,
+  /**
+   * When the clock starts. Now, except for an account deletion, which is not
+   * meant to be undone and files its objects as already past the window so the
+   * next sweep takes them (see account.ts).
+   */
+  deletedAt = Date.now(),
 ): Promise<void> {
   await env.DB.prepare(
     `INSERT INTO r2_trash (bucket, key, node_id, deleted_at) VALUES (?,?,?,?)
      ON CONFLICT(bucket, key) DO UPDATE SET deleted_at = MAX(r2_trash.deleted_at, excluded.deleted_at)`,
   )
-    .bind(bucket, key, nodeId, Date.now())
+    .bind(bucket, key, nodeId, deletedAt)
     .run();
 }
 

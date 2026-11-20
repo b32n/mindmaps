@@ -448,7 +448,8 @@ async function refreshGrant(req: Request, env: { DB: D1Database }, form: URLSear
 
   const hash = await sha256Hex(presented);
   const row = await env.DB.prepare(
-    `SELECT * FROM oauth_tokens WHERE refresh_hash = ? AND revoked = 0`,
+    `SELECT t.* FROM oauth_tokens t JOIN users u ON u.id = t.user_id
+      WHERE t.refresh_hash = ? AND t.revoked = 0 AND u.status = 'active'`,
   )
     .bind(hash)
     .first<any>();
@@ -569,7 +570,10 @@ export async function checkBearer(req: Request, db: D1Database, env: OriginEnv):
   if (!match) return { ok: false, reason: "missing" };
 
   const row = await db
-    .prepare(`SELECT * FROM oauth_tokens WHERE token_hash = ? AND revoked = 0`)
+    .prepare(
+      `SELECT t.* FROM oauth_tokens t JOIN users u ON u.id = t.user_id
+        WHERE t.token_hash = ? AND t.revoked = 0 AND u.status = 'active'`,
+    )
     .bind(await sha256Hex(match[1]))
     .first<any>();
   if (!row) return { ok: false, reason: "invalid" };

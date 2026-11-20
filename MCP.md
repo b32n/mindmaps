@@ -699,6 +699,13 @@ the app, and the time.
 - A node with no versions, or one a previous Worker changed without recording,
   gets its current state recorded (`op = import`) the first time it is written.
 
+- Rows are never deleted. The one thing that clears them is an account deletion
+  (migration `0028`, `redactVersions` in `versions.ts`): the rows of every
+  workspace the user owned stay with their timeline, `status` becomes `redacted`,
+  and the title, text, document, data and payload pointer are emptied; sealed
+  payload copies are filed for the R2 reaper. The same deletion revokes every MCP
+  token the user holds, so an agent connected as them gets a 401 straight away.
+
 What an agent sees today is one line in `get_card` and `get_artefact`: `v3 by
 agent-two (MCP), 4 min ago` (`by <name> (web)` for a person using the app). There
 are no tools to list, read, diff or restore versions yet, and a write does not

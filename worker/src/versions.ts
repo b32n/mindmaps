@@ -25,6 +25,9 @@
  *     replaced.
  *
  * Not here, on purpose: reading, restoring, conflict checks, retention.
+ *
+ * Rows are not deleted, with one exception in kind: `redactVersions` empties the
+ * content of every version in a workspace whose owner deleted their account.
  */
 import {
   artefactKey, describeArtefact, isArtefact, putArtefact, type ArtefactKind, type StoredArtefact,
@@ -575,6 +578,46 @@ const ago = (ms: number): string => {
   if (s < 129600) return `${Math.round(s / 3600)} h ago`;
   return `${Math.round(s / 86400)} days ago`;
 };
+
+/**
+ * Clear the content out of every version recorded in these workspaces, keeping
+ * the rows. For an account deletion: a version is a copy of what someone wrote,
+ * and the one place history may not outlive its owner.
+ *
+ * The row stays, as everywhere in this table, with its timeline, its sequence
+ * and who wrote it (an id that no longer names anyone once the user is scrubbed);
+ * `status` becomes `redacted` and the content columns go empty. Returns the R2
+ * keys of the sealed artefact payloads, which the caller files for deletion:
+ * the bytes are not in the row, so clearing the pointer alone would strand them.
+ *
+ * Idempotent: a row already redacted has nothing left to clear and no key to
+ * return, so a deletion that was interrupted can simply run this again.
+ */
+export async function redactVersions(
+  env: HistoryEnv,
+  workspaceIds: string[],
+): Promise<Array<{ nodeId: string; key: string }>> {
+  const keys: Array<{ nodeId: string; key: string }> = [];
+  for (const ws of workspaceIds) {
+    const sealed = await env.DB.prepare(
+      `SELECT node_id, payload_key FROM versions WHERE workspace_id = ? AND payload_key IS NOT NULL`,
+    )
+      .bind(ws)
+      .all<{ node_id: string; payload_key: string }>();
+    for (const r of sealed.results ?? []) keys.push({ nodeId: r.node_id, key: r.payload_key });
+
+    await env.DB.prepare(
+      `UPDATE versions
+          SET status = 'redacted', title = NULL, body = NULL, doc = NULL, data_json = NULL,
+              payload_key = NULL, content_hash = NULL, actor_note = NULL, label = NULL,
+              status_changed_at = ?
+        WHERE workspace_id = ? AND status <> 'redacted'`,
+    )
+      .bind(now(), ws)
+      .run();
+  }
+  return keys;
+}
 
 /**
  * "v3 by agent-two (MCP), 4 min ago": which version a node is at and who wrote
