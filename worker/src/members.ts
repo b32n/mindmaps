@@ -18,7 +18,7 @@
  * a lookalike address.
  */
 
-import { canAdmin, canWrite, boardRole, nodeRole, workspaceRole, type Role } from "./access";
+import { MEMBER_ROLE, canAdmin, canWrite, boardRole, isOwner, nodeRole, workspaceRole, type Role } from "./access";
 
 export interface MemberEnv {
   DB: D1Database;
@@ -45,7 +45,7 @@ const TABLES: Record<Target, { table: string; key: string }> = {
 /**
  * May this user hand out access to this thing?
  *
- * Workspaces and mindmaps: owners only. Sharing is not something an editor
+ * Workspaces and mindmaps: owners and admins. Sharing is not something an editor
  * should be able to do on someone else's behalf — an editor who could invite
  * could invite themselves a second account and keep access after removal.
  *
@@ -63,7 +63,15 @@ export async function canGrant(
   return canWrite(await nodeRole(env.DB, userId, targetId));
 }
 
+/** A refusal with the status and wording to send back. */
+export interface Denied {
+  status: 400 | 403 | 404 | 409;
+  error: string;
+}
+
 export interface InviteResult {
+  /** Set when the rules for who may change whom say no. */
+  denied?: Denied;
   /** Set when the invitee already had an account and is now a member. */
   added?: { userId: string; email: string; role: Role };
   /** Set when they do not, and something has to be sent to them. */
@@ -97,6 +105,25 @@ export async function invite(
     // Inviting yourself is a no-op rather than an error: it is a harmless
     // mistake, and refusing it tells the inviter nothing useful.
     if (existing.id === inviterId) return { added: { userId: existing.id, email, role } };
+    if (target === "workspace") {
+      // Someone who is already in the workspace is not "added": inviting them
+      // again is a role change, and goes through exactly the rules a role
+      // change does. Otherwise the invite form would be a way round them (an
+      // admin demoting an admin, or writing a membership row for the owner).
+      const owner = await env.DB.prepare(`SELECT owner_id FROM workspaces WHERE id = ?`)
+        .bind(targetId)
+        .first<{ owner_id: string }>();
+      const already = await env.DB.prepare(
+        `SELECT 1 AS x FROM workspace_members WHERE workspace_id = ? AND user_id = ?`,
+      )
+        .bind(targetId, existing.id)
+        .first();
+      if (owner?.owner_id === existing.id || already) {
+        const res = await changeMemberRole(env, inviterId, targetId, existing.id, role);
+        if (!res.ok) return { denied: { status: res.status, error: res.error } };
+        return { added: { userId: existing.id, email: existing.email, role } };
+      }
+    }
     await addMember(env, target, targetId, existing.id, role, inviterId);
     return { added: { userId: existing.id, email: existing.email, role } };
   }
@@ -149,16 +176,28 @@ export interface MemberRow {
   created_at: number;
 }
 
+export interface OwnerRow {
+  user_id: string;
+  email: string;
+  name: string | null;
+}
+
 /** Everyone with access, the owner first, then pending invites separately. */
 export async function membersOf(
   env: MemberEnv,
   target: Target,
   targetId: string,
-): Promise<{ members: MemberRow[]; pending: Array<{ token: string; email: string; role: Role }> }> {
+): Promise<{
+  members: MemberRow[];
+  pending: Array<{ token: string; email: string; role: Role }>;
+  /** Workspaces only: who owns it, since no membership row says. */
+  owner?: OwnerRow;
+}> {
   const { table, key } = TABLES[target];
+  const roleSql = target === "workspace" ? MEMBER_ROLE("m") : "m.role";
 
   const members = await env.DB.prepare(
-    `SELECT m.user_id, u.email, u.name, m.role, m.created_at
+    `SELECT m.user_id, u.email, u.name, ${roleSql} AS role, m.created_at
        FROM ${table} m JOIN users u ON u.id = m.user_id
       WHERE m.${key} = ?
       ORDER BY m.created_at`,
@@ -174,7 +213,16 @@ export async function membersOf(
     .bind(target, targetId)
     .all<{ token: string; email: string; role: Role }>();
 
-  return { members: members.results ?? [], pending: pending.results ?? [] };
+  const owner =
+    target === "workspace"
+      ? ((await env.DB.prepare(
+          `SELECT u.id AS user_id, u.email, u.name FROM workspaces w JOIN users u ON u.id = w.owner_id WHERE w.id = ?`,
+        )
+          .bind(targetId)
+          .first<OwnerRow>()) ?? undefined)
+      : undefined;
+
+  return { members: members.results ?? [], pending: pending.results ?? [], ...(owner ? { owner } : {}) };
 }
 
 /**
@@ -209,7 +257,20 @@ export async function claimInvites(
     // deleted must not stop the rest — the foreign key will refuse it and the
     // others still land.
     try {
-      await addMember(env, row.target_type, row.target_id, userId, row.role, null);
+      // An invite must never overwrite something stronger already in place: the
+      // address may belong to the workspace's owner, or to someone since made
+      // an admin, and REPLACE would quietly demote them.
+      const held =
+        row.target_type === "workspace" &&
+        (await env.DB.prepare(
+          `SELECT 1 AS x FROM workspaces w
+            WHERE w.id = ?1
+              AND (w.owner_id = ?2
+                   OR EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id = ?2))`,
+        )
+          .bind(row.target_id, userId)
+          .first());
+      if (!held) await addMember(env, row.target_type, row.target_id, userId, row.role, null);
       await env.DB.prepare(
         `UPDATE invites SET accepted_at = ?, accepted_by = ? WHERE token = ?`,
       )
@@ -233,4 +294,185 @@ export async function revokeInvite(
     .bind(token, inviterId)
     .run();
   return (res.meta?.changes ?? 0) > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Who may change whom, in a workspace
+// ---------------------------------------------------------------------------
+//
+// Four roles, one owner. The rules, all enforced here and nowhere else:
+//
+//   owner    exactly one. Never a membership row. Cannot be removed, demoted or
+//            leave: the only way it moves is `transferOwnership`, which makes
+//            the old owner an admin. "The last owner" and "the owner" are the
+//            same person, so one rule covers both.
+//   admin    manages editors and viewers: invite, change role, remove, and
+//            rename or delete mindmaps. Cannot touch the owner, another admin,
+//            or the admin role itself.
+//   editor / viewer  as before.
+//
+// Why admins cannot appoint or remove admins: an admin who could would be able
+// to mint peers the owner never chose, or evict the owner's other deputies, and
+// the owner could not undo it without being online. Appointing and demoting
+// admins, like transferring ownership, stays with the owner. Admins can still
+// leave. The cost is that an admin cannot manage another admin; the owner can.
+//
+// Personal homes are not organisations: no admin role and no transfer there.
+
+export type RoleChange = { ok: true; role: "admin" | "editor" | "viewer" } | ({ ok: false } & Denied);
+
+const ASSIGNABLE = new Set(["admin", "editor", "viewer"]);
+
+/** The workspace row the rules need, or null. */
+async function workspaceFacts(db: D1Database, workspaceId: string) {
+  return db
+    .prepare(`SELECT owner_id, personal FROM workspaces WHERE id = ?`)
+    .bind(workspaceId)
+    .first<{ owner_id: string; personal: number }>();
+}
+
+/** The target's current workspace role, if they are an active member. */
+async function activeMemberRole(db: D1Database, workspaceId: string, userId: string): Promise<Role | null> {
+  const row = await db
+    .prepare(
+      `SELECT ${MEMBER_ROLE("m")} AS role
+         FROM workspace_members m JOIN users u ON u.id = m.user_id
+        WHERE m.workspace_id = ? AND m.user_id = ? AND u.status = 'active'`,
+    )
+    .bind(workspaceId, userId)
+    .first<{ role: Role }>();
+  return row?.role ?? null;
+}
+
+/** Change an existing member's role. */
+export async function changeMemberRole(
+  env: MemberEnv,
+  actorId: string,
+  workspaceId: string,
+  targetId: string,
+  role: unknown,
+): Promise<RoleChange> {
+  const actor = await workspaceRole(env.DB, actorId, workspaceId);
+  if (!actor) return { ok: false, status: 404, error: "not found" };
+  if (!canAdmin(actor)) return { ok: false, status: 403, error: "You cannot change who has access." };
+
+  const ws = await workspaceFacts(env.DB, workspaceId);
+  if (!ws) return { ok: false, status: 404, error: "not found" };
+
+  if (targetId === ws.owner_id) {
+    return isOwner(actor)
+      ? { ok: false, status: 409, error: "The owner's role cannot be changed. Transfer ownership to someone else first." }
+      : { ok: false, status: 403, error: "Only the owner can change the owner." };
+  }
+
+  if (typeof role !== "string" || !ASSIGNABLE.has(role))
+    return { ok: false, status: 400, error: "Role must be admin, editor or viewer." };
+  if (role === "admin" && ws.personal)
+    return { ok: false, status: 400, error: "A personal workspace has no admins." };
+
+  const current = await activeMemberRole(env.DB, workspaceId, targetId);
+  if (!current) return { ok: false, status: 404, error: "not found" };
+
+  if (!isOwner(actor) && (role === "admin" || current === "admin"))
+    return { ok: false, status: 403, error: "Only the owner can appoint or change admins." };
+
+  await env.DB.prepare(
+    `UPDATE workspace_members SET role = ?3, admin = ?4 WHERE workspace_id = ?1 AND user_id = ?2`,
+  )
+    .bind(workspaceId, targetId, role === "viewer" ? "viewer" : "editor", role === "admin" ? 1 : 0)
+    .run();
+  return { ok: true, role: role as "admin" | "editor" | "viewer" };
+}
+
+export type Removal = { ok: true } | ({ ok: false } & Denied);
+
+/**
+ * Remove a member of a workspace, or let them leave.
+ *
+ * Leaving is always allowed except for the owner. Removing someone else needs
+ * admin, and removing an admin needs the owner.
+ */
+export async function removeWorkspaceMember(
+  env: MemberEnv,
+  actorId: string,
+  workspaceId: string,
+  targetId: string,
+): Promise<Removal> {
+  const actor = await workspaceRole(env.DB, actorId, workspaceId);
+  if (targetId !== actorId && !canAdmin(actor))
+    return { ok: false, status: 403, error: "You cannot change who has access." };
+
+  const ws = await workspaceFacts(env.DB, workspaceId);
+  if (ws && targetId === ws.owner_id) {
+    return targetId === actorId
+      ? { ok: false, status: 409, error: "The owner cannot leave. Transfer ownership to someone else first." }
+      : { ok: false, status: 403, error: "The owner cannot be removed." };
+  }
+
+  const current = await activeMemberRole(env.DB, workspaceId, targetId);
+  if (current === "admin" && targetId !== actorId && !isOwner(actor))
+    return { ok: false, status: 403, error: "Only the owner can remove an admin." };
+
+  return (await removeMember(env, "workspace", workspaceId, targetId))
+    ? { ok: true }
+    : { ok: false, status: 404, error: "not found" };
+}
+
+export type Transfer = { ok: true; ownerId: string } | ({ ok: false } & Denied);
+
+/**
+ * Hand a workspace to an existing, active member. The old owner stays on as an
+ * admin; nothing is deleted.
+ *
+ * One batch, so it happens entirely or not at all and there is never a moment
+ * with no owner or two. D1 runs a batch in a single transaction but cannot
+ * branch, so the first statement writes the audit row only if every condition
+ * holds *now* (still the owner, a shared workspace, the target an active
+ * member), and each later statement is conditional on that row. Two racing
+ * transfers therefore cannot both win, and a lost race leaves nothing behind.
+ */
+export async function transferOwnership(
+  env: MemberEnv,
+  actorId: string,
+  workspaceId: string,
+  toUserId: unknown,
+): Promise<Transfer> {
+  const actor = await workspaceRole(env.DB, actorId, workspaceId);
+  if (!actor) return { ok: false, status: 404, error: "not found" };
+  if (!isOwner(actor)) return { ok: false, status: 403, error: "Only the owner can transfer ownership." };
+
+  const ws = await workspaceFacts(env.DB, workspaceId);
+  if (!ws) return { ok: false, status: 404, error: "not found" };
+  if (ws.personal) return { ok: false, status: 400, error: "A personal workspace cannot be transferred." };
+
+  if (typeof toUserId !== "string" || !toUserId || toUserId === actorId)
+    return { ok: false, status: 400, error: "Choose another member to make the owner." };
+  if (!(await activeMemberRole(env.DB, workspaceId, toUserId)))
+    return { ok: false, status: 400, error: "Ownership can only be transferred to an existing member." };
+
+  const id = crypto.randomUUID();
+  const at = Date.now();
+  const done = `EXISTS (SELECT 1 FROM workspace_ownership_transfers WHERE id = ?1)`;
+  const [audit] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO workspace_ownership_transfers
+         (id, workspace_id, from_user_id, to_user_id, status, created_at, updated_at)
+       SELECT ?1, w.id, w.owner_id, ?2, 'completed', ?3, ?3
+         FROM workspaces w
+        WHERE w.id = ?4 AND w.owner_id = ?5 AND w.personal = 0
+          AND EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id
+                       WHERE m.workspace_id = w.id AND m.user_id = ?2 AND u.status = 'active')`,
+    ).bind(id, toUserId, at, workspaceId, actorId),
+    env.DB.prepare(`UPDATE workspaces SET owner_id = ?2 WHERE id = ?3 AND ${done}`).bind(id, toUserId, workspaceId),
+    env.DB.prepare(`DELETE FROM workspace_members WHERE workspace_id = ?2 AND user_id = ?3 AND ${done}`).bind(
+      id, workspaceId, toUserId,
+    ),
+    env.DB.prepare(
+      `INSERT OR REPLACE INTO workspace_members (workspace_id, user_id, role, admin, invited_by, created_at)
+       SELECT ?2, ?3, 'editor', 1, ?4, ?5 WHERE ${done}`,
+    ).bind(id, workspaceId, actorId, toUserId, at),
+  ]);
+  if ((audit?.meta?.changes ?? 0) < 1)
+    return { ok: false, status: 409, error: "Ownership changed while you were doing that. Reload and try again." };
+  return { ok: true, ownerId: toUserId };
 }
