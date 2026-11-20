@@ -103,6 +103,20 @@ projects for `--repeat-each`) it is *skipped*, not failed. Every other closed
 spec works on any database state (a stranger is refused, an invited address gets
 in), so `--repeat-each` is safe for the whole project.
 
+## The mode instances and the installer specs
+
+`MINDMAPS_MODE` has one Worker per way of setting it, all `wrangler.test.toml`
+with the var passed through `E2E_VARS`: `personal`, `org`, `multitenant`,
+`empty` (set but blank) and `invalid` (a typo; it answers 500 to everything, so
+Playwright waits for its port, not a URL). The main Worker leaves it unset. They
+listen on the four ports above's successors (`E2E_MODE_PORT`, default
+`E2E_PORT + 4`, five consecutive ports) and are described in
+`e2e/support/hosts.ts`. Specs: `e2e/modes` (project `modes`).
+
+`e2e/installer` (project `installer`) needs no Worker and no Cloudflare account:
+it runs `scripts/install.mjs --dry-run` from a temp copy of the repo and tests
+`scripts/lib/install-config.mjs` directly.
+
 ## Layout
 
 ```

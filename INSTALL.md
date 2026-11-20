@@ -28,6 +28,18 @@ git pull && npm install && npm run install:cloudflare
 It is safe to re-run: every step checks before it creates. Your data is kept.
 (Deploy-button installs update when you pull the upstream repo into your copy.)
 
+## Personal or org
+
+The installer asks whether this install is for **personal** use (you, plus the
+people you invite) or an **org** (a team or company). It is stored as
+`MINDMAPS_MODE` and can be changed later. For now it only records the choice;
+see [docs/MODES.md](./docs/MODES.md) for what each mode means, how to set or
+change it (also for Deploy-button installs), and what is not enforced yet.
+
+```bash
+npm run install:cloudflare -- --mode org       # or personal
+```
+
 ## Who can sign up
 
 Only the first account, after which sign-up is closed: anyone able to register
@@ -65,7 +77,8 @@ npm run install:cloudflare -- --domain notes.example.com --mindbox-domain box.ex
 `npm run install:cloudflare -- --yes --json` never prompts and prints one JSON
 object: `{ ok, url, mcp, search, htmlArtefacts, next }`. The only human step is
 approving the Cloudflare login in a browser. Flags: `--name`, `--domain`,
-`--mindbox-domain`, `--no-search`.
+`--mindbox-domain`, `--mode`, `--no-search`, `--dry-run`. Without `--mode`,
+`--yes` installs `personal`.
 
 ## Where things live
 
