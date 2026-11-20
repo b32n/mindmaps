@@ -44,6 +44,7 @@ artefacts, troubleshooting) are in [INSTALL.md](./INSTALL.md).
 - [MCP.md](./MCP.md): the MCP server: letting agent harnesses read and write
   the board as durable memory between sessions
 - [INSTALL.md](./INSTALL.md): installing, updating, custom domains, who can sign up
+- [docs/MODES.md](./docs/MODES.md): personal, org and multitenant modes (`MINDMAPS_MODE`)
 
 Not a coding tool. Code stays in your IDE.
 

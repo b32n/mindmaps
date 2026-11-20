@@ -44,6 +44,7 @@ import { isSupersedeLabel, neighbourhood, neighbourhoods, supersededSet, type Ne
 import {
   indexCard, removeCards, rerankScores, semanticReady, similarChunks, type SemanticEnv,
 } from "./semantic";
+import { readMode } from "./mode";
 import type { TokenGrant } from "./oauth";
 
 const SERVER_NAME = "mindmaps";
@@ -627,6 +628,8 @@ export interface McpEnv extends SemanticEnv, LinkEnv {
   DB: D1Database;
   /** artefact payloads; see artefacts.ts */
   ARTEFACTS: R2Bucket;
+  /** deployment mode; see mode.ts. Read through `readMode`, never directly. */
+  MINDMAPS_MODE?: string;
 }
 
 /*
@@ -719,6 +722,11 @@ export async function handleMcp(
     return new Response(null, { status: 202 });
   }
 
+  // The deployment mode, for clients that want to know what kind of instance
+  // this is. It rides in the results' `_meta`, so no tool schema changes and a
+  // client that ignores it is unaffected. Nothing here acts on it yet.
+  const serverMeta = { "mindmaps/mode": readMode(env) };
+
   try {
     switch (method) {
       // --- current era ----------------------------------------------------
@@ -728,6 +736,7 @@ export async function handleMcp(
           serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
           capabilities: { tools: {} },
           instructions: INSTRUCTIONS,
+          _meta: serverMeta,
         });
 
       // --- handshake era --------------------------------------------------
@@ -741,6 +750,7 @@ export async function handleMcp(
           serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
           capabilities: { tools: { listChanged: false } },
           instructions: INSTRUCTIONS,
+          _meta: serverMeta,
         });
       }
 

@@ -190,8 +190,11 @@ export interface User {
   avatar_url: string | null;
 }
 
+/** What kind of instance this is; set by MINDMAPS_MODE on the Worker (docs/MODES.md). */
+export type Mode = "personal" | "org" | "multitenant";
+
 export const auth = {
-  me: () => req<{ user: User | null; googleEnabled: boolean }>("/auth/me"),
+  me: () => req<{ user: User | null; googleEnabled: boolean; mode: Mode }>("/auth/me"),
   register: (email: string, password: string, name: string) =>
     req<{ user: User }>("/auth/register", {
       method: "POST",

@@ -27,3 +27,4 @@ playwright-report/
 blob-report/
 .e2e-state-origin/
 .e2e-state-mindbox/
+.e2e-state-mode-*/
