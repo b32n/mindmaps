@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { api, type Board as BoardT, type Workspace } from "./api";
+import { api, type Board as BoardT, type MyInvite, type Workspace } from "./api";
 import { useAuth } from "./AuthContext";
 import { Board } from "./Board";
 import { Modal } from "./ui/Modal";
@@ -8,6 +8,7 @@ import { SettingsDialog } from "./SettingsDialog";
 import { TrashDialog } from "./TrashDialog";
 import { ArtefactsView } from "./ArtefactsView";
 import { MembersPanel } from "./MembersPanel";
+import { CloseWorkspace, RenameWorkspace } from "./WorkspaceAdmin";
 import { WorkspaceMenu } from "./WorkspaceMenu";
 import { Recall } from "./Recall";
 import { IconGear, IconLayers, IconPeople, IconTrash, IconGrip, IconLogout, IconMap, IconMore, IconPlus } from "./ui/Icons";
@@ -87,6 +88,25 @@ export function BoardApp() {
   useEffect(() => {
     if (wsId) localStorage.setItem("mindmaps.workspace", wsId);
   }, [wsId]);
+
+  /**
+   * Invitations waiting for this person. Read on load, not pushed: nothing
+   * joins anyone, so the only way in is to see one here and accept it.
+   */
+  const [invites, setInvites] = useState<MyInvite[]>([]);
+  const refreshInvites = useCallback(() => {
+    api.invites().then(setInvites).catch(() => {});
+  }, []);
+  useEffect(refreshInvites, [refreshInvites]);
+
+  /** Re-read workspaces and mindmaps, e.g. after accepting, leaving or reopening. */
+  const refreshAll = useCallback(async () => {
+    const [ws, bs] = await Promise.all([api.workspaces(), api.listBoards()]);
+    setWorkspaces(ws);
+    setBoards(bs);
+    // Move off a workspace that is gone: left, or closed from another tab.
+    setWsId((cur) => (cur && ws.some((w) => w.id === cur) ? cur : (ws[0]?.id ?? null)));
+  }, []);
 
   /** null = closed, otherwise the workspace being managed. */
   const [wsDialog, setWsDialog] = useState<Workspace | null>(null);
@@ -180,6 +200,22 @@ export function BoardApp() {
     });
   }
 
+  /**
+   * Move a mindmap to another workspace. It leaves this rail and turns up in
+   * the other one; if it is the one open, land on another rather than on a
+   * mindmap that is no longer in the list you are looking at.
+   */
+  async function move(id: string, workspaceId: string) {
+    const r = await api.moveBoard(id, workspaceId);
+    setBoards((bs) => bs.map((b) => (b.id === id ? { ...b, workspace_id: r.workspace_id } : b)));
+    setDialog(null);
+    if (current === id) {
+      const next = shown.find((b) => b.id !== id);
+      if (next) open(next.id, { replace: true });
+      else navigate("/app", { replace: true });
+    }
+  }
+
   async function remove(id: string) {
     await api.deleteBoard(id);
     // The redirect effect handles moving off a deleted mindmap; doing it here
@@ -253,6 +289,17 @@ export function BoardApp() {
             setWsId(w.id);
           }}
           onManage={setWsDialog}
+          invites={invites}
+          onLeft={() => void refreshAll()}
+          onReopened={() => void refreshAll()}
+          onAnswered={(invite, accepted) => {
+            setInvites((xs) => xs.filter((x) => x.token !== invite.token));
+            if (accepted) {
+              void refreshAll();
+              // A workspace you just joined is where you want to be.
+              if (invite.target_type === "workspace") setWsId(invite.target_id);
+            }
+          }}
         />
 
         <div className="rail-list">
@@ -406,13 +453,32 @@ export function BoardApp() {
         width={520}
       >
         {wsDialog && (
-          <MembersPanel
-            kind="workspaces"
-            id={wsDialog.id}
-            ownerId={wsDialog.owner_id}
-            myRole={wsDialog.role}
-            onTransferred={() => api.workspaces().then(setWorkspaces)}
-          />
+          <>
+            <RenameWorkspace
+              key={wsDialog.id}
+              workspace={wsDialog}
+              onRenamed={(name, updatedAt) => {
+                setWsDialog({ ...wsDialog, name, updated_at: updatedAt });
+                setWorkspaces((xs) => xs.map((w) => (w.id === wsDialog.id ? { ...w, name, updated_at: updatedAt } : w)));
+              }}
+            />
+            <MembersPanel
+              kind="workspaces"
+              id={wsDialog.id}
+              ownerId={wsDialog.owner_id}
+              myRole={wsDialog.role}
+              onTransferred={() => api.workspaces().then(setWorkspaces)}
+            />
+            {wsDialog.role === "owner" && (
+              <CloseWorkspace
+                workspace={wsDialog}
+                onClosed={() => {
+                  setWsDialog(null);
+                  void refreshAll();
+                }}
+              />
+            )}
+          </>
         )}
       </Modal>
 
@@ -444,6 +510,8 @@ export function BoardApp() {
         onCreate={create}
         onSave={save}
         onDelete={remove}
+        workspaces={workspaces}
+        onMove={move}
       />
     </div>
   );
@@ -456,6 +524,8 @@ function MindmapDialog({
   onCreate,
   onSave,
   onDelete,
+  workspaces,
+  onMove,
 }: {
   mode: "new" | "edit" | null;
   board: BoardT | null;
@@ -463,6 +533,8 @@ function MindmapDialog({
   onCreate: (name: string, description: string) => Promise<void>;
   onSave: (id: string, patch: { name: string; description: string; labels: string[] }) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  workspaces: Workspace[];
+  onMove: (id: string, workspaceId: string) => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -470,6 +542,8 @@ function MindmapDialog({
   const [labelDraft, setLabelDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [target, setTarget] = useState("");
+  const [moveError, setMoveError] = useState<string | null>(null);
 
   // reset whenever the dialog opens against a different target
   useEffect(() => {
@@ -479,6 +553,8 @@ function MindmapDialog({
     setLabelDraft("");
     setConfirming(false);
     setBusy(false);
+    setTarget(board?.workspace_id ?? "");
+    setMoveError(null);
   }, [mode, board?.id]);
 
   const addLabel = () => {
@@ -491,6 +567,8 @@ function MindmapDialog({
 
   if (!mode) return null;
   const creating = mode === "new";
+  const writable = workspaces.filter((w) => w.role !== "viewer");
+  const movable = !creating && !!board && !board.parent_id && writable.some((w) => w.id === board.workspace_id);
 
   async function submit(e?: React.FormEvent) {
     e?.preventDefault();
@@ -598,6 +676,43 @@ function MindmapDialog({
                 onBlur={addLabel}
               />
             </div>
+
+            {/* Moving needs write access to the mindmap through its own workspace
+                and to the destination, so only those are offered. A mindmap
+                shared in from elsewhere, or one you can only read, has no move. */}
+            {movable && (
+              <>
+                <label htmlFor="mm-ws">Workspace</label>
+                <div className="mm-move">
+                  <select id="mm-ws" className="input" value={target} onChange={(e) => setTarget(e.target.value)}>
+                    {writable.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.personal ? "Personal" : w.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={busy || target === board!.workspace_id}
+                    onClick={async () => {
+                      setBusy(true);
+                      setMoveError(null);
+                      try {
+                        await onMove(board!.id, target);
+                      } catch (e) {
+                        setMoveError((e as Error).message);
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Move
+                  </button>
+                </div>
+                {moveError && <p className="trash-error">{moveError}</p>}
+              </>
+            )}
 
             {/* Sharing lives here rather than behind its own button: the
                 settings dialog is already "everything about this mindmap", and

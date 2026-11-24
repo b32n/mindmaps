@@ -416,14 +416,42 @@ h1, h2, h3 { letter-spacing: -0.02em; text-wrap: balance; }
 .ws-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-item-role { font-size: var(--t-xs); color: var(--faint); }
 
-.ws-item-people {
+.ws-item-people, .ws-item-leave {
   flex: 0 0 auto; width: 22px; height: 22px;
   display: grid; place-items: center;
   border-radius: var(--r-xs); color: var(--faint);
 }
-.ws-item-people:hover { background: var(--accent-soft); color: var(--accent); }
+.ws-item-people:hover, .ws-item-leave:hover { background: var(--accent-soft); color: var(--accent); }
 
 .ws-sep { height: 1px; margin: 4px 2px; background: var(--line); }
+
+/* How many invitations are waiting, on the trigger itself: the one place that
+   is always on screen, and the only way into a workspace you were asked to join. */
+.ws-badge {
+  flex: 0 0 auto; min-width: 16px; height: 16px; padding: 0 5px;
+  display: grid; place-items: center;
+  border-radius: 8px; background: var(--accent); color: #fff;
+  font-size: 10px; font-weight: 600; line-height: 1;
+}
+.ws-section { padding: 4px 7px 2px; font-size: var(--t-xs); color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; }
+.ws-invite, .ws-closed-row {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 7px; font-size: var(--t-sm); color: var(--ink);
+}
+.ws-closed-row { flex-direction: row; align-items: center; justify-content: space-between; gap: var(--s2); }
+.ws-invite-what { min-width: 0; line-height: 1.4; }
+.ws-invite-actions { display: flex; gap: 6px; }
+.ws-item-leave { margin-left: 2px; }
+
+/* The rename and close controls in a workspace's dialog. */
+.ws-admin { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--s3); }
+.ws-admin-row { display: flex; gap: 6px; }
+.ws-admin-row .input { flex: 1; min-width: 0; }
+.ws-admin-close { margin: var(--s3) 0 0; padding-top: var(--s3); border-top: 1px solid var(--line); align-items: flex-start; }
+
+/* The mindmap settings' workspace picker. */
+.mm-move { display: flex; gap: 6px; }
+.mm-move .input { flex: 1; min-width: 0; }
 
 /* Pushes the dialog's buttons right, matching the other dialogs. */
 .ws-spacer { flex: 1; }
