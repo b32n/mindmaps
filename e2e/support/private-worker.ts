@@ -25,6 +25,28 @@ function freePort(): Promise<number> {
   });
 }
 
+/**
+ * A migrated, empty database per config, made once per test process and copied
+ * for each Worker: applying the migrations through wrangler is most of what
+ * starting one costs.
+ */
+const templates = new Map<string, string>();
+function template(config: string): string {
+  const have = templates.get(config);
+  if (have) return have;
+  const dir = `.e2e-state-private-tpl-${process.pid}-${config.replace(/\W/g, "")}`;
+  spawnSync("rm", ["-rf", `${root}${dir}`]);
+  const m = spawnSync(wrangler, ["d1", "migrations", "apply", "DB", "--local", "--persist-to", dir, "-c", config], {
+    cwd: root,
+    env,
+    encoding: "utf8",
+  });
+  if (m.status !== 0) throw new Error(`migrations failed: ${m.stderr}`);
+  templates.set(config, dir);
+  process.on("exit", () => spawnSync("rm", ["-rf", `${root}${dir}`]));
+  return dir;
+}
+
 export interface PrivateWorkerOptions {
   /** MINDMAPS_MODE; omit to leave it unset. */
   mode?: string;
@@ -53,12 +75,8 @@ export class PrivateWorker {
   async start() {
     this.port = await freePort();
     spawnSync("rm", ["-rf", `${root}${this.stateDir}`]);
-    const m = spawnSync(
-      wrangler,
-      ["d1", "migrations", "apply", "DB", "--local", "--persist-to", this.stateDir, "-c", this.config],
-      { cwd: root, env, encoding: "utf8" },
-    );
-    if (m.status !== 0) throw new Error(`migrations failed: ${m.stderr}`);
+    const copied = spawnSync("cp", ["-r", `${root}${template(this.config)}`, `${root}${this.stateDir}`]);
+    if (copied.status !== 0) throw new Error("could not copy the migrated database");
     await this.listen();
     return this;
   }

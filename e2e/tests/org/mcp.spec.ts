@@ -32,14 +32,16 @@ test.describe("MCP on an org-mode instance", () => {
     const listed = await agent.call("list_mindmaps", {});
     expect(listed.isError).toBe(false);
     expect(listed.text).toContain("Plans");
-    const made = await agent.call("create_mindmap", { name: "Agent notes" });
-    expect(made.isError).toBe(false);
+    await agent.call("recall", { query: "agent notes" }); // create_mindmap is refused without one
+    const made = await agent.call("create_mindmap", { name: "Agent notes", nodes: [{ key: "a", title: "One" }] });
+    expect(made.isError, made.text).toBe(false);
     const inOrg = (await listBoards(owner)).find((b) => b.name === "Agent notes");
     expect(inOrg?.workspace_id).toBe(org.id);
 
     // choosing Personal explicitly still works
     const personal = await connectMcp(owner, { workspace: (await owner.get("/api/workspaces").then((r) => r.json())).find((x: any) => x.personal).id });
-    await personal.call("create_mindmap", { name: "Private notes" });
+    await personal.call("recall", { query: "private notes" });
+    await personal.call("create_mindmap", { name: "Private notes", nodes: [{ key: "a", title: "One" }] });
     expect((await listBoards(owner)).find((b) => b.name === "Private notes")?.workspace_id).not.toBe(org.id);
 
     // an invited person who has not accepted yet is outside: Personal, as before

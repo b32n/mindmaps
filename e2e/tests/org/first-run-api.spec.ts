@@ -219,7 +219,12 @@ test.describe("org mode, sign-up open", () => {
     const outcomes = await Promise.all(people.map((c, i) => createOrganisation(c, { name: `Org ${i}` })));
     const codes = await Promise.all(outcomes.map(refusal));
     expect(codes.filter((c) => c.status === 201)).toHaveLength(1);
-    expect(codes.filter((c) => c.status === 403 && c.code === "not_instance_owner")).toHaveLength(5);
+    // The rest are refused whichever way the race fell: "not the owner" if they
+    // asked before the organisation existed, "exists" if after.
+    const refused = codes.filter(
+      (c) => (c.status === 403 && c.code === "not_instance_owner") || (c.status === 409 && c.code === "organisation_exists"),
+    );
+    expect(refused).toHaveLength(5);
   });
 
   test("if the only account deletes itself, taking the organisation with it, the next one can set it up again", async () => {

@@ -117,6 +117,19 @@ listen on the four ports above's successors (`E2E_MODE_PORT`, default
 it runs `scripts/install.mjs --dry-run` from a temp copy of the repo and tests
 `scripts/lib/install-config.mjs` directly.
 
+## Specs with a Worker of their own (`support/private-worker.ts`)
+
+Some things need a database nobody has touched, or one a mode is switched under.
+`e2e/tests/org` (first run, the organisation, the race, an install with data
+switched to org mode, MCP on an org instance) starts a `PrivateWorker` per test:
+its own free port, its own state dir (`.e2e-state-private-*`, ignored by git), and
+`wrangler.test-closed.toml` (sign-up closed, the real default) or
+`wrangler.test.toml` (open). `restart(mode)` stops it and starts it again on the
+same database with another `MINDMAPS_MODE`, which is how "existing data, then
+org mode" is exercised. It is stopped through its own process group, never by a
+name pattern. Each start costs a few seconds, so these specs are few and
+deliberate; `modes.spec.ts` and `create-ui.spec.ts` use the shared mode Workers.
+
 ## Layout
 
 ```
