@@ -138,7 +138,7 @@ export interface ApiWorkspace {
   name: string;
   owner_id: string;
   personal: number;
-  role: "owner" | "editor" | "viewer";
+  role: "owner" | "admin" | "editor" | "viewer";
 }
 
 export async function listWorkspaces(request: APIRequestContext): Promise<ApiWorkspace[]> {
@@ -153,7 +153,9 @@ export async function createWorkspace(request: APIRequestContext, name: string):
 export type Shareable = "workspaces" | "boards" | "artefacts";
 
 export interface ApiMembers {
-  members: { user_id: string; email: string; name: string | null; role: "editor" | "viewer"; created_at: number }[];
+  members: { user_id: string; email: string; name: string | null; role: "admin" | "editor" | "viewer"; created_at: number }[];
+  owner?: { user_id: string; email: string; name: string | null };
+  role?: string;
   pending: { token: string; email: string; role: "editor" | "viewer" }[];
 }
 

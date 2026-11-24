@@ -27,8 +27,13 @@ export function SettingsDialog({
   // the delete-account form: closed, or open with what has been typed so far
   const [deleting, setDeleting] = useState<{ typed: string; busy: boolean; error: string | null } | null>(null);
 
+  // shared workspaces this account owns that other people are in
+  const [blockers, setBlockers] = useState<Array<{ id: string; name: string }>>([]);
+
   useEffect(() => {
     if (!open) return;
+    setBlockers([]);
+    auth.deleteBlockers().then((r) => setBlockers(r.workspaces)).catch(() => {});
     setConnections(null);
     setError(null);
     setDeleting(null);
@@ -62,6 +67,13 @@ export function SettingsDialog({
       // outlive the account, and the sign-in page must load with no session.
       window.location.assign("/login?notice=deleted");
     } catch (e) {
+      if ((e as { status?: number }).status === 409) {
+        // Refused because of a shared workspace: say so once, in the warning
+        // above the button, and close the confirmation that can no longer work.
+        setDeleting(null);
+        auth.deleteBlockers().then((r) => setBlockers(r.workspaces)).catch(() => {});
+        return;
+      }
       setDeleting({ ...deleting, busy: false, error: (e as Error).message });
     }
   }
@@ -142,10 +154,22 @@ export function SettingsDialog({
           connected app at once. Anything you have shared with others stops working.
           This cannot be undone; download your data first if you want a copy.
         </p>
+        {blockers.length > 0 && (
+          <div className="modal-warn" data-testid="delete-blockers">
+            <p>
+              You can't delete your account yet. You own{" "}
+              {blockers.map((w) => `“${w.name}”`).join(", ")}, and other people are in{" "}
+              {blockers.length === 1 ? "it" : "them"}. Transfer ownership to another member
+              (open the workspace menu, then People, then Make owner), or remove the members,
+              then come back.
+            </p>
+          </div>
+        )}
         {!deleting && (
           <div>
             <button
               className="btn btn-danger"
+              disabled={blockers.length > 0}
               onClick={() => setDeleting({ typed: "", busy: false, error: null })}
             >
               Delete account…

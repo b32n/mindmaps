@@ -14,15 +14,23 @@
  *
  * The ordering of privilege is fixed and total:
  *
- *   owner > editor > viewer > nothing
+ *   owner > admin > editor > viewer > nothing
  *
  * Owner is never a membership row. It lives in `workspaces.owner_id`, so it
  * cannot be revoked by editing a table that grants lesser roles.
+ *
+ * Admin exists only in shared workspaces (organisations), never in a personal
+ * home, and only as a workspace role: board shares and artefact grants top out
+ * at editor. It is stored as `workspace_members.admin = 1` beside
+ * `role = 'editor'` (see migration 0029), so `MEMBER_ROLE` is how SQL reads it.
  */
 
-export type Role = "owner" | "editor" | "viewer";
+export type Role = "owner" | "admin" | "editor" | "viewer";
 
-const RANK: Record<Role, number> = { viewer: 1, editor: 2, owner: 3 };
+const RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3, owner: 4 };
+
+/** The role a `workspace_members` row grants, as SQL. `m` is the row's alias. */
+export const MEMBER_ROLE = (m = "m") => `CASE WHEN ${m}.admin = 1 THEN 'admin' ELSE ${m}.role END`;
 
 export function strongest(...roles: Array<Role | null | undefined>): Role | null {
   let best: Role | null = null;
@@ -31,9 +39,16 @@ export function strongest(...roles: Array<Role | null | undefined>): Role | null
 }
 
 export const canRead = (r: Role | null): boolean => r !== null;
-export const canWrite = (r: Role | null): boolean => r === "editor" || r === "owner";
-/** Deleting a mindmap or a workspace, and managing who is in it. Never an editor. */
-export const canAdmin = (r: Role | null): boolean => r === "owner";
+export const canWrite = (r: Role | null): boolean =>
+  r === "editor" || r === "admin" || r === "owner";
+/**
+ * Deleting or renaming a mindmap, and managing who is in a workspace. Owners
+ * and admins; never an editor. The one place this is decided: every check that
+ * used to say "owner" now asks this.
+ */
+export const canAdmin = (r: Role | null): boolean => r === "owner" || r === "admin";
+/** Only the owner: transferring ownership, and appointing or removing admins. */
+export const isOwner = (r: Role | null): boolean => r === "owner";
 
 // ---------------------------------------------------------------------------
 // SQL fragments
@@ -121,7 +136,7 @@ export async function workspaceRole(
     .prepare(
       `SELECT CASE
                 WHEN w.owner_id = ?1 THEN 'owner'
-                ELSE (SELECT m.role FROM workspace_members m
+                ELSE (SELECT ${MEMBER_ROLE("m")} FROM workspace_members m
                        WHERE m.workspace_id = w.id AND m.user_id = ?1)
               END AS role
          FROM workspaces w WHERE w.id = ?2`,
@@ -146,7 +161,7 @@ export async function boardRole(
     .prepare(
       `SELECT CASE
                 WHEN w.owner_id = ?1 THEN 'owner'
-                ELSE (SELECT m.role FROM workspace_members m
+                ELSE (SELECT ${MEMBER_ROLE("m")} FROM workspace_members m
                        WHERE m.workspace_id = w.id AND m.user_id = ?1)
               END AS ws_role,
               (SELECT bs.role FROM board_shares bs
@@ -170,7 +185,7 @@ export async function nodeRole(
     .prepare(
       `SELECT CASE
                 WHEN w.owner_id = ?1 THEN 'owner'
-                ELSE (SELECT m.role FROM workspace_members m
+                ELSE (SELECT ${MEMBER_ROLE("m")} FROM workspace_members m
                        WHERE m.workspace_id = w.id AND m.user_id = ?1)
               END AS ws_role,
               (SELECT bs.role FROM board_shares bs
@@ -206,7 +221,7 @@ export async function workspacesFor(db: D1Database, userId: string): Promise<Wor
     .prepare(
       `SELECT w.id, w.name, w.owner_id, w.personal,
               CASE WHEN w.owner_id = ?1 THEN 'owner'
-                   ELSE (SELECT m.role FROM workspace_members m
+                   ELSE (SELECT ${MEMBER_ROLE("m")} FROM workspace_members m
                           WHERE m.workspace_id = w.id AND m.user_id = ?1)
               END AS role
          FROM workspaces w

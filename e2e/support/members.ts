@@ -13,7 +13,8 @@ export class MembersPanel {
   }
 
   role() {
-    return this.root.getByRole("combobox");
+    // the invite form's own select, not the per-row role controls
+    return this.root.locator(".members-add").getByRole("combobox");
   }
 
   rows() {
@@ -74,4 +75,29 @@ export async function openWorkspacePeople(page: Page, workspaceName: string) {
 export async function switchWorkspace(page: Page, name: string | RegExp) {
   await page.locator(".ws-trigger").click();
   await page.getByRole("menuitem", { name }).click();
+}
+
+/** Row-level controls of the workspace People dialog (roles and ownership). */
+export class PeopleRow {
+  constructor(readonly row: Locator) {}
+
+  roleSelect() {
+    return this.row.getByRole("combobox");
+  }
+
+  makeOwner() {
+    return this.row.getByRole("button", { name: "Make owner" });
+  }
+
+  remove() {
+    return this.row.getByRole("button", { name: "Remove" });
+  }
+
+  confirmTransfer() {
+    return this.row.getByRole("button", { name: "Confirm transfer" });
+  }
+
+  cancelTransfer() {
+    return this.row.getByRole("button", { name: "Cancel" });
+  }
 }

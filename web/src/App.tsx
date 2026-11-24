@@ -405,7 +405,15 @@ export function BoardApp() {
         onClose={() => setWsDialog(null)}
         width={520}
       >
-        {wsDialog && <MembersPanel kind="workspaces" id={wsDialog.id} ownerId={wsDialog.owner_id} />}
+        {wsDialog && (
+          <MembersPanel
+            kind="workspaces"
+            id={wsDialog.id}
+            ownerId={wsDialog.owner_id}
+            myRole={wsDialog.role}
+            onTransferred={() => api.workspaces().then(setWorkspaces)}
+          />
+        )}
       </Modal>
 
       <SettingsDialog open={settingsOpen} user={user} onClose={() => setSettingsOpen(false)} />

@@ -42,6 +42,7 @@
  * rule for when there is one, and removing members is what can be done today.
  */
 
+import { MEMBER_ROLE } from "./access";
 import { verifyPassword } from "./auth";
 import { artefactKey, isArtefact } from "./artefacts";
 import { filesOf, type FileEnv } from "./files";
@@ -181,7 +182,7 @@ async function build(env: AccountEnv, who: Who, zip: ZipWriter): Promise<void> {
 
   const ref = (kind: string) => (r: Row) => ({ kind, id: r.id, role: r.role });
   const sharedWithMe = [
-    ...(await all(`SELECT workspace_id AS id, role FROM workspace_members WHERE user_id = ?1`)).map(ref("workspace")),
+    ...(await all(`SELECT workspace_id AS id, ${MEMBER_ROLE("workspace_members")} AS role FROM workspace_members WHERE user_id = ?1`)).map(ref("workspace")),
     ...(await all(`SELECT board_id AS id, role FROM board_shares WHERE user_id = ?1`)).map(ref("mindmap")),
     ...(await all(`SELECT node_id AS id, role FROM artefact_grants WHERE user_id = ?1`)).map(ref("artefact")),
   ];
@@ -298,6 +299,29 @@ async function build(env: AccountEnv, who: Who, zip: ZipWriter): Promise<void> {
 // Deletion
 // ---------------------------------------------------------------------------
 
+/**
+ * Workspaces this account owns that other active people are still in. Deleting
+ * the account would delete them, content and all, so it is refused until each
+ * is transferred to another member or emptied.
+ *
+ * Nothing here relies on `workspaces.owner_id ... ON DELETE CASCADE`: the
+ * `users` row is never deleted (only marked), and the workspace rows go by name
+ * in `purgeOwnedContent`, after this check has passed.
+ */
+export async function deletionBlockers(db: D1Database, userId: string): Promise<Array<{ id: string; name: string }>> {
+  const rows = await db
+    .prepare(
+      `SELECT w.id, w.name FROM workspaces w
+        WHERE w.owner_id = ?1
+          AND EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id
+                       WHERE m.workspace_id = w.id AND m.user_id <> ?1 AND u.status = 'active')
+        ORDER BY w.created_at`,
+    )
+    .bind(userId)
+    .all<{ id: string; name: string }>();
+  return rows.results ?? [];
+}
+
 export type DeleteOutcome =
   | { ok: true }
   | { ok: false; status: 400 | 404 | 409; error: string; workspaces?: Array<{ id: string; name: string }> };
@@ -333,24 +357,17 @@ export async function deleteAccount(
   if (!emailOk && !passwordOk)
     return { ok: false, status: 400, error: "That does not match. Confirm by typing your account's email address." };
 
-  const crowded = await env.DB.prepare(
-    `SELECT w.id, w.name FROM workspaces w
-      WHERE w.owner_id = ?1
-        AND EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id <> ?1)
-      ORDER BY w.created_at`,
-  )
-    .bind(userId)
-    .all<{ id: string; name: string }>();
-  const workspaces = crowded.results ?? [];
+  const workspaces = await deletionBlockers(env.DB, userId);
   if (workspaces.length) {
     const names = workspaces.map((w) => `“${w.name}”`).join(", ");
+    const many = workspaces.length > 1;
     return {
       ok: false,
       status: 409,
       error:
-        `You own ${names}, and other people are in ${workspaces.length === 1 ? "it" : "them"}. ` +
-        `Transfer ${workspaces.length === 1 ? "it" : "them"} or remove ${workspaces.length === 1 ? "its" : "their"} ` +
-        `members first, then delete your account.`,
+        `You own ${names}, and other people are in ${many ? "them" : "it"}. ` +
+        `Transfer ownership of ${many ? "them" : "it"} to another member (the workspace's People dialog), ` +
+        `or remove ${many ? "their" : "its"} members, then delete your account.`,
       workspaces,
     };
   }
@@ -365,6 +382,9 @@ export async function deleteAccount(
  * so it happens entirely or not at all.
  */
 export async function closeAccount(db: D1Database, userId: string): Promise<void> {
+  // The same refusal as `deleteAccount`, repeated where the destruction is, so
+  // no caller can reach it without passing the guard.
+  if ((await deletionBlockers(db, userId)).length) throw new Error("account still owns a shared workspace");
   const at = now();
   const one = (sql: string, ...args: Array<string | number>) => db.prepare(sql).bind(...args);
   await db.batch([
