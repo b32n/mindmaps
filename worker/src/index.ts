@@ -40,6 +40,11 @@ import { blocksToMarkdown, parseDoc } from "./markdown";
 import { createStarterBoard } from "./starter";
 import { deleteAccount, deletionBlockers, exportAccount, exportFilename, finishDeletions, type AccountEnv } from "./account";
 import { modeProblem, readMode } from "./mode";
+import { capturedMail, mailConfigured, type EmailBinding } from "./mail";
+import {
+  INVALID_LINK, RATE_LIMITED, UNCONFIGURED, clientIp, consumeToken, isVerified, markVerified, rateBlocked,
+  rateHit, resetPassword, revokeAccess, sendResetEmail, sendVerificationEmail, type Limit,
+} from "./emailauth";
 import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
 export interface Env {
@@ -64,6 +69,16 @@ export interface Env {
   MINDMAPS_MODE?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  /** Google's token and tokeninfo endpoints; only the e2e suite points these elsewhere */
+  GOOGLE_TOKEN_URL?: string;
+  GOOGLE_TOKENINFO_URL?: string;
+  /** outbound email: the Email Sending binding and who mail comes from; see mail.ts, docs/EMAIL.md */
+  EMAIL?: EmailBinding;
+  MAIL_FROM?: string;
+  MAIL_FROM_NAME?: string;
+  MAIL_DOMAIN?: string;
+  /** "capture" keeps mail in R2 for tests; never set it on a real install */
+  MAIL_TRANSPORT?: string;
   /** where the browser lands after Google sends us back */
   APP_ORIGIN?: string;
   /** stable public origin; see issuerOf in oauth.ts */
@@ -208,7 +223,13 @@ export default {
       const user = await userForToken(env.DB, readCookie(req, SESSION_COOKIE));
 
       // auth endpoints are the only ones reachable signed-out
-      if (seg[1] === "auth") return await authRoute(req, env, seg, user);
+      if (seg[1] === "auth") return await authRoute(req, env, seg, user, ctx);
+
+      // The e2e suite's window onto captured mail. 404 unless MAIL_TRANSPORT is "capture".
+      if (seg[0] === "api" && seg[1] === "_mail" && req.method === "GET") {
+        const sent = await capturedMail(env, url.searchParams.get("to") ?? "");
+        return sent ? json(env, sent) : json(env, { error: "not found" }, 404);
+      }
 
       if (!user) return json(env, { error: "not signed in" }, 401);
       return await route(req, env, seg, user, ctx);
@@ -1714,16 +1735,39 @@ async function authRoute(
   env: Env,
   seg: string[],
   user: SessionUser | null,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const [, , action] = seg; // ["api","auth",action,...]
   const m = req.method;
+  const ip = clientIp(req, env);
+  const body = async (): Promise<any> => (await req.json().catch(() => null)) ?? {};
+  const tooMany = () =>
+    new Response(JSON.stringify({ error: RATE_LIMITED, code: "rate_limited" }), {
+      status: 429,
+      headers: { "content-type": "application/json", "retry-after": "900", ...cors(env) },
+    });
+  /** Count an attempt against each limit; false as soon as one is used up. */
+  const within = async (...checks: [Limit, string | null][]) => {
+    for (const [limit, subject] of checks) if (!(await rateHit(env.DB, limit, subject))) return false;
+    return true;
+  };
+  /** Mail is sent after the response, so how long a request takes does not say whether an account exists. */
+  const origin = env.APP_ORIGIN ?? issuerOf(req, env);
 
   if (action === "me" && m === "GET") {
-    return json(env, { user, googleEnabled: !!env.GOOGLE_CLIENT_ID, mode: readMode(env) });
+    return json(env, {
+      user,
+      googleEnabled: !!env.GOOGLE_CLIENT_ID,
+      mode: readMode(env),
+      // can this instance send mail, and has this user's address been proven
+      emailEnabled: mailConfigured(env),
+      emailVerified: user ? await isVerified(env.DB, user.id) : null,
+    });
   }
 
   if (action === "register" && m === "POST") {
-    const { email, password, name } = await req.json<any>();
+    if (!(await within(["register_ip", ip]))) return tooMany();
+    const { email, password, name } = await body();
     const addr = String(email ?? "").trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr))
       return json(env, { error: "That doesn't look like an email address." }, 400);
@@ -1756,12 +1800,16 @@ async function authRoute(
     // Awaited, not fire-and-forget: the redirect lands on /app immediately and
     // a board that appears a beat later reads as a bug. It cannot throw.
     await createStarterBoard(env, uid, issuerOf(req, env));
+    ctx.waitUntil(sendVerificationEmail(env, origin, uid, addr));
     return signIn(req, env, uid);
   }
 
   if (action === "login" && m === "POST") {
-    const { email, password } = await req.json<any>();
+    const { email, password } = await body();
     const addr = String(email ?? "").trim().toLowerCase();
+    // Failed attempts are what is counted, so a correct password is never locked out by its own successes.
+    if ((await rateBlocked(env.DB, "login_email", addr)) || (await rateBlocked(env.DB, "login_ip", ip)))
+      return tooMany();
     const row = await env.DB.prepare(
       `SELECT id, password_hash, password_salt FROM users WHERE email = ? AND status = 'active'`,
     )
@@ -1770,12 +1818,66 @@ async function authRoute(
 
     // Same message whether the account is missing, has no password (Google
     // only), or the password is wrong — don't leak which emails exist.
-    const bad = () => json(env, { error: "Email or password is incorrect." }, 401);
-    if (!row?.password_hash || !row.password_salt) return bad();
+    const bad = async () => {
+      await rateHit(env.DB, "login_email", addr);
+      await rateHit(env.DB, "login_ip", ip);
+      return json(env, { error: "Email or password is incorrect." }, 401);
+    };
+    if (!row?.password_hash || !row.password_salt) return await bad();
     if (!(await verifyPassword(String(password ?? ""), row.password_hash, row.password_salt)))
-      return bad();
+      return await bad();
 
     return signIn(req, env, row.id);
+  }
+
+  // --- email verification and password reset -------------------------------
+  // docs/EMAIL.md has the rules; the logic is in emailauth.ts.
+
+  /** Spend the link from the verification email. POST, so a mail scanner that only fetches the page cannot use it up. */
+  if (action === "verify-email" && m === "POST") {
+    if (!(await within(["verify_ip", ip]))) return tooMany();
+    const spent = await consumeToken(env.DB, (await body()).token, "verify");
+    if (!spent) return json(env, { error: INVALID_LINK, code: "invalid_link" }, 400);
+    await markVerified(env.DB, spent.userId, "email");
+    // Invites that were held back while the address was unproven.
+    await claimInvites(env, spent.userId, spent.email);
+    return json(env, { ok: true });
+  }
+
+  if (action === "resend-verification" && m === "POST") {
+    if (!user) return json(env, { error: "not signed in" }, 401);
+    if (!mailConfigured(env)) return json(env, { error: UNCONFIGURED, code: "email_unconfigured" }, 501);
+    if (await isVerified(env.DB, user.id)) return json(env, { ok: true, alreadyVerified: true });
+    if (!(await within(["resend_user", user.id], ["resend_ip", ip]))) return tooMany();
+    ctx.waitUntil(sendVerificationEmail(env, origin, user.id, user.email));
+    return json(env, { ok: true });
+  }
+
+  /**
+   * Always the same answer for an address with an account and one without, and
+   * the rate limit counts the address either way, so nothing here says which
+   * addresses exist.
+   */
+  if (action === "forgot-password" && m === "POST") {
+    if (!mailConfigured(env)) return json(env, { error: UNCONFIGURED, code: "email_unconfigured" }, 501);
+    const addr = String((await body()).email ?? "").trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr))
+      return json(env, { error: "That doesn't look like an email address." }, 400);
+    if (!(await within(["forgot_email", addr], ["forgot_ip", ip]))) return tooMany();
+    const row = await env.DB.prepare(`SELECT id FROM users WHERE email = ? AND status = 'active'`)
+      .bind(addr)
+      .first<{ id: string }>();
+    if (row) ctx.waitUntil(sendResetEmail(env, origin, row.id, addr));
+    return json(env, { ok: true });
+  }
+
+  if (action === "reset-password" && m === "POST") {
+    if (!(await within(["reset_ip", ip]))) return tooMany();
+    const { token, password } = await body();
+    const out = await resetPassword(env.DB, token, password);
+    if (!out.ok)
+      return json(env, { error: out.error, ...(out.problems ? { problems: out.problems } : { code: "invalid_link" }) }, out.status);
+    return json(env, { ok: true });
   }
 
   /**
@@ -1831,7 +1933,9 @@ async function authRoute(
   // Authorization-code flow. The `state` row is single-use and short-lived,
   // which is what stops a third party replaying our callback.
 
-  if (action === "google" && m === "GET") {
+  // `!seg[3]`: without it this branch also answered /google/callback, sent the
+  // browser back to Google, and the callback below was never reached.
+  if (action === "google" && !seg[3] && m === "GET") {
     if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET)
       return json(env, { error: "Google sign-in isn't configured." }, 501);
 
@@ -1875,7 +1979,7 @@ async function authRoute(
     await env.DB.prepare(`DELETE FROM oauth_states WHERE state = ?`).bind(state).run();
     if (!row) return fail("That sign-in link expired. Try again.");
 
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    const tokenRes = await fetch(env.GOOGLE_TOKEN_URL ?? "https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -1894,7 +1998,7 @@ async function authRoute(
     // signature ourselves — the code was just exchanged over TLS with our
     // client secret, so this is about validating claims, not transport.
     const infoRes = await fetch(
-      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(id_token)}`,
+      `${env.GOOGLE_TOKENINFO_URL ?? "https://oauth2.googleapis.com/tokeninfo"}?id_token=${encodeURIComponent(id_token)}`,
     );
     if (!infoRes.ok) return fail("Couldn't verify the Google account.");
     const info = await infoRes.json<any>();
@@ -1906,21 +2010,40 @@ async function authRoute(
     const sub = String(info.sub ?? "");
     if (!email || !sub) return fail("Google didn't return an email address.");
 
+    // Google vouches for the address only when it says so outright.
+    const googleVerified = info.email_verified === true || info.email_verified === "true";
+
     // Match on google_sub first, then fall back to email so an existing
     // password account links rather than duplicating.
-    let existing = await env.DB.prepare(`SELECT id FROM users WHERE google_sub = ? AND status = 'active'`)
+    let existing = await env.DB.prepare(`SELECT id, email FROM users WHERE google_sub = ? AND status = 'active'`)
       .bind(sub)
-      .first<{ id: string }>();
+      .first<{ id: string; email: string }>();
     if (!existing) {
-      existing = await env.DB.prepare(`SELECT id FROM users WHERE email = ? AND status = 'active'`)
+      const byEmail = await env.DB.prepare(
+        `SELECT id, email, email_verified_at AS verified FROM users WHERE email = ? AND status = 'active'`,
+      )
         .bind(email)
-        .first<{ id: string }>();
-      if (existing) {
+        .first<{ id: string; email: string; verified: number | null }>();
+      // Linking by address needs Google to have verified it; otherwise anyone
+      // could take over an account by presenting its email from elsewhere.
+      if (byEmail && !googleVerified) return fail("That Google account has no verified email.");
+      if (byEmail) {
+        existing = byEmail;
         await env.DB.prepare(`UPDATE users SET google_sub = ?, updated_at = ? WHERE id = ?`)
-          .bind(sub, now(), existing.id)
+          .bind(sub, now(), byEmail.id)
           .run();
+        // An account whose address was never proven may have been made by
+        // someone else who typed it in. Its password is theirs: remove it and
+        // end their sessions, so the real owner is the only one left in.
+        if (!byEmail.verified) {
+          await env.DB.prepare(`UPDATE users SET password_hash = NULL, password_salt = NULL WHERE id = ?`)
+            .bind(byEmail.id)
+            .run();
+          await revokeAccess(env.DB, byEmail.id);
+        }
       }
     }
+    if (existing && googleVerified && existing.email === email) await markVerified(env.DB, existing.id, "google");
 
     let uid = existing?.id;
     if (!uid) {
@@ -1932,6 +2055,7 @@ async function authRoute(
       )
         .bind(uid, email, String(info.name ?? ""), info.picture ?? null, sub, now(), now())
         .run();
+      if (googleVerified) await markVerified(env.DB, uid, "google");
       // Only inside this branch: `existing` means a returning account, and a
       // second Google sign-in is not a signup.
       await createStarterBoard(env, uid, issuerOf(req, env));

@@ -18,9 +18,10 @@
  * a lookalike address.
  */
 
+import { mayClaimInvites, type EmailAuthEnv } from "./emailauth";
 import { MEMBER_ROLE, canAdmin, canWrite, boardRole, isOwner, nodeRole, workspaceRole, type Role } from "./access";
 
-export interface MemberEnv {
+export interface MemberEnv extends EmailAuthEnv {
   DB: D1Database;
 }
 
@@ -124,8 +125,14 @@ export async function invite(
         return { added: { userId: existing.id, email: existing.email, role } };
       }
     }
-    await addMember(env, target, targetId, existing.id, role, inviterId);
-    return { added: { userId: existing.id, email: existing.email, role } };
+    // An account whose address was never proven may belong to someone who only
+    // typed it in. Adding it would hand them access meant for the real owner,
+    // so the invite waits, as it would for an address with no account, and is
+    // claimed once the address is verified (see claimInvites).
+    if (await mayClaimInvites(env, existing.id)) {
+      await addMember(env, target, targetId, existing.id, role, inviterId);
+      return { added: { userId: existing.id, email: existing.email, role } };
+    }
   }
 
   const token = inviteToken();
@@ -242,6 +249,8 @@ export async function claimInvites(
 ): Promise<number> {
   const email = normaliseEmail(rawEmail);
   if (!email) return 0;
+  // Invites are addressed to an email, so they are only handed to an account that has proven it owns it.
+  if (!(await mayClaimInvites(env, userId))) return 0;
 
   const { results } = await env.DB.prepare(
     `SELECT token, target_type, target_id, role FROM invites
