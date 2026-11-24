@@ -35,6 +35,7 @@
  */
 
 import { ensurePersonalWorkspace, workspacesFor, type WorkspaceRow } from "./access";
+import { defaultConnectWorkspace } from "./organisation";
 import { SESSION_COOKIE, readCookie, userForToken } from "./auth";
 
 const CODE_TTL_MS = 60_000; // codes are used within seconds; a minute is generous
@@ -353,6 +354,10 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
   // somehow missing, so there is always at least the one to default to.
   await ensurePersonalWorkspace(env.DB, user.id);
   const workspaces = await workspacesFor(env.DB, user.id);
+  // Personal, unless this is an org-mode instance and the person is in its
+  // organisation: then the organisation (see organisation.ts).
+  const homeId = await defaultConnectWorkspace(env, workspaces.map((w) => w.id));
+  const home = workspaces.find((w) => w.id === homeId) ?? workspaces.find((w) => w.personal) ?? workspaces[0];
 
   // POST means the user pressed Approve on the consent screen.
   if (req.method === "POST") {
@@ -363,7 +368,7 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
     const chosen = new URLSearchParams(await req.text()).get("workspace") ?? "";
     const workspace = chosen
       ? workspaces.find((w) => w.id === chosen)
-      : (workspaces.find((w) => w.personal) ?? workspaces[0]);
+      : home;
     if (!workspace) return errorPage("Unknown workspace", "That workspace isn't one you belong to. Nothing was connected.");
 
     const code = randomToken();
@@ -388,7 +393,7 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
     return back({ code });
   }
 
-  return consentPage(client.client_name, user.email, requested, url.search, workspaces);
+  return consentPage(client.client_name, user.email, requested, url.search, workspaces, home?.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -652,6 +657,7 @@ function consentPage(
   scopes: string[],
   search: string,
   workspaces: WorkspaceRow[],
+  homeId?: string,
 ) {
   const items = scopes
     .map((s) => `<li><span>✓</span><b>${esc(SCOPE_COPY[s] ?? s)}</b></li>`)
@@ -662,7 +668,7 @@ function consentPage(
      <p>It's asking for access to your mindmaps. It will never see your password.</p>
      <div class="who">Signed in as ${esc(email)}</div>
      <ul>${items}</ul>
-     ${workspacePicker(workspaces)}
+     ${workspacePicker(workspaces, homeId)}
      <form method="POST" action="/oauth/authorize${esc(search)}">
        <div class="row">
          <a class="btn" href="/oauth/deny">Cancel</a>
@@ -676,9 +682,9 @@ function consentPage(
  * Where this connection will work. Several workspaces get a select, Personal
  * chosen; a person with only the one is told which it is rather than asked.
  */
-function workspacePicker(workspaces: WorkspaceRow[]): string {
+function workspacePicker(workspaces: WorkspaceRow[], homeId?: string): string {
   if (workspaces.length < 2) return `<p class="ws">Workspace: <b>${esc(workspaces[0]?.name ?? "Personal")}</b></p>`;
-  const first = workspaces.find((w) => w.personal) ?? workspaces[0]!;
+  const first = workspaces.find((w) => w.id === homeId) ?? workspaces.find((w) => w.personal) ?? workspaces[0]!;
   const options = workspaces
     .map((w) => `<option value="${esc(w.id)}"${w.id === first.id ? " selected" : ""}>${esc(w.name)}</option>`)
     .join("");
