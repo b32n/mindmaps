@@ -6,6 +6,7 @@ import { AuthProvider, RequireAuth, RedirectIfAuthed } from "./AuthContext";
 import { HomePage } from "./pages/Home";
 import { BrainPage } from "./pages/Brain";
 import { LoginPage, RegisterPage } from "./pages/Auth";
+import { ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from "./pages/EmailAuth";
 import { BoardApp } from "./App";
 
 /**
@@ -38,6 +39,10 @@ createRoot(document.getElementById("root")!).render(
           {/* Public, and public on purpose: it is the page that explains what
               the thing is, so it has to be readable before you sign up. */}
           <Route path="/brain" element={<BrainPage />} />
+          {/* The pages the emailed links open; reachable signed in or out. */}
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route
             path="/login"
             element={
