@@ -23,7 +23,17 @@
  * home, and only as a workspace role: board shares and artefact grants top out
  * at editor. It is stored as `workspace_members.admin = 1` beside
  * `role = 'editor'` (see migration 0029), so `MEMBER_ROLE` is how SQL reads it.
+ *
+ * A closed workspace (migration 0030) is reachable by nobody. Every route to
+ * access in this file goes through it: the SQL fragments say `NOT_CLOSED`, the
+ * role lookups return null, and so the question "may this person read this?"
+ * has one answer for the owner, the members, a direct share and an artefact
+ * grant alike. The owner reopens it through `closedWorkspaceFacts`, which is
+ * deliberately not an access check.
  */
+
+/** How long after closing the owner can reopen a workspace. */
+export const CLOSE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type Role = "owner" | "admin" | "editor" | "viewer";
 
@@ -55,6 +65,15 @@ export const isOwner = (r: Role | null): boolean => r === "owner";
 // ---------------------------------------------------------------------------
 
 /**
+ * The board's workspace has not been closed. Written as the absence of a closed
+ * workspace, not the presence of an open one, so a board whose workspace row is
+ * missing (which the schema does not allow, but a half-finished deletion could
+ * leave) behaves as it did before closing existed rather than vanishing.
+ */
+export const NOT_CLOSED = (b = "b") =>
+  `NOT EXISTS (SELECT 1 FROM workspaces cw WHERE cw.id = ${b}.workspace_id AND cw.status <> 'active')`;
+
+/**
  * Boards this user may read, as a correlated subquery.
  *
  * A string rather than a function because it is spliced into queries that
@@ -67,12 +86,15 @@ export const isOwner = (r: Role | null): boolean => r === "owner";
  * simply stopped working. Callers pass the slot they actually bound.
  */
 export const BOARD_READABLE = (b = "b", p = 1) => `(
+  ${NOT_CLOSED(b)}
+  AND (
   EXISTS (SELECT 1 FROM workspaces w
            WHERE w.id = ${b}.workspace_id AND w.owner_id = ?${p})
   OR EXISTS (SELECT 1 FROM workspace_members wm
               WHERE wm.workspace_id = ${b}.workspace_id AND wm.user_id = ?${p})
   OR EXISTS (SELECT 1 FROM board_shares bs
               WHERE bs.board_id = ${b}.id AND bs.user_id = ?${p})
+  )
 )`;
 
 /**
@@ -83,8 +105,8 @@ export const BOARD_READABLE = (b = "b", p = 1) => `(
  */
 export const NODE_READABLE = (n = "n", b = "b", p = 1) => `(
   ${BOARD_READABLE(b, p)}
-  OR EXISTS (SELECT 1 FROM artefact_grants g
-              WHERE g.node_id = ${n}.id AND g.user_id = ?${p})
+  OR (${NOT_CLOSED(b)} AND EXISTS (SELECT 1 FROM artefact_grants g
+              WHERE g.node_id = ${n}.id AND g.user_id = ?${p}))
 )`;
 
 /**
@@ -126,7 +148,10 @@ export const IN_BOARD_WORKSPACE = (b = "b", pWs = 2, pUser = 1) => `(
 // Role lookups
 // ---------------------------------------------------------------------------
 
-/** The strongest role this user holds on a workspace, or null. */
+/**
+ * The strongest role this user holds on a workspace, or null. A closed
+ * workspace is null for everyone: see the note at the top of this file.
+ */
 export async function workspaceRole(
   db: D1Database,
   userId: string,
@@ -139,7 +164,7 @@ export async function workspaceRole(
                 ELSE (SELECT ${MEMBER_ROLE("m")} FROM workspace_members m
                        WHERE m.workspace_id = w.id AND m.user_id = ?1)
               END AS role
-         FROM workspaces w WHERE w.id = ?2`,
+         FROM workspaces w WHERE w.id = ?2 AND w.status = 'active'`,
     )
     .bind(userId, workspaceId)
     .first<{ role: Role | null }>();
@@ -167,7 +192,7 @@ export async function boardRole(
               (SELECT bs.role FROM board_shares bs
                 WHERE bs.board_id = b.id AND bs.user_id = ?1) AS share_role
          FROM boards b LEFT JOIN workspaces w ON w.id = b.workspace_id
-        WHERE b.id = ?2`,
+        WHERE b.id = ?2 AND ${NOT_CLOSED("b")}`,
     )
     .bind(userId, boardId)
     .first<{ ws_role: Role | null; share_role: Role | null }>();
@@ -195,7 +220,7 @@ export async function nodeRole(
          FROM nodes n
          JOIN boards b ON b.id = n.board_id
          LEFT JOIN workspaces w ON w.id = b.workspace_id
-        WHERE n.id = ?2`,
+        WHERE n.id = ?2 AND ${NOT_CLOSED("b")}`,
     )
     .bind(userId, nodeId)
     .first<{ ws_role: Role | null; share_role: Role | null; grant_role: Role | null }>();
@@ -213,26 +238,55 @@ export interface WorkspaceRow {
   owner_id: string;
   personal: number;
   role: Role;
+  updated_at: number | null;
 }
 
-/** Every workspace this user can open, personal first. */
+/** Every workspace this user can open, personal first. Closed ones are not among them. */
 export async function workspacesFor(db: D1Database, userId: string): Promise<WorkspaceRow[]> {
   const rows = await db
     .prepare(
-      `SELECT w.id, w.name, w.owner_id, w.personal,
+      `SELECT w.id, w.name, w.owner_id, w.personal, w.updated_at,
               CASE WHEN w.owner_id = ?1 THEN 'owner'
                    ELSE (SELECT ${MEMBER_ROLE("m")} FROM workspace_members m
                           WHERE m.workspace_id = w.id AND m.user_id = ?1)
               END AS role
          FROM workspaces w
-        WHERE w.owner_id = ?1
-           OR EXISTS (SELECT 1 FROM workspace_members m
-                       WHERE m.workspace_id = w.id AND m.user_id = ?1)
+        WHERE w.status = 'active'
+          AND (w.owner_id = ?1
+               OR EXISTS (SELECT 1 FROM workspace_members m
+                           WHERE m.workspace_id = w.id AND m.user_id = ?1))
         ORDER BY w.personal DESC, w.created_at`,
     )
     .bind(userId)
     .all<WorkspaceRow>();
   return rows.results ?? [];
+}
+
+export interface ClosedWorkspaceRow {
+  id: string;
+  name: string;
+  closed_at: number;
+  reopen_until: number;
+  /** False once the retention window has passed. The row is still there; it is just not the owner's to undo. */
+  reopenable: boolean;
+}
+
+/** The workspaces this user owns that are closed, newest first. For the owner's reopen list only. */
+export async function closedWorkspacesFor(db: D1Database, userId: string): Promise<ClosedWorkspaceRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT id, name, closed_at FROM workspaces
+        WHERE owner_id = ?1 AND status = 'closed' AND personal = 0 AND closed_at IS NOT NULL
+        ORDER BY closed_at DESC`,
+    )
+    .bind(userId)
+    .all<{ id: string; name: string; closed_at: number }>();
+  const at = Date.now();
+  return (rows.results ?? []).map((r) => ({
+    ...r,
+    reopen_until: r.closed_at + CLOSE_RETENTION_MS,
+    reopenable: at <= r.closed_at + CLOSE_RETENTION_MS,
+  }));
 }
 
 /**
@@ -299,17 +353,23 @@ export async function recallScope(
     const [all, granted] = await Promise.all([
       db
         .prepare(
-          `SELECT w.id AS ns FROM workspaces w WHERE w.owner_id = ?1
+          `SELECT w.id AS ns FROM workspaces w WHERE w.owner_id = ?1 AND w.status = 'active'
             UNION
-           SELECT m.workspace_id AS ns FROM workspace_members m WHERE m.user_id = ?1
+           SELECT m.workspace_id AS ns FROM workspace_members m
+             JOIN workspaces w ON w.id = m.workspace_id
+            WHERE m.user_id = ?1 AND w.status = 'active'
             UNION
            SELECT b.workspace_id AS ns FROM board_shares bs
-             JOIN boards b ON b.id = bs.board_id WHERE bs.user_id = ?1`,
+             JOIN boards b ON b.id = bs.board_id WHERE bs.user_id = ?1 AND ${NOT_CLOSED("b")}`,
         )
         .bind(userId)
         .all<{ ns: string }>(),
       db
-        .prepare(`SELECT node_id FROM artefact_grants WHERE user_id = ?1`)
+        .prepare(
+          `SELECT g.node_id FROM artefact_grants g
+             JOIN nodes n ON n.id = g.node_id JOIN boards b ON b.id = n.board_id
+            WHERE g.user_id = ?1 AND ${NOT_CLOSED("b")}`,
+        )
         .bind(userId)
         .all<{ node_id: string }>(),
     ]);
@@ -326,7 +386,7 @@ export async function recallScope(
         `SELECT DISTINCT b.workspace_id AS ns
            FROM board_shares bs
            JOIN boards b ON b.id = bs.board_id
-          WHERE bs.user_id = ?1 AND b.workspace_id <> ?2`,
+          WHERE bs.user_id = ?1 AND b.workspace_id <> ?2 AND ${NOT_CLOSED("b")}`,
       )
       .bind(userId, workspaceId)
       .all<{ ns: string }>(),
@@ -336,7 +396,7 @@ export async function recallScope(
            FROM artefact_grants g
            JOIN nodes n ON n.id = g.node_id
            JOIN boards b ON b.id = n.board_id
-          WHERE g.user_id = ?1 AND b.workspace_id <> ?2`,
+          WHERE g.user_id = ?1 AND b.workspace_id <> ?2 AND ${NOT_CLOSED("b")}`,
       )
       .bind(userId, workspaceId)
       .all<{ node_id: string }>(),

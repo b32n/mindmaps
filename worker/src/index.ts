@@ -10,10 +10,11 @@ import {
   protectedResourceMetadata, registerClient, revoke, token as tokenEndpoint, unauthorized,
 } from "./oauth";
 import { removeCards } from "./semantic";
+import { closeWorkspace, moveBoard, moveBoardVectors, renameWorkspace, reopenWorkspace } from "./lifecycle";
 import { reapTrash, untrashNode, type TrashEnv } from "./r2trash";
 import {
   BOARD_READABLE, NODE_READABLE, boardRole, canAdmin, canWrite, ensurePersonalWorkspace,
-  nodeRole, workspaceRole, workspacesFor, type Role,
+  closedWorkspacesFor, nodeRole, workspaceRole, workspacesFor, type Role,
 } from "./access";
 import { mindboxOrigin, shareUrl } from "./links";
 import { fileUrl, frameUrl, serveFile, serveMindbox, type MindboxEnv } from "./mindbox";
@@ -22,8 +23,8 @@ import {
   wantsSnippet,
 } from "./files";
 import {
-  canGrant, changeMemberRole, claimInvites, invite, membersOf, removeMember, removeWorkspaceMember, revokeInvite,
-  transferOwnership, type Target,
+  acceptInvite, canGrant, changeMemberRole, declineInvite, invite, membersOf, pendingFor, removeMember,
+  removeWorkspaceMember, revokeInvite, transferOwnership, type Target,
 } from "./members";
 import {
   createShare, noteView, resolveShare, revokeShare, sharesFor, type ShareEnv,
@@ -698,11 +699,45 @@ async function route(
     const name = String(body?.name ?? "").trim() || "New workspace";
     const wsId = id();
     await env.DB.prepare(
-      `INSERT INTO workspaces (id, name, owner_id, personal, created_at) VALUES (?,?,?,0,?)`,
+      `INSERT INTO workspaces (id, name, owner_id, personal, created_at, updated_at) VALUES (?1,?2,?3,0,?4,?4)`,
     )
       .bind(wsId, name, user.id, now())
       .run();
     return json(env, { id: wsId, name, owner_id: user.id, personal: 0, role: "owner" }, 201);
+  }
+
+  // The owner's closed workspaces, for reopening. Before the `:id` routes below
+  // so "closed" is not read as an id.
+  if (a === "workspaces" && b === "closed" && !c && m === "GET") {
+    return json(env, await closedWorkspacesFor(env.DB, user.id));
+  }
+
+  // Owners and admins rename; only the owner closes and reopens. Rules and the
+  // reasons for them are in lifecycle.ts.
+  if (a === "workspaces" && b && !c && m === "PATCH") {
+    const body = await req.json<any>().catch(() => ({}));
+    const res = await renameWorkspace(env, user.id, b, body?.name);
+    return res.ok ? json(env, { id: res.id, name: res.name, updated_at: res.updated_at }) : json(env, { error: res.error }, res.status);
+  }
+
+  if (a === "workspaces" && b && c === "close" && !d && m === "POST") {
+    const res = await closeWorkspace(env, user.id, b);
+    return res.ok ? json(env, { ok: true, closed_at: res.closed_at, reopen_until: res.reopen_until }) : json(env, { error: res.error }, res.status);
+  }
+
+  if (a === "workspaces" && b && c === "reopen" && !d && m === "POST") {
+    const res = await reopenWorkspace(env, user.id, b);
+    return res.ok ? json(env, { ok: true }) : json(env, { error: res.error }, res.status);
+  }
+
+  // Move a mindmap, with its sub-mindmaps, to another workspace. Vectors follow
+  // after the response; see moveBoardVectors.
+  if (a === "boards" && b && c === "move" && !d && m === "POST") {
+    const body = await req.json<any>().catch(() => ({}));
+    const res = await moveBoard(env, user.id, b, body?.workspace_id);
+    if (!res.ok) return json(env, { error: res.error }, res.status);
+    ctx.waitUntil(moveBoardVectors(env as Parameters<typeof moveBoardVectors>[0], res.id, res.workspace_id));
+    return json(env, { ok: true, id: res.id, workspace_id: res.workspace_id });
   }
 
   /*
@@ -766,7 +801,23 @@ async function route(
     return res.ok ? json(env, { ok: true, owner_id: res.ownerId }) : json(env, { error: res.error }, res.status);
   }
 
-  if (a === "invites" && b && m === "DELETE") {
+  // What is waiting for this person to accept or decline, by the address they
+  // signed in with. Nothing here joins anyone: see members.ts.
+  if (a === "invites" && !b && m === "GET") {
+    return json(env, { invites: await pendingFor(env, user.email) });
+  }
+
+  if (a === "invites" && b && (c === "accept" || c === "decline") && !d && m === "POST") {
+    const res =
+      c === "accept"
+        ? await acceptInvite(env, user.id, user.email, b)
+        : await declineInvite(env, user.email, b);
+    return res.ok
+      ? json(env, { ok: true, target_type: res.target_type, target_id: res.target_id, role: res.role })
+      : json(env, { error: res.error }, res.status);
+  }
+
+  if (a === "invites" && b && !c && m === "DELETE") {
     const gone = await revokeInvite(env, user.id, b);
     return gone ? json(env, { ok: true }) : json(env, { error: "not found" }, 404);
   }
@@ -1990,21 +2041,18 @@ async function signIn(req: Request, env: Env, userId: string): Promise<Response>
     .first<{ id: string; email: string }>();
 
   /*
-   * Everything an account needs to exist properly, done here because every way
-   * in goes through this function — register, password login, and Google.
+   * Everything an account needs to exist properly, done here for the ways in
+   * that go through this function: register and password login.
    *
-   * Invites are claimed on every sign-in rather than only at sign-up: someone
-   * may be invited after they already have an account but before they next log
-   * in, and an invite that fired only at registration would strand them
-   * permanently.
+   * Invitations are deliberately not handled here. Signing in, by any route,
+   * joins nothing: what is waiting for an address is read on demand
+   * (`GET /api/invites`) and a person becomes a member by accepting it. The
+   * Google callback creates its own session and never claimed invites either.
    *
    * Awaited rather than deferred. The response redirects straight to /app, and
    * a workspace that appears a beat later reads as a bug.
    */
-  if (user?.email) {
-    await ensurePersonalWorkspace(env.DB, userId);
-    await claimInvites(env, userId, user.email);
-  }
+  if (user?.email) await ensurePersonalWorkspace(env.DB, userId);
 
   return new Response(JSON.stringify({ user }), {
     status: 200,
