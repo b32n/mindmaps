@@ -1,0 +1,41 @@
+# Fifth local runtime for the end-to-end suite: outbound email ON. Never deployed.
+#
+# Identical to wrangler.test.toml plus a configured sender. MAIL_TRANSPORT is
+# "capture", so nothing is sent: messages are kept in R2 and read back through
+# GET /api/_mail?to=<address> (worker/src/mail.ts). Google sign-in is configured
+# against a fake Google (e2e/support/fake-google.mjs), whose address
+# playwright.config.ts passes in with --var. The other test Workers have no
+# MAIL_FROM, which is the "email not configured" case.
+
+name = "mindmaps-e2e-mail"
+main = "worker/src/index.ts"
+compatibility_date = "2026-09-01"
+
+[assets]
+directory = "./web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/oauth/*", "/.well-known/*", "/s/*", "/f/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mindmaps-e2e-mail"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "worker/migrations"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "mindmaps-e2e-mail"
+
+[[r2_buckets]]
+binding = "ARTEFACTS"
+bucket_name = "mindmaps-e2e-mail"
+
+[vars]
+# Per-client rate limits read this header, which the suite sends only where it tests them (docs/EMAIL.md).
+CLIENT_IP_HEADER = "x-e2e-client-ip"
+ALLOW_SIGNUPS = "true"
+MAIL_FROM = "mindmaps@mail.example.test"
+MAIL_FROM_NAME = "mindmaps"
+MAIL_TRANSPORT = "capture"
+GOOGLE_CLIENT_ID = "e2e-google-client"
+GOOGLE_CLIENT_SECRET = "e2e-google-secret"
