@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { request as pwRequest, type APIRequestContext, type Browser } from "@playwright/test";
 import { expect, register, test } from "../fixtures";
-import { addMember, contents, createBoard, createEdge, createNode, createWorkspace, listBoards, listWorkspaces } from "../support/api";
+import { addMember, contents, createArtefact, createBoard, createEdge, createNode, createWorkspace, listBoards, listWorkspaces } from "../support/api";
 import { clientFor, connectMcp, type McpClient } from "../support/mcp";
 import { Rail } from "../support/rail";
 import { switchWorker } from "../support/hosts";
@@ -111,6 +111,9 @@ test.describe("switching an install that has team spaces", () => {
     // surface the hidden card's title
     await createEdge(owner, { source_id: homeCard.id, target_id: teamCard.id, label: "relates" });
     await createNode(owner, s.sharedBoard.id, { title: `Shared zebra ${term}` });
+    // an artefact in each space, for the flat artefact list
+    s.homeDoc = await createArtefact(owner, s.homeBoard.id, "doc", { title: `Home doc ${term}`, blocks: [{ text: "h" }] });
+    s.teamDoc = await createArtefact(owner, s.teamBoard.id, "doc", { title: `Team doc ${term}`, blocks: [{ text: "t" }] });
     // shared with a fellow member of the team space, and with someone outside it
     await addMember(owner, "boards", s.sharedBoard.id, people.member!.email, "editor");
     await addMember(owner, "boards", s.sharedBoard.id, people.outsider!.email, "editor");
@@ -153,8 +156,10 @@ test.describe("switching an install that has team spaces", () => {
     expect(seen).not.toContain("Team zebra");
     const recallAll = JSON.stringify(await (await owner.get(`/api/recall?q=${s.term}`)).json());
     expect(recallAll).not.toContain("Team zebra");
-    const arte = await (await owner.get("/api/artefacts")).json();
-    expect(JSON.stringify(arte)).not.toContain(s.teamBoard.id);
+    const arte = JSON.stringify(await (await owner.get("/api/artefacts")).json());
+    expect(arte).toContain(s.homeDoc.id);
+    expect(arte).not.toContain(s.teamDoc.id);
+    expect(arte).not.toContain(s.teamBoard.id);
   });
 
   test("sharing keeps working for a mindmap inside the hidden team space", async () => {
@@ -205,6 +210,9 @@ test.describe("switching an install that has team spaces", () => {
     expect(list.isError, list.text).toBe(false);
     expect(list.text).toContain(`Home ${s.term}`);
     expect(list.text).not.toContain(`Crew ${s.term}`);
+    // the token was connected to the team space, but nothing names it as somewhere else to look
+    expect(list.text).not.toContain(`Atlas ${s.term}`);
+    expect(list.text).not.toContain("Other workspaces");
     for (const tool of ["search", "recall"]) {
       const r = await mcp.call(tool, { query: s.term });
       expect(r.text, tool).toContain("Home zebra");
@@ -235,6 +243,8 @@ test.describe("switching an install that has team spaces", () => {
     expect(cards).toEqual(s.cardsBefore);
     expect((await contents(owner, s.sharedBoard.id)).nodes.length).toBeGreaterThanOrEqual(3);
     expect((await listWorkspaces(people.member!.request)).map((w) => w.id)).toContain(s.team.id);
+
+    expect(JSON.stringify(await (await owner.get("/api/artefacts")).json())).toContain(s.teamDoc.id);
 
     const mcp = clientFor(owner, s.mcp.clientId, s.mcp.accessToken, s.mcp.refreshToken);
     expect((await mcp.call("search", { query: s.term })).text).toContain("Team zebra");

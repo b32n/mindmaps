@@ -45,6 +45,30 @@ test.describe("the app", () => {
     await expect(page.locator(".ws-trigger")).toHaveCount(0);
   });
 
+  test("creating before the workspace list has loaded does not aim at a remembered team space", async ({ page, account }) => {
+    void account;
+    const remembered = randomUUID();
+    await page.addInitScript((id) => localStorage.setItem("mindmaps.workspace", id), remembered);
+    // hold the workspace list back so the remembered id is all the app knows when it creates
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    await page.route("**/api/workspaces", async (route) => {
+      await held;
+      await route.continue();
+    });
+    const sent: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && req.url().endsWith("/api/boards")) sent.push(req.postData() ?? "");
+    });
+    await page.goto("/app");
+    await expect(page.locator(".rail-add")).toBeVisible();
+    await new Rail(page).create("Before the list");
+    release();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toContain(remembered);
+    expect((await listBoards(page.request)).find((b) => b.name === "Before the list")).toBeTruthy();
+  });
+
   test("the share dialog still offers inviting people", async ({ page, account }) => {
     void account;
     const { record } = await Board.create(page, "Shareable");
