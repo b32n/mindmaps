@@ -78,8 +78,8 @@ test.describe("inviting someone who already has an account", () => {
     await theirs.locator(".ws-trigger").click();
     await expect(theirs.locator(".ws-invite").filter({ hasText: "Read only crowd" })).toContainText("Can view");
     await theirs.locator(".ws-invite").filter({ hasText: "Read only crowd" }).getByRole("button", { name: "Accept" }).click();
-    expect((await membersOf(request, "workspaces", ws.id)).members.map((m) => m.role)).toEqual(["viewer"]);
     await expect(theirs.getByRole("menuitem", { name: /Read only crowd/ })).toContainText("Can view");
+    expect((await membersOf(request, "workspaces", ws.id)).members.map((m) => m.role)).toEqual(["viewer"]);
   });
 
   test("the address is matched case-insensitively and with stray spaces", async ({ page, account, request, existing }) => {
