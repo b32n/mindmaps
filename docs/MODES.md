@@ -9,26 +9,82 @@ variable on its Worker.
 | `org` | A team or company running its own instance. |
 | `multitenant` | The hosted service: many unrelated customers on one instance. Hidden and advanced; self-hosters do not need it. |
 
-## What is enforced today
+## What each mode does
 
-**Nothing yet.** This release only adds the setting and passes it along, so
-changing it has no visible effect and deploying it is safe:
+The Worker reads the setting (`worker/src/mode.ts`), and every decision that
+depends on it is made in one place on each side: `worker/src/policy.ts` and
+`web/src/policy.ts`. `GET /api/auth/me` returns it as `mode`, the web app
+exposes it as `useMode()` (and as `data-mindmaps-mode` on `<html>`), and the MCP
+`initialize` and `server/discover` results carry it in `_meta["mindmaps/mode"]`.
 
-- the Worker reads and validates it (`worker/src/mode.ts`);
-- `GET /api/auth/me` returns it as `mode`, and the web app exposes it as
-  `useMode()` (and as `data-mindmaps-mode` on `<html>`);
-- the MCP `initialize` and `server/discover` results carry it in
-  `_meta["mindmaps/mode"]`. No tool schema changes.
+| | personal | org | multitenant (and unset) |
+|---|---|---|---|
+| Workspace switcher, "New workspace", People for a team space | hidden | as before | as before |
+| `GET /api/workspaces` | your personal home only | as before | as before |
+| `POST /api/workspaces` | 403 `team_spaces_disabled` | as before | as before |
+| A mindmap created into a named workspace | 403 `team_spaces_disabled` | as before | as before |
+| Inviting someone into a team space | 403 `team_spaces_disabled` | as before | as before |
+| Mindmap list, artefact list, recall (app and MCP), `search` | the personal home, plus what was shared with you | as before | as before |
+| MCP consent page | no workspace picker; connects to the personal home | picker when you have more than one workspace | as org |
+| MCP tools | no `workspace` argument; `list_mindmaps` does not name workspaces | as before | as before |
+| Sharing (people, public links) | untouched | as before | as before |
 
-A later release makes the app and MCP server honour it. What is decided for
-that, so you can plan around it:
+**multitenant is exactly what every install did before modes existed.** The
+hosted service is pinned to it (below), so none of this changes there.
 
-- **Personal keeps today's sharing.** External viewers and editors (email-code
-  sign-in), other people in the same workspace, and people in other workspaces
-  all keep working. Personal mode will not remove any of them.
-- **Switching an install to personal later hides team spaces; it deletes
-  nothing.** Switch back and they return.
-- **SSO and a sign-in domain policy** ship before the modes are launched.
+**org keeps today's shared-workspace behaviour.** One organisation per instance
+is the intent; first-run setup, create-organisation, single sign-on and the
+organisation lifecycle (rename, close, leave, accepting an invite) are separate,
+later work, and nothing here offers or implies them.
+
+### Personal
+
+Personal is one person's instance. There is no team-space concept in the app, the
+API or MCP. Sharing is not part of that and is untouched:
+
+- someone with no account is invited by email, signs up, and gets the mindmap
+  (as editor or viewer); an artefact can be given to anyone through a public
+  read-only link, no account needed;
+- another person on the same instance gets a mindmap or an artefact by email,
+  whichever workspace either of you is in;
+- a mindmap shared with you shows in your list and opens by its id, wherever it
+  lives.
+
+### Switching an install to personal
+
+Switching an install that already has team spaces to personal **hides them; it
+deletes, moves and migrates nothing.** Every row stays as it is (the workspace,
+its members, its mindmaps and cards, shares, agent connections). Switch back to
+org or multitenant and they are listed again, with everything in them.
+
+What "hidden" covers, exactly:
+
+- **Listed nowhere.** Not in the switcher (which is gone), `GET /api/workspaces`,
+  the mindmap and artefact lists, recall and search in the app, or `list_mindmaps`,
+  `search` and `recall` over MCP. A card in a hidden space never shows up in a
+  result, nor as a linked card ("connects to").
+- **Nothing new in them.** Creating a workspace, creating a mindmap in one by
+  `workspace_id`, inviting a person into one, and an agent choosing one (the
+  `workspace` argument is gone; `create_mindmap` writes to the personal home) are
+  all refused or ignored. An agent connected to a team space before the switch
+  keeps working, in the personal home, and goes back to the team space when the
+  mode is switched back.
+- **A mindmap already shared with someone keeps working for them**, even when it
+  sits in a hidden team space. Sharing is not removed or weakened by hiding: the
+  person it was shared with still has it in their list, opens it by its id, and
+  keeps the role they were given. The owner of that mindmap does not see it in
+  their own list while the space is hidden, but can still open it by its id and
+  can still share it again.
+- **Hiding is not an access boundary.** A direct request by id for something you
+  could already read is answered as it always was, including for the members of a
+  hidden team space. Personal mode removes the *offer*, not the data or the
+  rights; if you need people kept out of a space, remove them from it first.
+- **Account deletion is still guarded.** Owning a team space that other people are
+  in blocks deleting your account in every mode (`GET /api/account/delete-blockers`
+  is unchanged). In personal mode the settings dialog says the space is hidden and
+  to switch the instance to org to manage it, instead of pointing at a menu that
+  is not there. Ownership transfer, role changes and removing members still work
+  through the API.
 
 ## If it is unset, or empty
 
@@ -106,5 +162,5 @@ deploy replaces dashboard variables unless `--keep-vars` is used).
 ## Changing it later
 
 Edit the value (or re-run `npm run install:cloudflare -- --mode org`) and
-deploy. No migration is involved and no data is touched. Since nothing is
-enforced yet, switching today changes only what is reported.
+deploy. No migration is involved and no data is touched: switching to `personal`
+hides team spaces and switching back shows them again (see above).
