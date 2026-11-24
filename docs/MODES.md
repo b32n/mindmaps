@@ -33,8 +33,10 @@ that, so you can plan around it:
 ## If it is unset, or empty
 
 The Worker behaves as `multitenant`. That is how every install behaved before
-the setting existed, so existing installs, including the hosted service, are
-unchanged until you set it.
+the setting existed, so existing installs are unchanged until you set it. (The
+committed `wrangler.toml` now sets `personal`, which is what a Deploy-button
+install gets; see below. An install that has its own `wrangler.local.toml`
+without a mode stays unset on a re-run.)
 
 ## If it is invalid
 
@@ -52,14 +54,19 @@ mistyped `personal` or `org` install in the most permissive mode.)
 
 ## How it is set
 
+- **Deploy to Cloudflare button**: the committed `wrangler.toml` sets
+  `MINDMAPS_MODE = "personal"` under `[vars]`, so a button install is
+  `personal`. Change it as below after the deploy.
 - **Installer** (`npm run install:cloudflare`): asks "personal or org?" and
-  writes the answer to `wrangler.local.toml`. Non-interactively:
-  `--mode personal|org|multitenant`; with `--yes` and no `--mode` a first
-  install is `personal`. `multitenant` is never offered in the prompt, only by
-  `--mode multitenant`. Re-running the installer keeps the mode the install
-  already has (an install from before modes existed stays unset, so it stays
-  multitenant) unless you pass `--mode`. `--dry-run` shows what it would write
-  without signing in to anything.
+  writes the answer to `wrangler.local.toml`, replacing the committed default
+  (the generated file has exactly one `MINDMAPS_MODE`). Non-interactively:
+  `--mode personal|org|multitenant`, which overrides the default and the
+  question; with `--yes` and no `--mode` a first install is `personal`.
+  `multitenant` is never offered in the prompt, only by `--mode multitenant`.
+  Re-running the installer keeps the mode the install already has unless you pass
+  `--mode`. An install from before modes existed has none set and gets none
+  written, so it stays multitenant (the template's `personal` is not copied in).
+  `--dry-run` shows what it would write without signing in to anything.
 - **By hand**: under one `[vars]` table in the Worker's config:
 
   ```toml
@@ -69,12 +76,32 @@ mistyped `personal` or `org` install in the most permissive mode.)
 
   or in the Cloudflare dashboard: *Workers & Pages → your Worker → Settings →
   Variables and Secrets*. Redeploy after editing the file.
-- **Deploy to Cloudflare button**: the committed `wrangler.toml` leaves the
-  variable unset, so a button install starts as `multitenant` (unchanged
-  behaviour). Set it to `personal` or `org` as above after the deploy. The
-  installer's `personal` default applies to the CLI path only for now:
-  committing `personal` to `wrangler.toml` would also change any deployment
-  built straight from that file, the hosted service included.
+
+## The hosted service is pinned to multitenant
+
+The hosted service, `mindmaps.b32n.io` (one named constant, `HOSTED_HOST` in
+`scripts/lib/install-config.mjs`), must stay multitenant now that the committed
+default is `personal`. It is pinned in two places. The hosted Worker is not
+deployed by CI; it is deployed from a `wrangler.local.toml`, by one of these:
+
+- **The installer.** When the install is that host (`--domain mindmaps.b32n.io`,
+  or an existing `wrangler.local.toml` whose `PUBLIC_ORIGIN`, `APP_ORIGIN` or
+  `[[routes]]` pattern is that host, with or without `https://`), it writes
+  `MINDMAPS_MODE = "multitenant"` explicitly, also when that install had no mode
+  before and also under `--yes`. `--mode multitenant` is accepted; `--mode
+  personal` or `--mode org` is refused with an error before anything is signed
+  in to or written, and the prompt does not ask. A re-run without `--domain`
+  keeps the host.
+- **`npm run deploy`** (`scripts/deploy.mjs`). It deploys with
+  `--config wrangler.local.toml` when that file exists (otherwise it would take
+  the committed `personal` default and no database IDs). For the hosted host it
+  also passes `--var MINDMAPS_MODE:multitenant`, and it refuses to run if the
+  config says `personal` or `org`. Any other install keeps the mode its own
+  config sets.
+
+Not covered: a raw `wrangler deploy` that uses only the committed
+`wrangler.toml`, or a different value set in the Cloudflare dashboard (a
+deploy replaces dashboard variables unless `--keep-vars` is used).
 
 ## Changing it later
 

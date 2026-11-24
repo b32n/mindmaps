@@ -28,13 +28,27 @@ git pull && npm install && npm run install:cloudflare
 It is safe to re-run: every step checks before it creates. Your data is kept.
 (Deploy-button installs update when you pull the upstream repo into your copy.)
 
+`npm run deploy` also works once the installer has run: it builds, migrates and
+deploys with your `wrangler.local.toml` (your IDs, domain and mode), not the
+committed `wrangler.toml`. For the hosted service's hostname it forces the mode
+to multitenant.
+
 ## Personal or org
 
 The installer asks whether this install is for **personal** use (you, plus the
 people you invite) or an **org** (a team or company). It is stored as
 `MINDMAPS_MODE` and can be changed later. For now it only records the choice;
 see [docs/MODES.md](./docs/MODES.md) for what each mode means, how to set or
-change it (also for Deploy-button installs), and what is not enforced yet.
+change it, and what is not enforced yet.
+
+- **Deploy button** installs are `personal`: that is the default committed in
+  `wrangler.toml`.
+- **The installer** asks, and `--mode` answers, and either replaces that default
+  in the `wrangler.local.toml` it writes. `--yes` on a first install is `personal`.
+  A re-run keeps the mode the install has; an install from before modes existed
+  stays unset, which the Worker treats as multitenant.
+- **The hosted service** (mindmaps.b32n.io) is always `multitenant`. The
+  installer writes that for the host and refuses `--mode personal|org` for it.
 
 ```bash
 npm run install:cloudflare -- --mode org       # or personal

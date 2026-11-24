@@ -9,6 +9,13 @@ export const PROMPTED_MODES = ["personal", "org"];
 /** What `--yes` picks on a first install. */
 export const DEFAULT_MODE = "personal";
 
+/**
+ * The hostname of the hosted service. An install served from it is pinned to
+ * multitenant: the installer refuses anything else for it, and `npm run deploy`
+ * forces it (scripts/deploy.mjs). See docs/MODES.md.
+ */
+export const HOSTED_HOST = "mindmaps.b32n.io";
+
 export const MODE_HELP = {
   personal: "just you, plus the people you invite one by one",
   org: "a team or company running its own instance",
@@ -28,9 +35,38 @@ export function modeInToml(toml) {
   return toml.match(/^MINDMAPS_MODE\s*=\s*"([^"]*)"/m)?.[1] || null;
 }
 
+/** The bare lowercase hostname in `value` (a host, or a URL with or without a scheme, port or path). */
+function hostOf(value) {
+  return String(value).trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split(/[/?#]/)[0].replace(/:\d+$/, "").toLowerCase();
+}
+
+/** Whether `host` (or a URL) is the hosted service's hostname. */
+export function isHostedHost(host) {
+  return !!host && hostOf(host) === HOSTED_HOST;
+}
+
+/** The hostnames a wrangler.local.toml serves from: its PUBLIC_ORIGIN / APP_ORIGIN and [[routes]] patterns. */
+export function hostsInToml(toml) {
+  const hosts = [];
+  for (const m of toml.matchAll(/^(?:PUBLIC_ORIGIN|APP_ORIGIN|pattern)\s*=\s*"([^"]*)"/gm)) hosts.push(hostOf(m[1]));
+  return hosts;
+}
+
+/** Whether a wrangler.local.toml is the hosted service's. */
+export function tomlIsHosted(toml) {
+  return hostsInToml(toml).includes(HOSTED_HOST);
+}
+
+/** Throws unless `flag` is absent or multitenant: the hosted service takes no other mode. */
+export function assertHostedMode(flag) {
+  if (flag !== undefined && parseMode(flag) !== "multitenant")
+    throw new Error(`${HOSTED_HOST} is the hosted service and is always multitenant; --mode ${flag} is not allowed for it.`);
+}
+
 /**
  * Which mode to install, and why.
  *
+ *   the hosted host                  multitenant, always; any other --mode is refused
  *   --mode given                     that, validated
  *   re-run of an existing install    what it already has, so an upgrade never changes the
  *                                    mode; an install from before modes existed stays unset
@@ -38,10 +74,14 @@ export function modeInToml(toml) {
  *   --yes (or no terminal)           personal
  *   interactive                      asks "personal or org?"
  *
- * `existing` is null for a first install, else `{ mode }` with mode null when unset.
+ * `hosted` is true for the hosted service's hostname. `existing` is null for a first install, else `{ mode }` with mode null when unset.
  * Returns `{ mode, source }`; mode null means leave MINDMAPS_MODE out of the config.
  */
-export async function chooseMode({ flag, yes, existing, ask }) {
+export async function chooseMode({ flag, yes, existing, hosted, ask }) {
+  if (hosted) {
+    assertHostedMode(flag);
+    return { mode: "multitenant", source: "hosted" };
+  }
   if (flag !== undefined) return { mode: parseMode(flag), source: "flag" };
   if (existing) return { mode: existing.mode, source: "existing" };
   if (yes) return { mode: DEFAULT_MODE, source: "default" };
@@ -56,7 +96,10 @@ export async function chooseMode({ flag, yes, existing, ask }) {
  * optional pieces and [vars] filled in.
  */
 export function localToml(template, { name, dbId, search, domain, mindbox, mode }) {
-  let toml = template;
+  // The committed wrangler.toml carries a default MINDMAPS_MODE (for the Deploy
+  // button). This install's choice replaces it: drop it, then write ours, or
+  // none when the choice is to leave it unset.
+  let toml = template.replace(/^MINDMAPS_MODE\s*=.*\r?\n?/gm, "");
   toml = toml.replace(/^name = ".*"$/m, `name = "${name}"`);
   toml = toml.replace(/^(database_name = "mindmaps")$/m, `$1\ndatabase_id = "${dbId}"`);
   if (!search) toml = toml.replace(/\[\[vectorize\]\][^\[]*/m, "").replace(/\[ai\][^\[]*/m, "");

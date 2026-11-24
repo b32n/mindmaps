@@ -13,6 +13,7 @@
 //   --yes                  accept defaults, never prompt
 //   --name <worker>        Worker name (default: mindmaps)
 //   --domain <host>        serve from your own domain (must be on this Cloudflare account)
+//                          (the hosted service's host is always multitenant; docs/MODES.md)
 //   --mindbox-domain <h>   optional: serve HTML artefacts from a second hostname (extra isolation)
 //   --mode <mode>          personal | org (asked if omitted; --yes picks personal on a first
 //                          install, and a re-run keeps the mode it has). multitenant is the
@@ -28,7 +29,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
-import { MODES, chooseMode, localToml, modeInToml, parseMode } from "./lib/install-config.mjs";
+import { HOSTED_HOST, MODES, assertHostedMode, chooseMode, isHostedHost, localToml, modeInToml, parseMode, tomlIsHosted } from "./lib/install-config.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const LOCAL = join(ROOT, "wrangler.local.toml");
@@ -81,10 +82,13 @@ async function ask(q, dflt) {
 // --- 0. prerequisites -------------------------------------------------------
 const major = Number(process.versions.node.split(".")[0]);
 if (major < 20) die(`Node 20 or newer is required (you have ${process.versions.node}). Get it at https://nodejs.org`);
-// Refuse a bad --mode before anything is created or signed in to.
+const existingToml = existsSync(LOCAL) ? readFileSync(LOCAL, "utf8") : null;
+// Refuse a bad --mode before anything is created or signed in to, and for the
+// hosted service anything but multitenant.
 if (flag("mode"))
   try {
     parseMode(opt("mode"));
+    if (opt("domain") ? isHostedHost(opt("domain")) : existingToml && tomlIsHosted(existingToml)) assertHostedMode(opt("mode"));
   } catch (e) {
     die(e.message);
   }
@@ -114,6 +118,9 @@ const name = opt("name") ?? (await ask("Name for your Worker?", "mindmaps"));
 if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) die("Worker name: lowercase letters, numbers and dashes only.");
 
 let domain = opt("domain");
+// A re-run of the hosted install without --domain keeps its host, so the config
+// written still says where it is served from (and so still pins itself).
+if (domain === undefined && existingToml && tomlIsHosted(existingToml)) domain = HOSTED_HOST;
 if (domain === undefined && !YES) {
   const a = await ask("Use your own domain (e.g. notes.example.com)? Press Enter to skip and use a free *.workers.dev address.", "");
   domain = a || undefined;
@@ -127,13 +134,15 @@ try {
   chosen = await chooseMode({
     flag: flag("mode") ? opt("mode") : undefined,
     yes: YES,
-    existing: existsSync(LOCAL) ? { mode: modeInToml(readFileSync(LOCAL, "utf8")) } : null,
+    hosted: domain ? isHostedHost(domain) : false,
+    existing: existingToml ? { mode: modeInToml(existingToml) } : null,
     ask,
   });
 } catch (e) {
   die(e.message);
 }
 const mode = chosen.mode;
+if (chosen.source === "hosted") say(`  ${HOSTED_HOST} is the hosted service: mode multitenant`);
 if (chosen.source === "existing")
   say(
     mode
