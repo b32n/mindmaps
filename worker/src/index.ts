@@ -41,6 +41,9 @@ import { blocksToMarkdown, parseDoc } from "./markdown";
 import { createStarterBoard } from "./starter";
 import { deleteAccount, deletionBlockers, exportAccount, exportFilename, finishDeletions, type AccountEnv } from "./account";
 import { modeProblem, readMode } from "./mode";
+import {
+  createOrganisation, createSharedWorkspace, isOrganisationWorkspace, organisationFor, workspaceCreationRefusal,
+} from "./organisation";
 import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
 export interface Env {
@@ -695,15 +698,26 @@ async function route(
   }
 
   if (a === "workspaces" && !b && m === "POST") {
+    // What mode this instance is in decides whether a shared workspace may be
+    // made this way at all (organisation.ts).
+    const no = await workspaceCreationRefusal(env);
+    if (no) return json(env, { error: no.error, code: no.code }, no.status);
     const body = await req.json<any>().catch(() => ({}));
     const name = String(body?.name ?? "").trim() || "New workspace";
-    const wsId = id();
-    await env.DB.prepare(
-      `INSERT INTO workspaces (id, name, owner_id, personal, created_at, updated_at) VALUES (?1,?2,?3,0,?4,?4)`,
-    )
-      .bind(wsId, name, user.id, now())
-      .run();
+    const wsId = await createSharedWorkspace(env.DB, user.id, name);
     return json(env, { id: wsId, name, owner_id: user.id, personal: 0, role: "owner" }, 201);
+  }
+
+  // The organisation: what this person sees of it, and making it.
+  if (a === "organisation" && !b && m === "GET") {
+    return json(env, await organisationFor(env, user));
+  }
+
+  if (a === "organisation" && !b && m === "POST") {
+    const body = await req.json<any>().catch(() => ({}));
+    const res = await createOrganisation(env, user.id, body ?? {});
+    if (!res.ok) return json(env, { error: res.error, code: res.code }, res.status);
+    return json(env, { id: res.id, name: res.name, owner_id: user.id, personal: 0, role: "owner", adopted: res.adopted }, 201);
   }
 
   // The owner's closed workspaces, for reopening. Before the `:id` routes below
@@ -721,6 +735,10 @@ async function route(
   }
 
   if (a === "workspaces" && b && c === "close" && !d && m === "POST") {
+    // Closing the organisation would leave an org-mode instance with none, and
+    // creating another is refused: there would be no way back but the database.
+    if (await isOrganisationWorkspace(env, b))
+      return json(env, { error: "This is the organisation of this instance and cannot be closed.", code: "organisation_cannot_close" }, 409);
     const res = await closeWorkspace(env, user.id, b);
     return res.ok ? json(env, { ok: true, closed_at: res.closed_at, reopen_until: res.reopen_until }) : json(env, { error: res.error }, res.status);
   }
@@ -1789,16 +1807,23 @@ async function authRoute(
     if (existing)
       return json(env, { error: "An account with that email already exists." }, 409);
 
-    if (!(await signupAllowed(env, addr))) return json(env, { error: SIGNUP_CLOSED }, 403);
+    const way = await signupAllowed(env, addr);
+    if (!way) return json(env, { error: SIGNUP_CLOSED }, 403);
 
     const { hash, salt } = await hashPassword(password);
     const uid = id();
-    await env.DB.prepare(
+    // The first account on a closed instance is the owner, so "there is no
+    // account yet" must be decided by the insert itself, not by the read above:
+    // two sign-ups arriving together both saw an empty table. One statement is
+    // atomic, so exactly one of them inserts and the other changes nothing.
+    const made = await env.DB.prepare(
       `INSERT INTO users (id,email,name,password_hash,password_salt,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?)`,
+       SELECT ?1,?2,?3,?4,?5,?6,?6
+        WHERE ?7 = 0 OR NOT EXISTS (SELECT 1 FROM users)`,
     )
-      .bind(uid, addr, String(name ?? "").trim(), hash, salt, now(), now())
+      .bind(uid, addr, String(name ?? "").trim(), hash, salt, now(), way === "first" ? 1 : 0)
       .run();
+    if ((made.meta?.changes ?? 0) < 1) return json(env, { error: SIGNUP_CLOSED }, 403);
 
     // The workspace first: the starter board references it, and `signIn` only
     // gets to creating one after this runs.
@@ -1975,14 +2000,18 @@ async function authRoute(
 
     let uid = existing?.id;
     if (!uid) {
-      if (!(await signupAllowed(env, email))) return fail(SIGNUP_CLOSED);
+      const way = await signupAllowed(env, email);
+      if (!way) return fail(SIGNUP_CLOSED);
       uid = id();
-      await env.DB.prepare(
+      // Same guard as password sign-up: the first account is decided by the insert.
+      const made = await env.DB.prepare(
         `INSERT INTO users (id,email,name,avatar_url,google_sub,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?)`,
+         SELECT ?1,?2,?3,?4,?5,?6,?6
+          WHERE ?7 = 0 OR NOT EXISTS (SELECT 1 FROM users)`,
       )
-        .bind(uid, email, String(info.name ?? ""), info.picture ?? null, sub, now(), now())
+        .bind(uid, email, String(info.name ?? ""), info.picture ?? null, sub, now(), way === "first" ? 1 : 0)
         .run();
+      if ((made.meta?.changes ?? 0) < 1) return fail(SIGNUP_CLOSED);
       // Only inside this branch: `existing` means a returning account, and a
       // second Google sign-in is not a signup.
       await createStarterBoard(env, uid, issuerOf(req, env));
@@ -2121,10 +2150,10 @@ const hydrateNode = (n: any) => ({ ...n, data: JSON.parse(n.data || "{}") });
  * and Workers AI quota. So: the first account is the owner, after that sign-up
  * needs a live invite for that address, unless `ALLOW_SIGNUPS=true`.
  */
-async function signupAllowed(env: Env, email: string): Promise<boolean> {
-  if (env.ALLOW_SIGNUPS === "true") return true;
+async function signupAllowed(env: Env, email: string): Promise<"open" | "invite" | "first" | false> {
+  if (env.ALLOW_SIGNUPS === "true") return "open";
   const any = await env.DB.prepare(`SELECT 1 AS x FROM users LIMIT 1`).first();
-  if (!any) return true;
+  if (!any) return "first";
   const invite = await env.DB.prepare(
     `SELECT 1 AS x FROM invites
       WHERE email = ? AND accepted_at IS NULL AND revoked = 0
@@ -2132,7 +2161,7 @@ async function signupAllowed(env: Env, email: string): Promise<boolean> {
   )
     .bind(email.toLowerCase(), now())
     .first();
-  return !!invite;
+  return invite ? "invite" : false;
 }
 const SIGNUP_CLOSED =
   "Sign-up is closed on this mindmaps. Ask its owner to invite you, or set ALLOW_SIGNUPS=true to open it.";
