@@ -1,4 +1,5 @@
 import { expect, test as base, type APIRequestContext, type Page } from "@playwright/test";
+import { rememberSession } from "./support/people";
 import { newUser, type TestUser } from "./support/users";
 
 /** Register through the real API. The session cookie lands on `request`'s jar. */
@@ -7,6 +8,7 @@ export async function register(request: APIRequestContext, user: TestUser) {
     data: { email: user.email, password: user.password, name: user.name },
   });
   expect(res.status(), `register ${user.email}: ${await res.text()}`).toBe(200);
+  rememberSession(user.email, request);
 }
 
 /** A user that exists on the server, plus an API client signed in as them. */
