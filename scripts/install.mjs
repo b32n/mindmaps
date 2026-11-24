@@ -18,6 +18,12 @@
 //   --mode <mode>          personal | org (asked if omitted; --yes picks personal on a first
 //                          install, and a re-run keeps the mode it has). multitenant is the
 //                          hosted-service mode: accepted here, never offered. See docs/MODES.md
+//   --mail-domain <host>   send email (confirm address, reset password) from this domain, which must
+//                          be on your Cloudflare account. Default: the --domain. See docs/EMAIL.md
+//   --mail-from <address>  the sender address (default: mindmaps@<mail domain>)
+//   --no-email             do not set up email (and remove it from an install that has it)
+//   --mail-skip-check      write the email config without confirming the domain is onboarded
+//                          (for a domain you onboarded in the dashboard)
 //   --no-search            skip the meaning-based search index
 //   --dry-run              work out the choices and print the config; touch nothing, sign in nowhere
 //   --json                 print one JSON object at the end (url, mcp, next steps)
@@ -29,6 +35,8 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
+import { chooseMail, mailInToml, mailNextSteps } from "./lib/mail-config.mjs";
+import { setupSendingDomain } from "./lib/mail-cloudflare.mjs";
 import { HOSTED_HOST, MODES, assertHostedMode, chooseMode, isHostedHost, localToml, modeInToml, parseMode, tomlIsHosted } from "./lib/install-config.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -150,11 +158,31 @@ if (chosen.source === "existing")
       : "  this install has no MINDMAPS_MODE set, so it runs as multitenant, as before (set one with --mode personal|org)",
   );
 
+let chosenMail;
+try {
+  chosenMail = await chooseMail({
+    from: flag("mail-from") ? (opt("mail-from") ?? "") : undefined,
+    domain: flag("mail-domain") ? (opt("mail-domain") ?? "") : undefined,
+    noEmail: flag("no-email"),
+    appDomain: domain,
+    existing: existingToml ? mailInToml(existingToml) : null,
+    yes: YES,
+    ask,
+  });
+} catch (e) {
+  die(e.message);
+}
+let mail = chosenMail.mail;
+if (mail) say(`  email: ${mail.from} (${chosenMail.source})`);
+else if (chosenMail.source === "no-domain")
+  say("  email: skipped. It needs a domain of your own; add one later with --mail-domain <domain> (docs/EMAIL.md)");
+else if (chosenMail.source === "flag-off") say("  email: off (--no-email)");
+
 if (DRY) {
   const config = localToml(readFileSync(join(ROOT, "wrangler.toml"), "utf8"), {
-    name, dbId: "<database-id>", search: !flag("no-search"), domain, mindbox, mode,
+    name, dbId: "<database-id>", search: !flag("no-search"), domain, mindbox, mode, mail,
   });
-  console.log(JSON.stringify({ dryRun: true, name, domain: domain ?? null, mindbox: mindbox ?? null, mode: mode ?? null, source: chosen.source, config }));
+  console.log(JSON.stringify({ dryRun: true, name, domain: domain ?? null, mindbox: mindbox ?? null, mode: mode ?? null, source: chosen.source, mail: mail ?? null, mailSource: chosenMail.source, config }));
   process.exit(0);
 }
 
@@ -197,9 +225,41 @@ if (search) {
   }
 }
 
+// Email (optional). Onboard the sending domain through the API where the token
+// allows it. The config only turns email on once the domain is known to be ready:
+// with verification on and no mail arriving, invited people could not join.
+let mailReport = { enabled: false, next: [] };
+if (mail) {
+  step(`Setting up email for ${mail.domain}`);
+  const reuse = chosenMail.source === "existing" && flag("mail-skip-check");
+  let token = process.env.CLOUDFLARE_API_TOKEN;
+  if (!token) {
+    const t = wrangler(["auth", "token"], { config: false });
+    const candidate = t.out.trim();
+    if (t.ok && /^[\w-]{20,}$/.test(candidate)) token = candidate;
+  }
+  const r = flag("mail-skip-check") || reuse ? { status: "skipped", steps: [], detail: "" } : await setupSendingDomain({ domain: mail.domain, token });
+  for (const s of r.steps) say(`  ${s}`);
+  const next = mailNextSteps(mail.domain, mail.from);
+  if (r.status === "ready" || r.status === "skipped") {
+    say(r.status === "ready" ? "  email ready (DNS records can take a few minutes to verify)" : "  email config written without checking (--mail-skip-check)");
+    mailReport = { enabled: true, status: r.status, domain: mail.domain, from: mail.from, next: [] };
+  } else if (chosenMail.source === "existing") {
+    // An upgrade must not switch off email that was already working just because this run cannot re-check it.
+    say(`  email kept as it was (could not re-check: ${r.detail})`);
+    mailReport = { enabled: true, status: "kept", domain: mail.domain, from: mail.from, next: [] };
+  } else {
+    // A first try that could not finish leaves email off.
+    say(`  email not switched on: ${r.detail}`);
+    for (const n of next) say(`    - ${n}`);
+    mailReport = { enabled: false, status: r.status, domain: mail.domain, from: mail.from, detail: r.detail, next };
+    mail = null;
+  }
+}
+
 // --- 4. config --------------------------------------------------------------
 step("Writing wrangler.local.toml (your IDs, never committed)");
-const toml = localToml(readFileSync(join(ROOT, "wrangler.toml"), "utf8"), { name, dbId, search, domain, mindbox, mode });
+const toml = localToml(readFileSync(join(ROOT, "wrangler.toml"), "utf8"), { name, dbId, search, domain, mindbox, mode, mail });
 writeFileSync(LOCAL, toml);
 
 // --- 5. build, migrate, deploy ---------------------------------------------
@@ -231,10 +291,11 @@ if (mindbox) {
 
 // --- 6. done ----------------------------------------------------------------
 const mcp = url ? `${url}/mcp` : "<your-url>/mcp";
-writeFileSync(join(ROOT, ".install.json"), JSON.stringify({ name, url, domain, mindbox, search, mode, dbId }, null, 2));
+writeFileSync(join(ROOT, ".install.json"), JSON.stringify({ name, url, domain, mindbox, search, mode, mail: mail ?? undefined, dbId }, null, 2));
 
 if (JSON_OUT) {
-  console.log(JSON.stringify({ ok: true, url, mcp, search, mode: mode ?? "multitenant", htmlArtefacts: true, next: [
+  console.log(JSON.stringify({ ok: true, url, mcp, search, mode: mode ?? "multitenant", htmlArtefacts: true, email: mailReport, next: [
+    ...mailReport.next,
     `Open ${url} and create your account (the first account is yours).`,
     `claude mcp add --transport http mindmaps ${mcp}`,
   ] }));
@@ -253,6 +314,8 @@ Next
      (Cursor and others: see README.md → Connect an agent.)
   3. Your data lives in YOUR Cloudflare account. Nothing is sent to anyone else.
 
+${mail ? `  Email         sent from ${mail.from}` : "  Email         off (docs/EMAIL.md says how to turn it on)"}
+${mailReport.next.length ? "\nEmail is not on yet. To finish it:\n" + mailReport.next.map((n) => `  - ${n}`).join("\n") + "\n" : ""}
 Update later:  git pull && npm install && npm run install:cloudflare
 `);
 }

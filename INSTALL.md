@@ -65,6 +65,15 @@ to everyone:
 npx wrangler secret put ALLOW_SIGNUPS      # enter: true
 ```
 
+## Email
+
+With a domain of your own the installer also sets up outbound email (confirm an
+address, reset a password) through Cloudflare Email Sending: it onboards the
+domain, adds the DNS records and writes the sender to your config. Flags:
+`--mail-domain`, `--mail-from`, `--no-email`. Without it the app works as before.
+See [docs/EMAIL.md](docs/EMAIL.md) for what it does, what to do when a step
+cannot be automated, and what an unconfirmed address can and cannot do.
+
 ## Your own domain
 
 Needs a domain whose DNS is on this Cloudflare account.
