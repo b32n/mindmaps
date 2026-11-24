@@ -154,6 +154,31 @@ test.describe("what a closed workspace looks like", () => {
     expect((await listBoards(s.guest.request)).map((b) => b.id)).not.toContain(s.board.id);
   });
 
+  test("an artefact granted on its own stops being readable, listed or recalled, and comes back on reopen", async ({ account, request, makePerson }) => {
+    void account;
+    const s = await seeded(request, makePerson);
+    const grantee = await makePerson("grantee");
+    const note = `Grant ${s.term}`;
+    const doc = await createArtefact(request, s.board.id, "doc", { title: note, blocks: ["body"] });
+    expect((await addMember(request, "artefacts", doc.id, grantee.user.email, "viewer")).added).toBeTruthy();
+    const mcp = await connectMcp(grantee.request);
+    const listed = async () =>
+      (await (await grantee.request.get("/api/artefacts")).text()).includes(doc.id) ||
+      (await mcp.call("list_mindmaps", {})).text.includes(note) ||
+      (await mcp.call("search", { query: s.term })).text.includes(note);
+    expect((await grantee.request.get(`/api/artefacts/${doc.id}`)).status()).toBe(200);
+    expect(await listed()).toBe(true);
+
+    await closeWorkspace(request, s.org.ws.id);
+    expect((await grantee.request.get(`/api/artefacts/${doc.id}`)).status()).toBe(404);
+    expect((await grantee.request.get(`/api/nodes/${doc.id}`)).status()).toBe(404);
+    expect(await listed()).toBe(false);
+
+    await reopenWorkspace(request, s.org.ws.id);
+    expect((await grantee.request.get(`/api/artefacts/${doc.id}`)).status()).toBe(200);
+    expect(await listed()).toBe(true);
+  });
+
   test("nothing can be written into it: cards, mindmaps, renames, people, ownership", async ({ account, request, makePerson }) => {
     void account;
     const s = await seeded(request, makePerson);
