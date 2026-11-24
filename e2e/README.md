@@ -117,6 +117,17 @@ listen on the four ports above's successors (`E2E_MODE_PORT`, default
 it runs `scripts/install.mjs --dry-run` from a temp copy of the repo and tests
 `scripts/lib/install-config.mjs` directly.
 
+## The email instance
+
+`wrangler.test-mail.toml` runs a Worker with outbound email on and
+`MAIL_TRANSPORT=capture`: messages are kept in R2 and read back with
+`GET /api/_mail?to=<address>` (`e2e/support/mail.ts`). Google sign-in points at a
+fake Google (`e2e/support/fake-google.mjs`). Ports follow the mode Workers
+(`E2E_MAIL_PORT`, `E2E_FAKE_GOOGLE_PORT`). The `email` project (`e2e/email`) runs
+against it; `e2e/tests/auth/email-off*.spec.ts` run against the main Worker, which
+has no sender. Every test config sets `CLIENT_IP_HEADER` to a header nothing sends,
+so per-client rate limits only apply where a spec sends `x-e2e-client-ip`.
+
 ## Layout
 
 ```
