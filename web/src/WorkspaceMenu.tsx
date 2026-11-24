@@ -12,8 +12,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { useAuth } from "./AuthContext";
+import { useAuth, useMode } from "./AuthContext";
 import { api, type ClosedWorkspace, type MyInvite, type Workspace } from "./api";
+import { CreateOrganisationDialog } from "./OrganisationGate";
 import { Modal } from "./ui/Modal";
 import { IconCheck, IconLogout, IconPeople, IconPlus } from "./ui/Icons";
 
@@ -47,8 +48,12 @@ export function WorkspaceMenu({
   onAnswered: (invite: MyInvite, accepted: boolean) => void;
 }) {
   const { user } = useAuth();
+  // Only a multitenant instance lets people make shared spaces: a personal one
+  // has none, and an org-mode one has its single organisation.
+  const canCreate = useMode() === "multitenant";
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [creatingOrg, setCreatingOrg] = useState(false);
   const [leaving, setLeaving] = useState<Workspace | null>(null);
   const [closed, setClosed] = useState<ClosedWorkspace[]>([]);
   const [name, setName] = useState("");
@@ -267,25 +272,50 @@ export function WorkspaceMenu({
           )}
           {error && <p className="trash-error">{error}</p>}
 
-          <div className="ws-sep" />
+          {canCreate && (
+            <>
+              <div className="ws-sep" />
 
-          <button
-            role="menuitem"
-            className="ws-item ws-new"
-            onClick={() => {
-              setOpen(false);
-              setCreating(true);
-            }}
-          >
-            <span className="ws-check">
-              <IconPlus size={13} />
-            </span>
-            <span className="ws-item-main">
-              <span className="ws-item-name">New workspace</span>
-            </span>
-          </button>
+              <button
+                role="menuitem"
+                className="ws-item ws-new"
+                onClick={() => {
+                  setOpen(false);
+                  setCreatingOrg(true);
+                }}
+              >
+                <span className="ws-check">
+                  <IconPlus size={13} />
+                </span>
+                <span className="ws-item-main">
+                  <span className="ws-item-name">Create organisation</span>
+                </span>
+              </button>
+              <button
+                role="menuitem"
+                className="ws-item ws-new"
+                onClick={() => {
+                  setOpen(false);
+                  setCreating(true);
+                }}
+              >
+                <span className="ws-check">
+                  <IconPlus size={13} />
+                </span>
+                <span className="ws-item-main">
+                  <span className="ws-item-name">New workspace</span>
+                </span>
+              </button>
+            </>
+          )}
         </div>
       )}
+
+      <CreateOrganisationDialog
+        open={creatingOrg}
+        onClose={() => setCreatingOrg(false)}
+        onCreated={onCreated}
+      />
 
       <Modal
         open={creating}

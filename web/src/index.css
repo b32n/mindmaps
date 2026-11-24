@@ -1947,3 +1947,26 @@ a.card-open { display: block; box-sizing: border-box; text-align: center; text-d
   background: var(--danger-soft); color: var(--danger);
   font-size: var(--t-sm);
 }
+
+/* =============================================================================
+   Organisation: first-run set-up, and the page for people not in it yet
+   ========================================================================== */
+
+.org-page {
+  min-height: 100%; width: 100%; display: flex; align-items: center; justify-content: center;
+  padding: var(--s7) var(--s5); background: var(--bg);
+}
+.org-card {
+  width: 100%; max-width: 520px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-xl); padding: var(--s6);
+  display: flex; flex-direction: column; gap: var(--s4);
+  box-shadow: var(--e2);
+}
+.org-card h1 { margin: 0; font-size: var(--t-xl); }
+.org-lede { margin: 0; color: var(--muted); line-height: 1.6; }
+.org-adopt { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
+.org-actions { display: flex; justify-content: flex-end; gap: var(--s2); }
+.org-invites { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.org-invites li { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.org-invite-actions { display: flex; gap: var(--s2); flex-shrink: 0; }

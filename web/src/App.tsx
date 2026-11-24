@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { api, type Board as BoardT, type MyInvite, type Workspace } from "./api";
-import { useAuth } from "./AuthContext";
+import { api, type Board as BoardT, type MyInvite, type OrganisationInfo, type Workspace } from "./api";
+import { useAuth, useMode } from "./AuthContext";
+import { OrganisationSetup, OrganisationWaiting } from "./OrganisationGate";
 import { Board } from "./Board";
 import { Modal } from "./ui/Modal";
 import { SettingsDialog } from "./SettingsDialog";
@@ -107,6 +108,22 @@ export function BoardApp() {
     // Move off a workspace that is gone: left, or closed from another tab.
     setWsId((cur) => (cur && ws.some((w) => w.id === cur) ? cur : (ws[0]?.id ?? null)));
   }, []);
+
+  /*
+   * The organisation, on an org-mode instance: the first account sets it up,
+   * and anyone who is not in it is told how to get in instead of being shown
+   * an app with nothing in it. Other modes never ask.
+   */
+  const mode = useMode();
+  const [org, setOrg] = useState<OrganisationInfo | null>(null);
+  /** Set while the owner is on the "invite your team" step, so it outlives the state change that created the organisation. */
+  const [onboarding, setOnboarding] = useState(false);
+  const refreshOrg = useCallback(() => {
+    api.organisation().then(setOrg).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (mode === "org") refreshOrg();
+  }, [mode, refreshOrg]);
 
   /** null = closed, otherwise the workspace being managed. */
   const [wsDialog, setWsDialog] = useState<Workspace | null>(null);
@@ -222,6 +239,40 @@ export function BoardApp() {
     // too would race it.
     setBoards((bs) => bs.filter((b) => b.id !== id));
     setDialog(null);
+  }
+
+  if (mode === "org") {
+    if (!org) return <div className="boot">Loading…</div>;
+    if (org.state === "setup" || onboarding)
+      return (
+        <OrganisationSetup
+          info={org}
+          onCreated={(w) => {
+            setOnboarding(true);
+            setWorkspaces((xs) => (xs.some((x) => x.id === w.id) ? xs : [...xs, w]));
+            setWsId(w.id);
+          }}
+          onDone={() => {
+            // Leave the page only once the new state has landed, or it shows the first step again for a moment.
+            void Promise.all([api.organisation().then(setOrg), refreshAll()]).finally(() => setOnboarding(false));
+          }}
+        />
+      );
+    if (org.state === "waiting" || (org.state === "outside" && org.gated))
+      return (
+        <OrganisationWaiting
+          info={org}
+          invites={invites}
+          onAnswered={(invite, accepted) => {
+            setInvites((xs) => xs.filter((x) => x.token !== invite.token));
+            if (accepted) {
+              refreshOrg();
+              void refreshAll();
+              if (invite.target_type === "workspace") setWsId(invite.target_id);
+            }
+          }}
+        />
+      );
   }
 
   if (err)
