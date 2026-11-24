@@ -6,8 +6,9 @@ import { newUser } from "../support/users";
 import { MAIN_PORT, MODE_CASES, modeWorkers, type ModeCase } from "../support/hosts";
 
 // MINDMAPS_MODE, read from the environment and shown to the app and to MCP
-// clients. Nothing is enforced yet (docs/MODES.md): these specs pin what is
-// exposed, and that every mode behaves exactly as before.
+// clients. These specs pin what is exposed, and the basics every mode shares.
+// What personal mode hides is in personal.spec.ts; that the other modes keep
+// everything in unchanged.spec.ts; switching an install in switch.spec.ts.
 //
 // Each case has its own Worker (playwright.config.ts). The main Worker leaves the
 // var unset, which must behave as multitenant.
@@ -78,7 +79,8 @@ for (const setup of SETUPS) {
       expect(init.serverInfo).not.toHaveProperty("mode");
       expect((await post("server/discover"))._meta).toEqual({ "mindmaps/mode": setup.expects });
 
-      // tools/list must not depend on the mode (yet): same names, in every mode
+      // tools/list offers the same tools in every mode (personal only drops the
+      // `workspace` argument, see personal.spec.ts)
       const tools = (await post("tools/list")).tools as { name: string }[];
       expect(tools.map((t) => t.name).sort()).toEqual(await mainToolNames());
     });

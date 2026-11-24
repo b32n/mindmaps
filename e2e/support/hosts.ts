@@ -61,3 +61,16 @@ export const modeWorkers = Object.fromEntries(
     },
   ]),
 ) as Record<ModeCase, { name: ModeCase; port: number; baseURL: string; value: string }>;
+
+/**
+ * One more Worker, started and stopped by e2e/modes/switch.spec.ts rather than
+ * by Playwright: the same database run under one MINDMAPS_MODE after another.
+ * It sits right after the mode Workers above; `inspector` is what serve.mjs
+ * derives (port + 1000).
+ */
+const SWITCH_PORT = MODE_PORT_BASE + MODE_CASES.length;
+export const switchWorker = {
+  port: SWITCH_PORT,
+  baseURL: `http://127.0.0.1:${SWITCH_PORT}`,
+  stateDir: ".e2e-state-mode-switch",
+};
