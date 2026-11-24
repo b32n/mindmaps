@@ -10,7 +10,7 @@
     "dev": "wrangler dev",
     "dev:web": "npm --prefix web run dev",
     "build": "npm --prefix web ci && npm --prefix web run build",
-    "deploy": "npm run build && wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "deploy": "npm run build && node scripts/deploy.mjs",
     "db:migrate": "wrangler d1 migrations apply DB --local",
     "db:seed": "wrangler d1 execute DB --local --file=worker/seed.sql",
     "types": "wrangler types",

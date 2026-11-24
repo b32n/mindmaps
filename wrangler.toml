@@ -67,7 +67,23 @@ crons = ["* * * * *"]
 #   PUBLIC_ORIGIN / APP_ORIGIN   https://notes.example.com
 #   MINDBOX_ORIGIN               https://box.example.com   (optional second hostname for HTML artefacts)
 #
+# What kind of instance this is (docs/MODES.md). One of:
+#   personal      just you, plus the people you invite
+#   org           a team or company's own instance
+#   multitenant   the hosted service (many unrelated customers)
+# The value below is the committed default, so a Deploy to Cloudflare install
+# starts as personal. `npm run install:cloudflare` replaces it when it writes
+# wrangler.local.toml (the question, or --mode); an existing install that has no
+# mode of its own keeps none on a re-run. The hosted service is pinned to
+# multitenant: the installer and `npm run deploy` force it for that host.
+# Unset or empty means multitenant in the Worker itself. Anything else makes the
+# Worker answer every request with a 500 naming this variable. Keep it under this
+# single vars table.
+#
 # Secrets (`npx wrangler secret put NAME`, never committed):
 #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   optional Google sign-in
 #   MINDBOX_SECRET   optional; signs HTML-artefact URLs. Generated and kept in D1
 #                    when unset, so there is nothing to configure.
+
+[vars]
+MINDMAPS_MODE = "personal"

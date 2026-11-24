@@ -39,6 +39,7 @@ import {
 import { blocksToMarkdown, parseDoc } from "./markdown";
 import { createStarterBoard } from "./starter";
 import { deleteAccount, deletionBlockers, exportAccount, exportFilename, finishDeletions, type AccountEnv } from "./account";
+import { modeProblem, readMode } from "./mode";
 import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
 export interface Env {
@@ -55,6 +56,12 @@ export interface Env {
   ALLOWED_ORIGIN?: string;
   /** "true" opens sign-up to anyone; default is owner-first, then invite-only */
   ALLOW_SIGNUPS?: string;
+  /**
+   * "personal" | "org" | "multitenant"; unset or empty is "multitenant", how
+   * every install behaved before this existed. Anything else makes the Worker
+   * refuse every request with a 500. See mode.ts and docs/MODES.md.
+   */
+  MINDMAPS_MODE?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   /** where the browser lands after Google sends us back */
@@ -141,6 +148,13 @@ export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (req.method === "OPTIONS") return new Response(null, { headers: cors(env) });
 
+    // An invalid MINDMAPS_MODE stops everything, loudly, instead of guessing.
+    const badMode = modeProblem(env);
+    if (badMode) {
+      console.error(badMode);
+      return json(env, { error: badMode, code: "invalid_mode" }, 500);
+    }
+
     const url = new URL(req.url);
     const seg = url.pathname.split("/").filter(Boolean); // ["api", ...]
 
@@ -216,6 +230,8 @@ export default {
    * oldest first, so nothing starves.
    */
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const badMode = modeProblem(env);
+    if (badMode) return console.error(`scheduled work skipped: ${badMode}`);
     ctx.waitUntil(
       sweepDirty(env as Parameters<typeof sweepDirty>[0]).then(
         (n) => {
@@ -1703,7 +1719,7 @@ async function authRoute(
   const m = req.method;
 
   if (action === "me" && m === "GET") {
-    return json(env, { user, googleEnabled: !!env.GOOGLE_CLIENT_ID });
+    return json(env, { user, googleEnabled: !!env.GOOGLE_CLIENT_ID, mode: readMode(env) });
   }
 
   if (action === "register" && m === "POST") {
