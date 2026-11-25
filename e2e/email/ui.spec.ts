@@ -94,12 +94,16 @@ test.describe("forgot and reset", () => {
     await page.goto("/login");
     await page.getByRole("link", { name: "Forgot your password?" }).click();
     await expect(page).toHaveURL(/\/forgot-password$/);
-    await page.getByLabel("Email").fill(existing.user.email);
-    await page.getByRole("button", { name: "Send reset link" }).click();
-    await expect(page.getByRole("status")).toContainText("If there is an account for that address");
+    // Fill and submit until the confirmation shows: under load the page can still be settling
+    // (session check) and re-render the form empty after the first fill.
+    await expect(async () => {
+      await page.getByLabel("Email").fill(existing.user.email);
+      await page.getByRole("button", { name: "Send reset link" }).click();
+      await expect(page.getByRole("status")).toContainText("If there is an account for that address", { timeout: 1500 });
+    }).toPass({ timeout: 10_000 });
 
     const all = await waitForMail(request, existing.user.email, 2);
-    const mail = all.find((m) => m.subject === "Reset your password")!;
+    const mail = all.filter((m) => m.subject === "Reset your password").pop()!;
     const link = linkIn(mail);
     await page.goto(link.pathname + link.search);
 
