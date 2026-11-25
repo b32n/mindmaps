@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { auth } from "../api";
 import { useAuth } from "../AuthContext";
+import { LegalLinks } from "./Legal";
 
 /**
  * Mirrors the server's policy in worker/src/auth.ts. Shown live as the user
@@ -136,6 +137,7 @@ export function LoginPage() {
         <p className="auth-alt">
           No account? <Link to="/register">Create one</Link>
         </p>
+        <LegalLinks />
       </form>
     </div>
   );
@@ -227,6 +229,10 @@ export function RegisterPage() {
         </button>
         <p className="auth-alt">
           Already have an account? <Link to="/login">Sign in</Link>
+        </p>
+        <p className="auth-alt legal-agree">
+          By creating an account you agree to the <Link to="/terms">Terms</Link> and the{" "}
+          <Link to="/privacy">Privacy policy</Link>.
         </p>
       </form>
     </div>

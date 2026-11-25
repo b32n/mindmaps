@@ -193,6 +193,16 @@ export interface User {
 /** What kind of instance this is; set by MINDMAPS_MODE on the Worker (docs/MODES.md). */
 export type Mode = "personal" | "org" | "multitenant";
 
+/** Who runs this instance, for /privacy and /terms. Both are whatever the operator set, or null. */
+export interface LegalInfo {
+  mode: Mode;
+  operator: { name: string | null; contact: string | null };
+}
+
+export const legal = {
+  info: () => req<LegalInfo>("/legal"),
+};
+
 export const auth = {
   me: () => req<{ user: User | null; googleEnabled: boolean; mode: Mode }>("/auth/me"),
   register: (email: string, password: string, name: string) =>

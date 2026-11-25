@@ -10,6 +10,7 @@ import { ArtefactsView } from "./ArtefactsView";
 import { MembersPanel } from "./MembersPanel";
 import { WorkspaceMenu } from "./WorkspaceMenu";
 import { Recall } from "./Recall";
+import { LegalLinks } from "./pages/Legal";
 import { IconGear, IconLayers, IconPeople, IconTrash, IconGrip, IconLogout, IconMap, IconMore, IconPlus } from "./ui/Icons";
 
 export function BoardApp() {
@@ -376,6 +377,7 @@ export function BoardApp() {
           <button className="signout" onClick={() => void signOut()}>
             <IconLogout size={15} /> Sign out
           </button>
+          <LegalLinks className="legal-links rail-legal" />
         </div>
       </nav>
 

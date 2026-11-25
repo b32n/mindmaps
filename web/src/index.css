@@ -1919,3 +1919,43 @@ a.card-open { display: block; box-sizing: border-box; text-align: center; text-d
   background: var(--danger-soft); color: var(--danger);
   font-size: var(--t-sm);
 }
+
+/* =============================================================================
+   Privacy policy and terms
+   ========================================================================== */
+
+.legal-links {
+  display: flex; justify-content: center; gap: var(--s2);
+  font-size: var(--t-xs); color: var(--faint);
+}
+.legal-links a { color: var(--muted); text-decoration: none; }
+.legal-links a:hover { color: var(--accent); text-decoration: underline; }
+.rail-legal { justify-content: flex-start; padding: var(--s2) var(--s2) 0; }
+.legal-agree { font-size: var(--t-xs); }
+
+.legal-page { min-height: 100%; background: var(--bg); color: var(--ink-2); overflow-y: auto; }
+.legal-head {
+  max-width: 720px; margin: 0 auto; padding: var(--s5) var(--s5) 0;
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--s4); flex-wrap: wrap;
+}
+.legal-head nav { display: flex; gap: var(--s4); font-size: var(--t-sm); }
+.legal-head nav a { color: var(--muted); text-decoration: none; }
+.legal-head nav a:hover { color: var(--accent); }
+.legal-body { max-width: 720px; margin: 0 auto; padding: var(--s5) var(--s5) var(--s7); line-height: 1.65; font-size: var(--t-base); }
+.legal-body h1 { color: var(--ink); font-size: var(--t-xl); margin: var(--s4) 0 var(--s2); }
+.legal-body h2 { color: var(--ink); font-size: var(--t-lg); margin: 0 0 var(--s2); }
+.legal-body a { color: var(--accent); }
+.legal-body ul { padding-left: 1.2em; display: flex; flex-direction: column; gap: var(--s2); }
+.legal-body code { font-family: var(--mono); font-size: 0.9em; background: var(--surface-2); padding: 1px 5px; border-radius: var(--r-xs); }
+.legal-section { margin-top: var(--s6); }
+.legal-meta { font-size: var(--t-sm); color: var(--muted); }
+.legal-note {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: var(--s3) var(--s4); font-size: var(--t-sm); margin: var(--s4) 0;
+}
+.legal-note p { margin: var(--s2) 0; }
+/* A decision nobody has made yet. Loud on purpose: it must not be mistaken for finished text. */
+.legal-placeholder {
+  background: var(--warn-soft); color: var(--warn);
+  border: 1px dashed var(--warn); border-radius: var(--r-xs); padding: 0 4px; font-weight: 600;
+}
