@@ -236,7 +236,7 @@ function fakeCloudflare(opts: { deny?: boolean; existing?: { name: string; sitek
     if (opts.deny) return reply(403, { success: false, errors: [{ message: "forbidden" }] });
     if (key === "GET /client/v4/accounts/acct1/challenges/widgets") return reply(200, { success: true, result: widgets });
     if (key === "POST /client/v4/accounts/acct1/challenges/widgets") {
-      if (opts.failCreate) return reply(400, { success: false, errors: [{ message: `bad domain, secret was ${SECRET}` }], result: { secret: SECRET } });
+      if (opts.failCreate) return reply(400, { success: false, errors: [{ message: "bad domain" }], result: { secret: SECRET } });
       const b = JSON.parse(init.body);
       const w = { name: b.name, sitekey: "0x4AAAAAAAcreated", domains: b.domains };
       widgets.push(w);
@@ -302,6 +302,9 @@ test.describe("making the widget through the API", () => {
     expect(r.status).toBe("failed");
     expect(r.detail).toContain("creating the widget");
     expect(r.secret).toBeUndefined();
+    // Cloudflare's reason is kept; the body it came in is not
+    expect(r.detail).not.toContain(SECRET);
+    expect(JSON.stringify(r)).not.toContain(SECRET);
   });
 
   test("a network error is reported, not thrown, and does not carry the token", async () => {
@@ -396,7 +399,8 @@ else if (line.startsWith("secret put")) {
 
   test("a re-run that keeps its key does not store a secret again", () => {
     const first = run(["--turnstile-site-key", SITE]);
-    const second = run([], { TURNSTILE_SECRET_KEY: "" });
+    // even with the secret still in the environment, a re-run that keeps its key stores nothing
+    const second = run([], { TURNSTILE_SECRET_KEY: SECRET });
     expect(second.result.turnstile).toMatchObject({ enabled: true, status: "kept", siteKey: SITE });
     // the log keeps both runs; the second adds no secret put of its own
     expect(second.log.slice(first.log.length)).not.toContain("secret put");
