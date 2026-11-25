@@ -7,7 +7,7 @@ import {
 } from "../../support/sso";
 
 // The organisation settings (Domains, Policy, Single sign-on), the Join banner
-// and the "Sign in with SSO" entry on the login page.
+// and the "Continue with SSO" entry on the login page.
 
 test.use({ baseURL: modeWorkers.multitenant.baseURL });
 const BASE = modeWorkers.multitenant.baseURL;
@@ -164,15 +164,15 @@ test.describe("Join banner", () => {
 });
 
 test.describe("login page", () => {
-  test("Sign in with SSO takes the email and signs in through the provider", async ({ page, personOn }) => {
+  test("Continue with SSO takes the email and signs in through the provider", async ({ page, personOn }) => {
     const org = await newOrg(personOn, { sso: true, name: "Cyberdyne" });
     const email = `sso-ui-${Date.now()}@${org.domain}`;
     await org.idp.control({ claims: { email } });
     await page.goto("/login");
-    await page.getByRole("button", { name: "Sign in with SSO" }).click();
+    await page.getByRole("button", { name: "Continue with SSO", exact: true }).click();
     await expect(page.locator(".auth-error")).toContainText("work email");
     await page.getByLabel("Email").fill(email);
-    await page.getByRole("button", { name: "Sign in with SSO" }).click();
+    await page.getByRole("button", { name: "Continue with SSO", exact: true }).click();
     await page.waitForURL(/\/app/);
     expect(((await (await page.request.get("/api/auth/me")).json()) as { user: { email: string } }).user.email).toBe(email);
   });
@@ -180,14 +180,14 @@ test.describe("login page", () => {
   test("an address with no organisation says so", async ({ page }) => {
     await page.goto("/login");
     await page.getByLabel("Email").fill(`nobody@${uniqueDomain("none")}`);
-    await page.getByRole("button", { name: "Sign in with SSO" }).click();
+    await page.getByRole("button", { name: "Continue with SSO", exact: true }).click();
     await expect(page.locator(".auth-error")).toBeVisible();
   });
 
   test("a personal install does not offer it, and shows no settings", async ({ page }) => {
     await page.goto(`${modeWorkers.personal.baseURL}/login`);
     await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Sign in with SSO" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Continue with SSO", exact: true })).toHaveCount(0);
   });
 });
 

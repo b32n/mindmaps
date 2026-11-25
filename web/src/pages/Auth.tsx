@@ -36,14 +36,14 @@ function GoogleButton({ next }: { next: string }) {
   );
 }
 
-/** "Sign in with SSO": the email typed below names an organisation by its verified domain. Not on a personal install. */
+/** "Continue with SSO": the email typed below names an organisation by its verified domain. Not on a personal install. */
 function SsoEntry({ next, email, onError }: { next: string; email: string; onError: (m: string | null) => void }) {
   const mode = useMode();
   const [busy, setBusy] = useState(false);
   if (!mode || mode === "personal") return null;
   const go = async () => {
     onError(null);
-    if (!email.trim()) return onError("Enter your work email below, then choose Sign in with SSO.");
+    if (!email.trim()) return onError("Enter your work email below, then choose Continue with SSO.");
     setBusy(true);
     try {
       window.location.assign((await auth.ssoStart(email.trim(), next)).url);
@@ -54,7 +54,7 @@ function SsoEntry({ next, email, onError }: { next: string; email: string; onErr
   };
   return (
     <button type="button" className="btn-google" disabled={busy} onClick={() => void go()}>
-      Sign in with SSO
+      Continue with SSO
     </button>
   );
 }

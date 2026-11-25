@@ -64,7 +64,7 @@ The flow is the authorization-code flow with PKCE (S256), `state` and `nonce`.
 The id_token's signature is checked against the provider's JWKS (RS256 or ES256
 only), then `iss`, `aud`, `exp`, `nonce`, and `email_verified` must be true.
 
-**Signing in.** On the login page, type your work email and choose **Sign in with
+**Signing in.** On the login page, type your work email and choose **Continue with
 SSO**: the address's domain names the organisation, and its provider does the rest.
 A person is matched to an existing account by email, or an account is created
 subject to the mode's sign-up rules (in org mode, someone their provider vouches
