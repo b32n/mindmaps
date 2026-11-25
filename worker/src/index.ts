@@ -1831,7 +1831,9 @@ async function authRoute(
   // Authorization-code flow. The `state` row is single-use and short-lived,
   // which is what stops a third party replaying our callback.
 
-  if (action === "google" && m === "GET") {
+  // `!seg[3]`: without it this branch also answered the callback, bouncing the
+  // browser back to Google, so the callback below was never reached.
+  if (action === "google" && !seg[3] && m === "GET") {
     if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET)
       return json(env, { error: "Google sign-in isn't configured." }, 501);
 
