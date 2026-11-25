@@ -13,6 +13,7 @@ import { api, type MyInvite, type OrganisationInfo, type Workspace } from "./api
 import { useAuth } from "./AuthContext";
 import { MembersPanel } from "./MembersPanel";
 import { Modal } from "./ui/Modal";
+import { JoinBanner } from "./JoinBanner";
 
 /** Step one: a name, or (org mode, existing workspaces) one the owner already has. */
 function NameStep({
@@ -249,6 +250,7 @@ export function OrganisationWaiting({
   return (
     <div className="org-page">
       <div className="org-card org-gate">
+        <JoinBanner onJoined={() => window.location.reload()} />
         {mine.length > 0 ? (
           <h1>You're invited</h1>
         ) : notReady ? (

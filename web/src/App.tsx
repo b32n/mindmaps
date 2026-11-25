@@ -10,6 +10,8 @@ import { TrashDialog } from "./TrashDialog";
 import { ArtefactsView } from "./ArtefactsView";
 import { MembersPanel } from "./MembersPanel";
 import { CloseWorkspace, RenameWorkspace } from "./WorkspaceAdmin";
+import { JoinBanner, LockedNotice, SsoTestResult } from "./JoinBanner";
+import { OrgSecurityPanel } from "./OrgSecurity";
 import { WorkspaceMenu } from "./WorkspaceMenu";
 import { Recall } from "./Recall";
 import { IconGear, IconLayers, IconPeople, IconTrash, IconGrip, IconLogout, IconMap, IconMore, IconPlus } from "./ui/Icons";
@@ -314,6 +316,18 @@ export function BoardApp() {
           </button>
         </div>
 
+        {mode !== "personal" && (
+          <JoinBanner
+            onJoined={(id) => {
+              refreshOrg();
+              void refreshAll();
+              setWsId(id);
+            }}
+          />
+        )}
+        <LockedNotice workspaces={workspaces} />
+        <SsoTestResult />
+
         {/* A visible way in as well as the shortcut. A palette nobody knows the
             chord for is a feature that does not exist. */}
         <button
@@ -520,6 +534,9 @@ export function BoardApp() {
               myRole={wsDialog.role}
               onTransferred={() => api.workspaces().then(setWorkspaces)}
             />
+            {mode !== "personal" && !wsDialog.personal && (wsDialog.role === "owner" || wsDialog.role === "admin") && (
+              <OrgSecurityPanel key={`sec-${wsDialog.id}`} workspace={wsDialog} />
+            )}
             {wsDialog.role === "owner" && (
               <CloseWorkspace
                 workspace={wsDialog}
