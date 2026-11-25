@@ -10,5 +10,7 @@
     "isolatedModules": true,
     "types": ["node"]
   },
-  "include": ["./**/*.ts", "../playwright.config.ts"]
+  "include": ["./**/*.ts", "../playwright.config.ts"],
+  // Runs inside the Worker runtime: typed by worker/tsconfig.json instead.
+  "exclude": ["./support/google-entry.ts"]
 }
