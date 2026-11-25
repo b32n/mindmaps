@@ -33,6 +33,14 @@ test.describe("landing page", () => {
     await expect(page.getByText(`codex mcp add mindmaps --url ${mcp}`).first()).toBeVisible();
   });
 
+  test("the footer MCP link opens this project's MCP setup docs", async ({ page }) => {
+    await page.goto("/");
+    const link = page.locator("footer.lp-foot").getByRole("link", { name: "MCP" });
+    await expect(link).toHaveAttribute("href", "https://github.com/b32n/mindmaps#connect-an-agent-harness-mcp");
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", /noopener/);
+  });
+
   test("a signed-in visitor is offered the app instead of sign-up", async ({ page, account }) => {
     void account;
     await page.goto("/");

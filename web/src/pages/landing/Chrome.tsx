@@ -77,7 +77,11 @@ export function LandingFooter() {
       <span>mindmaps · a memory you and your agents share</span>
       <nav>
         <Link to="/brain">The brain</Link>
-        <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noreferrer noopener">
+        <a
+          href="https://github.com/b32n/mindmaps#connect-an-agent-harness-mcp"
+          target="_blank"
+          rel="noreferrer noopener"
+        >
           MCP
         </a>
         <Link to="/register">Get started</Link>
