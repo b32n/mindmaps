@@ -35,6 +35,8 @@
 /** How long after closing the owner can reopen a workspace. */
 export const CLOSE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
+import { assertNotBlocked, blockedFor, notBlocked } from "./scope";
+
 export type Role = "owner" | "admin" | "editor" | "viewer";
 
 const RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3, owner: 4 };
@@ -65,13 +67,17 @@ export const isOwner = (r: Role | null): boolean => r === "owner";
 // ---------------------------------------------------------------------------
 
 /**
+ * The board's workspace has not been closed, and is not one this request's
+ * session is locked out of (see scope.ts; `lockedToo = false` is for the role
+ * lookups, which need to see a locked board to say so).
+ *
  * The board's workspace has not been closed. Written as the absence of a closed
  * workspace, not the presence of an open one, so a board whose workspace row is
  * missing (which the schema does not allow, but a half-finished deletion could
  * leave) behaves as it did before closing existed rather than vanishing.
  */
-export const NOT_CLOSED = (b = "b") =>
-  `NOT EXISTS (SELECT 1 FROM workspaces cw WHERE cw.id = ${b}.workspace_id AND cw.status <> 'active')`;
+export const NOT_CLOSED = (b = "b", lockedToo = true) =>
+  `${lockedToo ? notBlocked(`${b}.workspace_id`) : ""} NOT EXISTS (SELECT 1 FROM workspaces cw WHERE cw.id = ${b}.workspace_id AND cw.status <> 'active')`;
 
 /**
  * Boards this user may read, as a correlated subquery.
@@ -168,6 +174,8 @@ export async function workspaceRole(
     )
     .bind(userId, workspaceId)
     .first<{ role: Role | null }>();
+  // Someone with no role learns nothing; someone with one is told why not.
+  if (row?.role) assertNotBlocked(db, userId, workspaceId);
   return row?.role ?? null;
 }
 
@@ -190,14 +198,17 @@ export async function boardRole(
                        WHERE m.workspace_id = w.id AND m.user_id = ?1)
               END AS ws_role,
               (SELECT bs.role FROM board_shares bs
-                WHERE bs.board_id = b.id AND bs.user_id = ?1) AS share_role
+                WHERE bs.board_id = b.id AND bs.user_id = ?1) AS share_role,
+              b.workspace_id AS workspace_id
          FROM boards b LEFT JOIN workspaces w ON w.id = b.workspace_id
-        WHERE b.id = ?2 AND ${NOT_CLOSED("b")}`,
+        WHERE b.id = ?2 AND ${NOT_CLOSED("b", false)}`,
     )
     .bind(userId, boardId)
-    .first<{ ws_role: Role | null; share_role: Role | null }>();
+    .first<{ ws_role: Role | null; share_role: Role | null; workspace_id: string | null }>();
   if (!row) return null;
-  return strongest(row.ws_role, row.share_role);
+  const role = strongest(row.ws_role, row.share_role);
+  if (role) assertNotBlocked(db, userId, row.workspace_id);
+  return role;
 }
 
 /** The strongest role on a node: inherited from its board, or granted directly. */
@@ -216,16 +227,19 @@ export async function nodeRole(
               (SELECT bs.role FROM board_shares bs
                 WHERE bs.board_id = b.id AND bs.user_id = ?1) AS share_role,
               (SELECT g.role FROM artefact_grants g
-                WHERE g.node_id = n.id AND g.user_id = ?1) AS grant_role
+                WHERE g.node_id = n.id AND g.user_id = ?1) AS grant_role,
+              b.workspace_id AS workspace_id
          FROM nodes n
          JOIN boards b ON b.id = n.board_id
          LEFT JOIN workspaces w ON w.id = b.workspace_id
-        WHERE n.id = ?2 AND ${NOT_CLOSED("b")}`,
+        WHERE n.id = ?2 AND ${NOT_CLOSED("b", false)}`,
     )
     .bind(userId, nodeId)
-    .first<{ ws_role: Role | null; share_role: Role | null; grant_role: Role | null }>();
+    .first<{ ws_role: Role | null; share_role: Role | null; grant_role: Role | null; workspace_id: string | null }>();
   if (!row) return null;
-  return strongest(row.ws_role, row.share_role, row.grant_role);
+  const role = strongest(row.ws_role, row.share_role, row.grant_role);
+  if (role) assertNotBlocked(db, userId, row.workspace_id);
+  return role;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +253,8 @@ export interface WorkspaceRow {
   personal: number;
   role: Role;
   updated_at: number | null;
+  /** True when this session is locked out of it by the organisation's enforce-SSO (scope.ts). */
+  sso_required?: boolean;
 }
 
 /** Every workspace this user can open, personal first. Closed ones are not among them. */
@@ -259,7 +275,8 @@ export async function workspacesFor(db: D1Database, userId: string): Promise<Wor
     )
     .bind(userId)
     .all<WorkspaceRow>();
-  return rows.results ?? [];
+  const locked = blockedFor(db, userId);
+  return (rows.results ?? []).map((w) => (locked.has(w.id) ? { ...w, sso_required: true } : w));
 }
 
 export interface ClosedWorkspaceRow {
@@ -349,6 +366,9 @@ export async function recallScope(
    */
   workspaceId: string | null,
 ): Promise<RecallScope> {
+  assertNotBlocked(db, userId, workspaceId);
+  const locked = blockedFor(db, userId);
+  const open = (ids: string[]) => ids.filter((id) => !locked.has(id));
   if (!workspaceId) {
     const [all, granted] = await Promise.all([
       db
@@ -373,7 +393,7 @@ export async function recallScope(
         .bind(userId)
         .all<{ node_id: string }>(),
     ]);
-    const namespaces = (all.results ?? []).map((r) => r.ns).filter(Boolean);
+    const namespaces = open((all.results ?? []).map((r) => r.ns).filter(Boolean));
     return {
       namespaces: namespaces.length ? namespaces : [userId],
       grantedNodeIds: (granted.results ?? []).map((r) => r.node_id),
@@ -403,7 +423,7 @@ export async function recallScope(
   ]);
 
   return {
-    namespaces: [workspaceId, ...(shared.results ?? []).map((r) => r.ns).filter(Boolean)],
+    namespaces: [workspaceId, ...open((shared.results ?? []).map((r) => r.ns).filter(Boolean))],
     grantedNodeIds: (granted.results ?? []).map((r) => r.node_id),
   };
 }

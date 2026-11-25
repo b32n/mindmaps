@@ -30,6 +30,7 @@ import {
   payloadFromInput, payloadProblem, type ArtefactKind,
 } from "./artefacts";
 import { cardEditStmts, cardInsertStmts, mcpActor, versionLine, writeArtefact, writeCard, type Actor } from "./versions";
+import { SsoRequiredError } from "./scope";
 import {
   BOARD_READABLE, IN_BOARD_WORKSPACE, IN_WORKSPACE, NODE_READABLE, NOT_CLOSED, boardRole, canWrite, ensurePersonalWorkspace,
   workspacesFor, type WorkspaceRow,
@@ -843,6 +844,10 @@ async function callTool(id: Id, env: McpEnv, grant: TokenGrant, params: any): Pr
   try {
     return await runTool(id, env, grant, name, args);
   } catch (err: any) {
+    // The organisation requires SSO and this connection did not come through
+    // it: something the agent (and the person behind it) can act on.
+    if (err instanceof SsoRequiredError)
+      return rpcOk(id, toolText(`${err.message} Connect again from a session signed in through the organisation's SSO.`, true));
     const ref = crypto.randomUUID().slice(0, 8);
     console.error("mcp tool failed", name, ref, err);
     return rpcOk(id, toolText(`That failed (ref ${ref}); nothing was written.`, true));

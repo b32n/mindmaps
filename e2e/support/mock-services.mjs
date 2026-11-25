@@ -32,7 +32,7 @@
 //   DELETE /__txt?name=
 //   POST /__fail    { name, mode: "servfail" | "http500" | "empty-answer-ok" }
 //   GET  /__queries?name=                    what was asked
-import { createHmac, createPublicKey, generateKeyPairSync, randomBytes, sign, createHash } from "node:crypto";
+import { createHmac, generateKeyPairSync, randomBytes, sign, createHash } from "node:crypto";
 import { createServer } from "node:http";
 
 const IDP_PORT = Number(process.env.E2E_IDP_PORT ?? 8792);
@@ -51,7 +51,7 @@ const KEYS = {
   RS256: { kid: "rs-1", pair: rsa },
   ES256: { kid: "ec-1", pair: ec },
 };
-const jwk = (kid, alg, pub) => ({ ...createPublicKey(pub).export({ format: "jwk" }), kid, alg, use: "sig" });
+const jwk = (kid, alg, pub) => ({ ...pub.export({ format: "jwk" }), kid, alg, use: "sig" });
 const JWKS = {
   keys: [jwk("rs-1", "RS256", rsa.publicKey), jwk("ec-1", "ES256", ec.publicKey)],
 };
@@ -253,7 +253,7 @@ const idp = createServer(async (req, res) => {
         // The classic confusion: sign with the HMAC of the public key's text and
         // hope the verifier treats the public key as a shared secret.
         alg = "HS256";
-        hmac = createPublicKey(rsa.publicKey).export({ type: "spki", format: "pem" });
+        hmac = rsa.publicKey.export({ type: "spki", format: "pem" });
         break;
       case "unknown-kid":
         kid = "no-such-key";

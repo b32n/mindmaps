@@ -1,8 +1,8 @@
 import { Anthropic, textFromEvents, type Repo } from "./anthropic";
 import {
   SESSION_COOKIE, clearCookie, createSession, destroySession, hashPassword,
-  passwordProblems, readCookie, sessionCookie, userForToken, verifyPassword,
-  type SessionUser,
+  passwordProblems, publicUser, readCookie, sessionCookie, userForToken, verifyPassword,
+  type SessionContext, type SessionUser,
 } from "./auth";
 import { handleMcp, rankRecall, reindexPage, requiredScopeFor, sweepDirty } from "./mcp";
 import {
@@ -44,6 +44,10 @@ import { modeProblem, readMode } from "./mode";
 import {
   createOrganisation, createSharedWorkspace, isOrganisationWorkspace, organisationFor, workspaceCreationRefusal,
 } from "./organisation";
+import { SsoRequiredError, blockedWorkspaces, scopeDb, unscoped } from "./scope";
+import { addDomain, removeDomain, verifyDomain } from "./domains";
+import { guard, joinOffers, joinOrganisation, securityOf, setEnforce, setPolicy, ssoSummary } from "./policy";
+import { callbackUrl, completeSso, isEnabled, linkIdentity, removeConfig, resolveIdentity, saveConfig, setEnabled, startLogin, startTest } from "./sso";
 import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
 export interface Env {
@@ -66,6 +70,13 @@ export interface Env {
    * refuse every request with a 500. See mode.ts and docs/MODES.md.
    */
   MINDMAPS_MODE?: string;
+  /**
+   * DNS-over-HTTPS endpoint used to verify domains (Cloudflare's JSON API shape).
+   * Default is Cloudflare's; the test suite points it at a mock. See domains.ts.
+   */
+  DOH_ENDPOINT?: string;
+  /** Encrypts organisations' SSO client secrets. Optional: one is generated and kept in D1 when unset. See secrets.ts. */
+  SSO_SECRET_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   /** where the browser lands after Google sends us back */
@@ -211,12 +222,20 @@ export default {
 
       const user = await userForToken(env.DB, readCookie(req, SESSION_COOKIE));
 
+      // From here on, everything this request reads goes through a handle that
+      // knows which organisations this session is locked out of (enforce-SSO).
+      // Nearly always none, and then it is the plain handle. See scope.ts.
+      if (user) env = { ...env, DB: scopeDb(env.DB, user.id, await blockedWorkspaces(env.DB, user.email, user.sso_workspace_id)) };
+
       // auth endpoints are the only ones reachable signed-out
       if (seg[1] === "auth") return await authRoute(req, env, seg, user);
 
       if (!user) return json(env, { error: "not signed in" }, 401);
       return await route(req, env, seg, user, ctx);
     } catch (err: any) {
+      // Locked out by the organisation's enforce-SSO: not a failure, an instruction.
+      if (err instanceof SsoRequiredError)
+        return json(env, { error: err.message, code: err.code, workspace_id: err.workspaceId }, 403);
       console.error(err);
       return json(env, { error: String(err?.message ?? err) }, 500);
     }
@@ -363,15 +382,20 @@ async function mcpSurface(
   }
   if (!check.grant.scopes.includes(wanted)) return insufficientScope(req, env, wanted);
 
-  // hand the already-read body onward
-  return await handleMcp(new Request(req, { body: raw }), { ...env, PUBLIC_ORIGIN: issuerOf(req, env) } as typeof env, check.grant);
+  // hand the already-read body onward, on a handle that knows which organisations
+  // this connection is locked out of (scope.ts)
+  return await handleMcp(
+    new Request(req, { body: raw }),
+    { ...env, PUBLIC_ORIGIN: issuerOf(req, env), DB: scopeDb(env.DB, check.grant.userId, check.grant.blocked) } as typeof env,
+    check.grant,
+  );
 }
 
 async function route(
   req: Request,
   env: Env,
   seg: string[],
-  user: SessionUser,
+  user: SessionContext,
   ctx: ExecutionContext,
 ): Promise<Response> {
   const [, a, b, c, d] = seg; // seg[0] === "api"
@@ -418,6 +442,18 @@ async function route(
     return new Response(JSON.stringify({ ok: true }), {
       headers: { "content-type": "application/json", "set-cookie": clearCookie(req), ...cors(env) },
     });
+  }
+
+  // --- an organisation's domains, policy and SSO ------------------------------
+
+  if (a === "workspaces" && b && (c === "security" || c === "domains" || c === "policy" || c === "sso" || c === "join")) {
+    const res = await orgSettingsRoute(req, env, seg, user);
+    if (res) return res;
+  }
+
+  if (a === "join-offers" && !b && m === "GET") {
+    const offers = await joinOffers(env, user);
+    return "ok" in offers ? json(env, { error: offers.error, code: offers.code }, offers.status) : json(env, offers);
   }
 
   // --- boards --------------------------------------------------------------
@@ -786,7 +822,7 @@ async function route(
       const role = body?.role === "viewer" ? "viewer" : "editor";
       const result = await invite(env, user.id, target, b, String(body?.email ?? ""), role);
       if (!result) return json(env, { error: "That does not look like an email address." }, 400);
-      if (result.denied) return json(env, { error: result.denied.error }, result.denied.status);
+      if (result.denied) return json(env, { error: result.denied.error, ...(result.denied.code ? { code: result.denied.code } : {}) }, result.denied.status);
       return json(env, result, 201);
     }
   }
@@ -832,7 +868,7 @@ async function route(
         : await declineInvite(env, user.email, b);
     return res.ok
       ? json(env, { ok: true, target_type: res.target_type, target_id: res.target_id, role: res.role })
-      : json(env, { error: res.error }, res.status);
+      : json(env, { error: res.error, ...(res.code ? { code: res.code } : {}) }, res.status);
   }
 
   if (a === "invites" && b && !c && m === "DELETE") {
@@ -1776,19 +1812,99 @@ async function canWriteEdge(env: Env, user: SessionUser, edgeId: string): Promis
   return canWrite(a) && canWrite(b);
 }
 
+// --- an organisation's domains, policy and SSO -------------------------------
+
+/**
+ * `/api/workspaces/:id/{security,domains,policy,sso,join}`. Who may do what is
+ * decided in policy.ts (`guard`); what each does is in domains.ts, policy.ts and
+ * sso.ts. Returns null for a shape that is not one of these, so routing carries on.
+ */
+async function orgSettingsRoute(req: Request, env: Env, seg: string[], user: SessionContext): Promise<Response | null> {
+  const [, , ws, part, x, y] = seg;
+  const m = req.method;
+  const fail = (r: { status: number; code: string; error: string }) => json(env, { error: r.error, code: r.code }, r.status);
+  const body = async () => ((await req.json<any>().catch(() => ({}))) ?? {}) as Record<string, any>;
+  const origin = issuerOf(req, env);
+
+  if (part === "join" && !x && m === "POST") {
+    const r = await joinOrganisation(env, user, ws!);
+    return r.ok ? json(env, r) : fail(r);
+  }
+
+  const need = part === "sso" ? "owner" : "admin";
+  const g = async () => {
+    const r = await guard(env, user.id, ws!, need);
+    return r.ok ? null : fail(r);
+  };
+
+  if (part === "security" && !x && m === "GET") {
+    return (await g()) ?? json(env, await securityOf(unscoped(env.DB), ws!, callbackUrl(origin)));
+  }
+
+  if (part === "domains") {
+    if (!x && m === "POST") {
+      return (await g()) ?? ((r) => (r.ok ? json(env, r.domain, 201) : fail(r)))(await addDomain(env.DB, ws!, user.id, (await body()).domain));
+    }
+    if (x && y === "verify" && m === "POST") {
+      return (await g()) ?? ((r) => (r.ok ? json(env, { ok: true, domain: r.domain }) : fail(r)))(await verifyDomain(env, ws!, x));
+    }
+    if (x && !y && m === "DELETE") {
+      const denied = await g();
+      if (denied) return denied;
+      return (await removeDomain(env.DB, ws!, x)) ? json(env, { ok: true }) : json(env, { error: "not found", code: "not_found" }, 404);
+    }
+  }
+
+  if (part === "policy" && !x && m === "PUT") {
+    const denied = await g();
+    if (denied) return denied;
+    const r = await setPolicy(env.DB, ws!, user.id, await body());
+    return r.ok ? json(env, { policy: r.policy }) : fail(r);
+  }
+
+  if (part === "sso") {
+    const denied = await g();
+    if (denied) return denied;
+    const summary = async () => ssoSummary(env.DB, ws!, callbackUrl(origin));
+    if (!x && m === "PUT") {
+      const r = await saveConfig(env, ws!, user.id, await body());
+      return r.ok ? json(env, { sso: await summary() }) : fail(r);
+    }
+    if (!x && m === "DELETE") {
+      await removeConfig(env, ws!, user.id);
+      return json(env, { ok: true, sso: await summary() });
+    }
+    if (x === "test" && m === "POST") {
+      const r = await startTest(env, ws!, user, origin);
+      return r.ok ? json(env, { url: r.url }) : fail(r);
+    }
+    if (x === "enable" && m === "POST") {
+      const r = await setEnabled(env, ws!, user.id, (await body()).enabled === true);
+      return r.ok ? json(env, { ok: true, sso: await summary() }) : fail(r);
+    }
+    if (x === "enforce" && m === "POST") {
+      const on = (await body()).enforced === true;
+      if (on && !(await isEnabled(env.DB, ws!))) return fail({ status: 409, code: "sso_not_enabled", error: "Turn SSO on before requiring it." });
+      await setEnforce(env.DB, ws!, user.id, on);
+      return json(env, { ok: true, enforce_sso: on });
+    }
+  }
+  return null;
+}
+
 // --- auth -------------------------------------------------------------------
 
 async function authRoute(
   req: Request,
   env: Env,
   seg: string[],
-  user: SessionUser | null,
+  user: SessionContext | null,
 ): Promise<Response> {
   const [, , action] = seg; // ["api","auth",action,...]
   const m = req.method;
 
   if (action === "me" && m === "GET") {
-    return json(env, { user, googleEnabled: !!env.GOOGLE_CLIENT_ID, mode: readMode(env) });
+    return json(env, { user: publicUser(user), googleEnabled: !!env.GOOGLE_CLIENT_ID, mode: readMode(env) });
   }
 
   if (action === "register" && m === "POST") {
@@ -1902,6 +2018,78 @@ async function authRoute(
     });
   }
 
+
+  // --- SSO ------------------------------------------------------------------
+  // "Sign in with SSO": an address names an organisation by its verified domain,
+  // and its provider does the rest. See sso.ts and docs/SSO.md.
+
+  if (action === "sso" && seg[3] === "start" && m === "POST") {
+    if (readMode(env) === "personal")
+      return json(env, { error: "This install is personal: SSO is for organisations.", code: "team_spaces_disabled" }, 403);
+    const body = await req.json<any>().catch(() => ({}));
+    const r = await startLogin(env, body?.email, body?.next, issuerOf(req, env));
+    return r.ok ? json(env, { url: r.url }) : json(env, { error: r.error, code: r.code }, r.status);
+  }
+
+  if (action === "sso" && seg[3] === "callback" && m === "GET") {
+    const url = new URL(req.url);
+    const appOrigin = env.APP_ORIGIN ?? url.origin;
+    if (readMode(env) === "personal")
+      return Response.redirect(`${appOrigin}/login?error=${encodeURIComponent("SSO is not available on a personal install.")}`, 302);
+    const fail = (why: string) => Response.redirect(`${appOrigin}/login?error=${encodeURIComponent(why)}`, 302);
+
+    const done = await completeSso(env, url.searchParams, issuerOf(req, env));
+
+    // The owner's "Test" step: it ends in the app, with the result in the address.
+    if (done.purpose === "test") {
+      const back = (q: string) => Response.redirect(`${appOrigin}/app?${q}`, 302);
+      if (!done.ok) return back(`sso_test=failed&reason=${encodeURIComponent(done.error)}`);
+      if (!user || user.id !== done.userId) return back(`sso_test=failed&reason=${encodeURIComponent("Sign in as the person who started the test.")}`);
+      return back("sso_test=ok");
+    }
+    if (!done.ok) return fail(done.error);
+
+    const { claims, workspaceId, issuer } = done;
+    const email = claims.email.trim().toLowerCase();
+    const found = await resolveIdentity(env.DB, workspaceId, issuer, claims);
+    if (found.kind === "conflict") return fail("That account is already linked to a different sign-in at your identity provider.");
+
+    let uid: string;
+    if (found.kind === "user") {
+      uid = found.userId;
+    } else {
+      // The mode's sign-up rules apply as for any other way in. One addition: in
+      // org mode the organisation is the instance, and a person its identity
+      // provider vouches for, on a domain it has proven, may have an account.
+      // Having one joins nothing: that is Join, or an invitation.
+      const way = (await signupAllowed(env, email)) || (readMode(env) === "org" ? "open" : false);
+      if (!way) return fail(SIGNUP_CLOSED);
+      uid = id();
+      const made = await env.DB.prepare(
+        `INSERT INTO users (id,email,name,avatar_url,created_at,updated_at)
+         SELECT ?1,?2,?3,?4,?5,?5
+          WHERE ?6 = 0 OR NOT EXISTS (SELECT 1 FROM users)`,
+      )
+        .bind(uid, email, String(claims.name ?? ""), typeof claims.picture === "string" ? claims.picture : null, now(), way === "first" ? 1 : 0)
+        .run();
+      if ((made.meta?.changes ?? 0) < 1) return fail(SIGNUP_CLOSED);
+      await ensurePersonalWorkspace(env.DB, uid);
+      await createStarterBoard(env, uid, issuerOf(req, env));
+    }
+    await linkIdentity(env.DB, workspaceId, issuer, claims, uid);
+
+    const { token, expiresAt } = await createSession(env.DB, uid, req.headers.get("user-agent") ?? undefined, {
+      provenVia: "sso",
+      ssoWorkspaceId: workspaceId,
+    });
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location: landingUrl(done.redirectTo, appOrigin, url.origin),
+        "set-cookie": sessionCookie(req, token, Math.floor((expiresAt - Date.now()) / 1000)),
+      },
+    });
+  }
 
   // --- Google OAuth ---------------------------------------------------------
   // Authorization-code flow. The `state` row is single-use and short-lived,
@@ -2017,10 +2205,15 @@ async function authRoute(
       await createStarterBoard(env, uid, issuerOf(req, env));
     }
 
+    // Google has just vouched for `email`; that proves the address for this
+    // session only if it is the account's address (matched by `google_sub`, the
+    // account's may differ). Domain auto-join asks for this proof (policy.ts).
+    const account = await env.DB.prepare(`SELECT email FROM users WHERE id = ?`).bind(uid).first<{ email: string }>();
     const { token, expiresAt } = await createSession(
       env.DB,
       uid,
       req.headers.get("user-agent") ?? undefined,
+      account?.email.toLowerCase() === email ? { provenVia: "google" } : {},
     );
     return new Response(null, {
       status: 302,

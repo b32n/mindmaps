@@ -23,6 +23,8 @@
  * invitation to a lookalike address.
  */
 
+import { INVITE_RESTRICTED_MESSAGE, inviteRefused, workspaceOfTarget } from "./policy";
+import { assertNotBlocked } from "./scope";
 import { MEMBER_ROLE, NOT_CLOSED, canAdmin, canWrite, boardRole, isOwner, nodeRole, workspaceRole, type Role } from "./access";
 
 export interface MemberEnv {
@@ -72,6 +74,8 @@ export async function canGrant(
 export interface Denied {
   status: 400 | 403 | 404 | 409;
   error: string;
+  /** Machine-readable, when there is one worth switching on. */
+  code?: string;
 }
 
 export interface InviteResult {
@@ -102,6 +106,15 @@ export async function invite(
   const email = normaliseEmail(rawEmail);
   if (!email.includes("@")) return null;
 
+  // An organisation that restricts invitations to its verified domains refuses
+  // the rest, whoever asks (policy.ts). Not applied to a role change for someone
+  // already in the workspace: that is not an invitation, and it must never be
+  // the thing that locks a member out.
+  const restricted = async (): Promise<InviteResult | null> =>
+    (await inviteRefused(env.DB, await workspaceOfTarget(env.DB, target, targetId), email))
+      ? { denied: { status: 403, error: INVITE_RESTRICTED_MESSAGE, code: "invite_domain_restricted" } }
+      : null;
+
   const existing = await env.DB.prepare(`SELECT id, email FROM users WHERE lower(email) = ? AND status = 'active'`)
     .bind(email)
     .first<{ id: string; email: string }>();
@@ -128,13 +141,19 @@ export async function invite(
         if (!res.ok) return { denied: { status: res.status, error: res.error } };
         return { added: { userId: existing.id, email: existing.email, role } };
       }
+      const no = await restricted();
+      if (no) return no;
       const token = await createInvite(env, inviterId, target, targetId, email, role);
       return { invited: { token, email, role, existing: true } };
     }
+    const no = await restricted();
+    if (no) return no;
     await addMember(env, target, targetId, existing.id, role, inviterId);
     return { added: { userId: existing.id, email: existing.email, role } };
   }
 
+  const no = await restricted();
+  if (no) return no;
   const token = await createInvite(env, inviterId, target, targetId, email, role);
   return { invited: { token, email, role } };
 }
@@ -382,6 +401,9 @@ export async function acceptInvite(
 
   if (await unavailable(env.DB, row)) return { ok: false, status: 404, error: "not found" };
 
+  // An organisation that requires SSO of this person is joined through its SSO.
+  assertNotBlocked(env.DB, userId, await workspaceOfTarget(env.DB, row.target_type, row.target_id));
+
   const inviter = await env.DB.prepare(`SELECT status FROM users WHERE id = ?`).bind(row.invited_by).first<{ status: string }>();
   if (inviter?.status !== "active" || !(await canGrant(env, row.invited_by, row.target_type, row.target_id))) {
     await endInvite(env, row.token, "revoked");
@@ -398,6 +420,13 @@ export async function acceptInvite(
     )
       .bind(row.target_id, userId)
       .first());
+
+  // An invitation sent before the organisation restricted invitations does not
+  // outlive the restriction: the standing offer is withdrawn rather than honoured.
+  if (!held && (await inviteRefused(env.DB, await workspaceOfTarget(env.DB, row.target_type, row.target_id), row.email))) {
+    await endInvite(env, row.token, "revoked");
+    return { ok: false, status: 409, error: INVITE_RESTRICTED_MESSAGE, code: "invite_domain_restricted" };
+  }
 
   const at = Date.now();
   const { table, key } = TABLES[row.target_type];
