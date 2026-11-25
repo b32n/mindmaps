@@ -105,7 +105,7 @@ sessions**; a completed reset replaces the password and ends all sessions.
 
 ### Existing accounts
 
-Every account that exists when the migration (`0030_email_auth.sql`) runs is
+Every account that exists when the migration (`0033_email_auth.sql`) runs is
 marked verified (`email_verified_via = 'grandfathered'`). They were using invites
 long before verification existed, and un-verifying them would lock people out.
 An address squatted before this release therefore stays trusted; a password
