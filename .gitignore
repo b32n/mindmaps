@@ -29,3 +29,4 @@ blob-report/
 .e2e-state-mindbox/
 .e2e-state-mode-*/
 .e2e-state-mail/
+.e2e-state-turnstile/
