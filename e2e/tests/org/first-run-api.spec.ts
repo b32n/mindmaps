@@ -139,16 +139,18 @@ test.describe("org mode, sign-up closed (the real default)", () => {
   });
 
   test("two sign-ups at once on an empty instance: only one account is created", async () => {
+    // Clients first, so the requests leave together rather than one client
+    // setup apart.
+    const clients = await Promise.all(Array.from({ length: 8 }, () => w.client()));
     const attempts = await Promise.all(
-      Array.from({ length: 6 }, async (_, i) => {
-        const c = await w.client();
+      clients.map(async (c, i) => {
         const u = newUser(`race${i}`);
         const res = await c.post("/api/auth/register", { data: { email: u.email, password: u.password, name: u.name } });
         return { c, status: res.status() };
       }),
     );
     expect(attempts.filter((a) => a.status === 200)).toHaveLength(1);
-    expect(attempts.filter((a) => a.status === 403)).toHaveLength(5);
+    expect(attempts.filter((a) => a.status === 403)).toHaveLength(7);
     const winner = attempts.find((a) => a.status === 200)!;
     expect((await organisation(winner.c)).state).toBe("setup");
   });
