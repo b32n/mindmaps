@@ -113,7 +113,7 @@ export async function isVerified(db: D1Database, userId: string): Promise<boolea
   return !!row?.v;
 }
 
-export async function markVerified(db: D1Database, userId: string, via: "email" | "google" | "reset") {
+export async function markVerified(db: D1Database, userId: string, via: "email" | "google" | "reset" | "sso") {
   const t = now();
   await db
     .prepare(

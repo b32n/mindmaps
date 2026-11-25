@@ -103,9 +103,10 @@ workspaces they were invited to. Being invited to an unverified account likewise
 leaves a pending invite rather than adding the account.
 
 It also means: if someone registered an address they do not own, then the real
-owner signs in with Google or resets the password, the account is theirs: Google
-linking to an unverified password account **removes the password and ends its
-sessions**; a completed reset replaces the password and ends all sessions.
+owner signs in with Google or their organisation's SSO, or resets the password, the
+account is theirs: Google or SSO linking to an unverified password account
+**removes the password and ends its sessions** (and marks the address confirmed); a
+completed reset replaces the password and ends all sessions.
 
 ### Existing accounts
 

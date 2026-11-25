@@ -71,6 +71,16 @@ subject to the mode's sign-up rules (in org mode, someone their provider vouches
 for on a verified domain may have an account; having one joins nothing, that is
 **Join** or an invitation). The provider's subject is stored in a link table.
 
+The provider vouches for the address (`email_verified` must be true), so signing in
+this way **confirms it**: the account is marked verified, and can accept
+invitations. Where the instance sends email (docs/EMAIL.md), one more rule applies
+when the address already belongs to an account that was never confirmed: someone
+may have made it by typing in an address that is not theirs. Its **password is
+removed and its sessions are ended**, so the account goes to the person the
+provider says holds the address (the rule Google sign-in follows too). Without
+email nobody can confirm an address, so "unconfirmed" says nothing and the account
+is left alone.
+
 ### Enforce SSO
 
 When on, people whose address is on one of the organisation's verified domains

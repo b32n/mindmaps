@@ -2286,6 +2286,19 @@ async function authRoute(
     let uid: string;
     if (found.kind === "user") {
       uid = found.userId;
+      // Same rule as Google: an account whose address was never proven may have
+      // been made by someone else who typed it in. The identity provider now
+      // vouches for the address, so the account goes to its real owner: the
+      // password that was set on it is removed and the sessions are ended. Only
+      // where the instance can send email: without it nobody can confirm an
+      // address, so "unconfirmed" says nothing (as for invitations, mayClaimInvites).
+      const held = await env.DB.prepare(`SELECT email, email_verified_at AS verified FROM users WHERE id = ?`)
+        .bind(uid)
+        .first<{ email: string; verified: number | null }>();
+      if (mailConfigured(env) && held && !held.verified && held.email.toLowerCase() === email) {
+        await env.DB.prepare(`UPDATE users SET password_hash = NULL, password_salt = NULL WHERE id = ?`).bind(uid).run();
+        await revokeAccess(env.DB, uid);
+      }
     } else {
       // The mode's sign-up rules apply as for any other way in. One addition: in
       // org mode the organisation is the instance, and a person its identity
@@ -2306,6 +2319,10 @@ async function authRoute(
       await createStarterBoard(env, uid, issuerOf(req, env));
     }
     await linkIdentity(env.DB, workspaceId, issuer, claims, uid);
+    // The provider vouched for this address (completeSso refuses an unverified
+    // one), so it is confirmed, as when Google says so. Only if it is the account's.
+    const account = await env.DB.prepare(`SELECT email FROM users WHERE id = ?`).bind(uid).first<{ email: string }>();
+    if (account?.email.toLowerCase() === email) await markVerified(env.DB, uid, "sso");
 
     const { token, expiresAt } = await createSession(env.DB, uid, req.headers.get("user-agent") ?? undefined, {
       provenVia: "sso",
