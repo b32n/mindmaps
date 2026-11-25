@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { CLOSED_PORT, MAIN_PORT as PORT, MODE_CASES, mindboxWorker, modeWorkers, originWorker } from "./e2e/support/hosts";
+import { CLOSED_PORT, MAIN_PORT as PORT, MODE_CASES, googleWorker, mindboxWorker, modeWorkers, originWorker } from "./e2e/support/hosts";
 
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 // The second Worker: same app, sign-up closed (wrangler.test-closed.toml).
@@ -112,6 +112,20 @@ export default defineConfig({
       stdout: "pipe" as const,
       stderr: "pipe" as const,
     })),
+    // Google sign-in configured with Google faked (wrangler.test-google.toml).
+    {
+      command: "node e2e/support/serve.mjs",
+      env: {
+        E2E_PORT: String(googleWorker.port),
+        E2E_STATE_DIR: ".e2e-state-google",
+        E2E_CONFIG: "wrangler.test-google.toml",
+      },
+      url: `${googleWorker.baseURL}/api/auth/me`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
   ],
   projects: [
     { name: "setup", testDir: "./e2e/setup", testMatch: /.*\.setup\.ts/ },
@@ -158,6 +172,13 @@ export default defineConfig({
       testDir: "./e2e/modes",
       testMatch: /.*\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
+    },
+    // Google sign-in, against the Worker with Google faked.
+    {
+      name: "google",
+      testDir: "./e2e/google",
+      testMatch: /.*\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: googleWorker.baseURL },
     },
     // The installer's script and helpers; no browser, no Worker.
     { name: "installer", testDir: "./e2e/installer", testMatch: /.*\.spec\.ts/ },

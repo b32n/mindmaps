@@ -61,3 +61,12 @@ export const modeWorkers = Object.fromEntries(
     },
   ]),
 ) as Record<ModeCase, { name: ModeCase; port: number; baseURL: string; value: string }>;
+
+/**
+ * The Worker with Google sign-in configured and Google itself faked (see
+ * e2e/support/google-entry.ts). One port after the mode Workers.
+ */
+export const googleWorker = {
+  port: MODE_PORT_BASE + MODE_CASES.length,
+  baseURL: `http://127.0.0.1:${MODE_PORT_BASE + MODE_CASES.length}`,
+};

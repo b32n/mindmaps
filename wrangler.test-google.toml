@@ -1,0 +1,32 @@
+# Test-only (see e2e/README.md). Same as wrangler.test.toml, but the entry point
+# wraps the real Worker to fake Google's token endpoints, and Google sign-in is
+# configured with dummy credentials. Never deployed; the Worker itself has no
+# test hook.
+
+name = "mindmaps-e2e-google"
+main = "e2e/support/google-entry.ts"
+compatibility_date = "2026-09-01"
+
+[assets]
+directory = "./web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/oauth/*", "/.well-known/*", "/s/*", "/f/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mindmaps-e2e-google"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "worker/migrations"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "mindmaps-e2e-google"
+
+[[r2_buckets]]
+binding = "ARTEFACTS"
+bucket_name = "mindmaps-e2e-google"
+
+[vars]
+ALLOW_SIGNUPS = "true"
+GOOGLE_CLIENT_ID = "e2e-google-client"
+GOOGLE_CLIENT_SECRET = "e2e-google-secret"
