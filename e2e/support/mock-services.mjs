@@ -112,7 +112,7 @@ const idp = createServer(async (req, res) => {
   if (rest === "__control" && req.method === "POST") {
     const next = JSON.parse((await readBody(req)) || "{}");
     // `claims` and `discovery` replace; everything else is set when given.
-    for (const k of ["clientId", "clientSecret", "claims", "scenario", "issuer", "alg", "authMethod", "discovery"])
+    for (const k of ["clientId", "clientSecret", "claims", "scenario", "issuer", "alg", "authMethod", "discovery", "reuseCodes"])
       if (k in next) t[k] = next[k];
     if (next.reset) {
       t.codes.clear();
@@ -198,7 +198,7 @@ const idp = createServer(async (req, res) => {
     if (form.get("grant_type") !== "authorization_code") return err("unsupported_grant_type");
     const grant = t.codes.get(form.get("code") ?? "");
     if (!grant) return err("invalid_grant");
-    t.codes.delete(form.get("code")); // one use
+    if (!t.reuseCodes) t.codes.delete(form.get("code")); // one use, unless a spec asks the provider to be lax
     if (grant.redirect !== form.get("redirect_uri")) return err("invalid_grant");
     const verifier = form.get("code_verifier") ?? "";
     if (createHash("sha256").update(verifier).digest("base64url") !== grant.challenge) return err("invalid_grant");

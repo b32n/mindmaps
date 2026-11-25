@@ -33,6 +33,12 @@ test.describe("configuring", () => {
     texts.push(await (await enableSso(r, org.ws, true)).text());
     texts.push(await (await r.get("/api/workspaces")).text(), await (await r.get("/api/auth/me")).text(), await (await r.get("/api/organisation")).text());
     for (const t2 of texts) expect(t2).not.toContain(idp.clientSecret);
+    // nor what it is stored as
+    const stored = (await query<{ client_secret_enc: string }>(`SELECT client_secret_enc FROM org_sso_configs WHERE workspace_id = ?`, [org.ws], STATE))[0]!.client_secret_enc;
+    for (const t2 of texts) {
+      expect(t2).not.toContain(stored);
+      expect(t2).not.toMatch(/client_secret|secret_enc/);
+    }
 
     // it is encrypted at rest: the database holds no plaintext secret
     const rows = await query<{ client_secret_enc: string }>(`SELECT client_secret_enc FROM org_sso_configs WHERE workspace_id = ?`, [org.ws], STATE);
@@ -330,6 +336,8 @@ test.describe("a sign-in that must be refused", () => {
 
   test("the callback cannot be replayed, and a state we never issued is refused", async ({ personOn }) => {
     const org = await newOrg(personOn, { sso: true });
+    // a provider that honours a code twice: the state alone must stop the replay
+    await org.idp.control({ reuseCodes: true });
     const email = userOn(org.domain, "replay").email;
     const s = await client(BASE);
     const start = (await (await s.post("/api/auth/sso/start", { data: { email } })).json()) as { url: string };

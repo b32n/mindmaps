@@ -66,7 +66,7 @@ export interface Idp {
   clientId: string;
   clientSecret: string;
   /** Change how it behaves from now on. */
-  control(patch: Partial<{ clientId: string; clientSecret: string; claims: Record<string, unknown>; scenario: Scenario | null; issuer: string; alg: "RS256" | "ES256"; authMethod: string; discovery: Record<string, unknown>; reset: boolean }>): Promise<void>;
+  control(patch: Partial<{ clientId: string; clientSecret: string; claims: Record<string, unknown>; scenario: Scenario | null; issuer: string; alg: "RS256" | "ES256"; authMethod: string; discovery: Record<string, unknown>; reuseCodes: boolean; reset: boolean }>): Promise<void>;
   log(): Promise<Record<string, any>[]>;
 }
 
