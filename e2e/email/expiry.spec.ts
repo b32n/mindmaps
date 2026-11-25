@@ -18,6 +18,8 @@ test.setTimeout(240_000);
 
 let worker: ExpiryWorker;
 test.beforeAll(async () => {
+  // the hook has its own clock, not the one above, and a loaded machine can take longer than 30 s
+  test.setTimeout(240_000);
   worker = new ExpiryWorker("wrangler.test-mail.toml");
   await worker.start();
 });
