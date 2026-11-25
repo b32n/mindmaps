@@ -60,6 +60,7 @@ test.describe("privacy policy", () => {
 
   test("shows every undecided legal choice as a visible placeholder", async ({ page }) => {
     await page.goto("/privacy");
+    await expect(page.getByTestId("operator-note")).toBeVisible();
     expect(await ids(page)).toEqual([...PRIVACY_PLACEHOLDERS].sort());
     for (const el of await page.locator(PLACEHOLDER).all()) {
       await expect(el).toBeVisible();
@@ -104,6 +105,7 @@ test.describe("terms of service", () => {
 
   test("shows every undecided legal choice as a visible placeholder", async ({ page }) => {
     await page.goto("/terms");
+    await expect(page.getByTestId("operator-note")).toBeVisible();
     expect(await ids(page)).toEqual([...TERMS_PLACEHOLDERS].sort());
     await expect(page.locator('[data-placeholder="governing-law"]').first()).toContainText("Governing law: to be decided");
     await expect(page.locator('[data-placeholder="liability-cap"]').first()).toContainText("Limit of liability: to be decided");
