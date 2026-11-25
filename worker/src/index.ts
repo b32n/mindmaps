@@ -40,6 +40,7 @@ import { blocksToMarkdown, parseDoc } from "./markdown";
 import { createStarterBoard } from "./starter";
 import { deleteAccount, deletionBlockers, exportAccount, exportFilename, finishDeletions, type AccountEnv } from "./account";
 import { modeProblem, readMode } from "./mode";
+import { legalInfo, securityTxtResponse } from "./legal";
 import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
 export interface Env {
@@ -62,6 +63,11 @@ export interface Env {
    * refuse every request with a 500. See mode.ts and docs/MODES.md.
    */
   MINDMAPS_MODE?: string;
+  /** optional: where vulnerability reports go, published in /.well-known/security.txt; see legal.ts */
+  SECURITY_CONTACT?: string;
+  /** optional: who runs this instance, and how to reach them, shown on /privacy and /terms */
+  OPERATOR_NAME?: string;
+  OPERATOR_CONTACT?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   /** where the browser lands after Google sends us back */
@@ -205,6 +211,11 @@ export default {
         });
       }
 
+      // What the privacy policy and terms pages need to know: the mode and who
+      // runs this instance. Public, because those pages are readable signed out.
+      if (seg[0] === "api" && seg[1] === "legal" && seg.length === 2 && req.method === "GET")
+        return json(env, legalInfo(env));
+
       const user = await userForToken(env.DB, readCookie(req, SESSION_COOKIE));
 
       // auth endpoints are the only ones reachable signed-out
@@ -296,6 +307,8 @@ async function mcpSurface(
   // the bare one. Clients differ on which they try, so serve both.
   if (seg[0] === ".well-known") {
     const doc = seg[1];
+    if (doc === "security.txt" && seg.length === 2 && (m === "GET" || m === "HEAD"))
+      return securityTxtResponse(req, env);
     if (doc === "oauth-protected-resource") return protectedResourceMetadata(req, env);
     if (doc === "oauth-authorization-server" || doc === "openid-configuration")
       return authorizationServerMetadata(req, env);
