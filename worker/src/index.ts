@@ -1908,12 +1908,13 @@ async function authRoute(
     };
     // The same work whether or not the account has a password to check: without
     // it a missing account would answer visibly faster than a wrong password.
-    noteHash(env, addr);
     if (!row?.password_hash || !row.password_salt) {
+      noteHash(env, addr);
       const decoy = await decoyHash();
       await verifyPassword(String(password ?? ""), decoy.hash, decoy.salt);
       return await bad();
     }
+    noteHash(env, addr);
     if (!(await verifyPassword(String(password ?? ""), row.password_hash, row.password_salt)))
       return await bad();
 
