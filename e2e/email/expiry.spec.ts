@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { register } from "../fixtures";
 import { ExpiryWorker } from "../support/expiry";
 import { tokenIn, waitForMail } from "../support/mail";
 import { newUser, strongPassword } from "../support/users";
@@ -81,7 +82,7 @@ test("a reset link expires after an hour", async () => {
 test("only a hash of each token is stored, and used tokens are kept with their status", async () => {
   const c = await worker.client();
   const u = newUser("stored");
-  await c.post("/api/auth/register", { data: { email: u.email, password: u.password, name: u.name } });
+  await register(c, u);
   const [msg] = await waitForMail(c, u.email);
   const token = tokenIn(msg);
   await c.post("/api/auth/resend-verification");

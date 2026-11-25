@@ -1,5 +1,5 @@
 import { expect, test } from "../fixtures";
-import { expectSignedInShell, signInViaForm, signUpViaForm } from "../support/auth";
+import { expectSignedInShell, signInViaForm, signUpAndInViaForm, signUpViaForm } from "../support/auth";
 import { linkIn, tokenIn, unissuedToken, waitForMail } from "../support/mail";
 import { newUser, strongPassword } from "../support/users";
 
@@ -11,7 +11,7 @@ const banner = (page: import("@playwright/test").Page) => page.locator(".verify-
 test.describe("verify-email banner", () => {
   test("a new account sees it, naming the address", async ({ page }) => {
     const u = newUser("banner");
-    await signUpViaForm(page, u);
+    await signUpAndInViaForm(page, u);
     await expectSignedInShell(page, u.name);
     await expect(banner(page)).toContainText("Confirm your email");
     await expect(banner(page)).toContainText(u.email);
@@ -20,7 +20,7 @@ test.describe("verify-email banner", () => {
 
   test("Resend email sends another message and says so", async ({ page, request }) => {
     const u = newUser("resend");
-    await signUpViaForm(page, u);
+    await signUpAndInViaForm(page, u);
     await expect(banner(page)).toBeVisible();
     await page.getByRole("button", { name: "Resend email" }).click();
     await expect(banner(page)).toContainText(`We sent a new link to ${u.email}`);
@@ -29,7 +29,7 @@ test.describe("verify-email banner", () => {
 
   test("after the limit it says to wait", async ({ page }) => {
     const u = newUser("limit");
-    await signUpViaForm(page, u);
+    await signUpAndInViaForm(page, u);
     await expect(banner(page)).toBeVisible();
     for (let i = 0; i < 3; i++) await page.request.post("/api/auth/resend-verification");
     await page.getByRole("button", { name: "Resend email" }).click();

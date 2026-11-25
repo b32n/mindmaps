@@ -357,12 +357,11 @@ test.describe("sign-in and sign-up limits", () => {
     await anon.dispose();
   });
 
-  test("a refused sign-up is still the message it always was", async ({ existing, playwright, baseURL }) => {
+  test("a sign-up for a taken address is answered like any other (docs/SIGNUP.md)", async ({ existing, playwright, baseURL }) => {
     const anon = await playwright.request.newContext({ baseURL });
     const dup = await anon.post("/api/auth/register", { data: { email: existing.user.email, password: strongPassword() } });
-    expect(dup.status()).toBe(409);
-    expect((await dup.json()).error).toBe("An account with that email already exists.");
-    expect(await mailbox(anon, existing.user.email)).toHaveLength(1); // still only its own verification mail
+    expect(dup.status()).toBe(200);
+    expect(await dup.json()).toEqual({ ok: true, confirm: "email" });
     await anon.dispose();
   });
 });

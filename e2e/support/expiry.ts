@@ -33,7 +33,11 @@ function freePort(): Promise<number> {
 
 export class ExpiryWorker {
   /** `config` picks the wrangler config; the email specs use wrangler.test-mail.toml. */
-  constructor(private config = "wrangler.test.toml") {}
+  constructor(
+    private config = "wrangler.test.toml",
+    /** extra Worker vars (`wrangler dev --var`), kept across restarts */
+    private vars: Record<string, string> = {},
+  ) {}
   private proc: ChildProcess | null = null;
   private port = 0;
   get url() {
@@ -63,6 +67,7 @@ export class ExpiryWorker {
       this.proc = spawn(
         wrangler,
         ["dev", "-c", this.config, "--persist-to", stateDir, "--ip", "127.0.0.1", "--port", String(this.port),
+          ...Object.entries(this.vars).flatMap(([k, v]) => ["--var", `${k}:${v}`]),
           "--show-interactive-dev-session=false"],
         { cwd: root, env, stdio: "ignore" },
       );
@@ -132,6 +137,16 @@ export class ExpiryWorker {
     );
     if (r.status !== 0) throw new Error(`could not run ${file}: ${r.stderr}`);
     await this.start(false);
+  }
+
+  /**
+   * Run the Worker's cron handler as if the schedule fired at `time`
+   * (wrangler's local `/cdn-cgi/handler/scheduled`). The test configs have no cron
+   * trigger of their own, so this is how the sweeps are exercised.
+   */
+  async scheduled(time: number) {
+    const res = await fetch(`${this.url}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}&time=${time}`);
+    if (!res.ok) throw new Error(`scheduled run failed: ${res.status}`);
   }
 
   /** Backdate trash entries by `days`, with the Worker stopped, then bring it back. */
