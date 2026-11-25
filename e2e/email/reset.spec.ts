@@ -186,6 +186,16 @@ test.describe("using the link", () => {
     await anon.dispose();
   });
 
+  test("a wrong link with a weak password gets the invalid-link answer, not the password reasons", async ({ playwright, baseURL }) => {
+    const anon = await playwright.request.newContext({ baseURL });
+    const res = await reset(anon, unissuedToken(), "short");
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("invalid_link");
+    expect(body.problems).toBeUndefined();
+    await anon.dispose();
+  });
+
   test("a missing password is refused", async ({ existing, playwright, baseURL }) => {
     const anon = await playwright.request.newContext({ baseURL });
     await forgot(anon, existing.user.email);
