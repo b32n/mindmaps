@@ -79,7 +79,9 @@ export async function newIdp(opts: { clientSecret?: string } = {}): Promise<Idp>
   const call = async (path: string, data?: unknown) => {
     const c = await pwRequest.newContext({ baseURL: IDP_ORIGIN });
     try {
-      return data === undefined ? await c.get(`/t/${id}/${path}`) : await c.post(`/t/${id}/${path}`, { data });
+      const res = data === undefined ? await c.get(`/t/${id}/${path}`) : await c.post(`/t/${id}/${path}`, { data });
+      // read before the context is disposed: a disposed context's responses cannot be read
+      return { ok: res.ok(), body: (await res.json().catch(() => null)) as unknown };
     } finally {
       await c.dispose();
     }
@@ -90,10 +92,10 @@ export async function newIdp(opts: { clientSecret?: string } = {}): Promise<Idp>
     clientId,
     clientSecret,
     async control(patch) {
-      expect((await call("__control", patch)).ok()).toBe(true);
+      expect((await call("__control", patch)).ok).toBe(true);
     },
     async log() {
-      return (await (await call("__log")).json()) as never;
+      return (await call("__log")).body as never;
     },
   };
 }
