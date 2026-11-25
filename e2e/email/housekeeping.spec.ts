@@ -189,7 +189,7 @@ test("rows an older Worker wrote (no window recorded) are swept, and its upsert 
 });
 
 test("the migration only adds: nullable columns and indexes, nothing dropped, rewritten or deleted", () => {
-  const sql = readFileSync(fileURLToPath(new URL("../../worker/migrations/0031_signup_hardening.sql", import.meta.url)), "utf8")
+  const sql = readFileSync(fileURLToPath(new URL("../../worker/migrations/0034_signup_hardening.sql", import.meta.url)), "utf8")
     .split("\n").filter((l) => !l.trim().startsWith("--")).join("\n");
   expect(sql).not.toMatch(/\b(DROP|DELETE|UPDATE|RENAME|TRUNCATE)\b/i);
   const alters = sql.match(/ALTER TABLE[^;]*;/gi) ?? [];

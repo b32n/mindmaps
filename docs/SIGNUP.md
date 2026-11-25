@@ -204,7 +204,7 @@ days after a row expired it is removed; the window is `RATE_RETENTION_MS` in
 housekeeping.ts. `email_tokens` rows name an address and are the audit trail of links
 sent to it, so they are only marked.
 
-The migration (`0031_signup_hardening.sql`) is additive: two nullable columns and two
+The migration (`0034_signup_hardening.sql`) is additive: two nullable columns and two
 indexes. The Worker before this one keeps running on a migrated database.
 
 Cron needs no setup: the trigger is already in `wrangler.toml` (and so in installs).
