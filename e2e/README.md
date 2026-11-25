@@ -113,6 +113,13 @@ listen on the four ports above's successors (`E2E_MODE_PORT`, default
 `E2E_PORT + 4`, five consecutive ports) and are described in
 `e2e/support/hosts.ts`. Specs: `e2e/modes` (project `modes`).
 
+Two more Workers follow them (ports `E2E_MODE_PORT + 5` and `+ 6`) for the legal
+pages: `legalOrg` (org, with `SECURITY_CONTACT`, `OPERATOR_NAME` and
+`OPERATOR_CONTACT` set) and `legalHosted` (multitenant with `OPERATOR_CONTACT`).
+`e2e/tests/legal` covers `/.well-known/security.txt`, `/privacy` and `/terms` on
+the main Worker (hosted wording, placeholders) and as pure unit specs;
+`e2e/modes/legal-modes.spec.ts` covers the personal, org and override cases.
+
 `e2e/installer` (project `installer`) needs no Worker and no Cloudflare account:
 it runs `scripts/install.mjs --dry-run` from a temp copy of the repo and tests
 `scripts/lib/install-config.mjs` directly.

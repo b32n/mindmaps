@@ -65,6 +65,24 @@ to everyone:
 npx wrangler secret put ALLOW_SIGNUPS      # enter: true
 ```
 
+## Legal pages and security contact
+
+Your instance serves a privacy policy at `/privacy`, terms at `/terms` and a
+security contact at `/.well-known/security.txt`. On a `personal` or `org`
+instance the pages say that **you** run it and control the data, and that the
+text is a template to review and replace; they decide nothing legal for you.
+All three variables are optional, and nothing is invented when they are unset.
+Set them in `wrangler.local.toml` under `[vars]`, or with `npx wrangler secret put`:
+
+| Variable | What it does |
+| --- | --- |
+| `OPERATOR_NAME` | Who runs this instance, as shown on `/privacy` and `/terms`. |
+| `OPERATOR_CONTACT` | How to reach them: an email address or an `https://` URL. |
+| `SECURITY_CONTACT` | The `Contact` in `security.txt`: an `https://` URL, `mailto:` address or a bare email. Unset, it points at the Mindmaps project's private vulnerability form, so reports about *your* deployment would go to the wrong people; set it. |
+
+`Expires` in `security.txt` is computed on every request (about a year out), so
+it never lapses.
+
 ## Your own domain
 
 Needs a domain whose DNS is on this Cloudflare account.

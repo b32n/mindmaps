@@ -38,7 +38,7 @@ const EMAIL = /^[^@\s:/<>]+@[^@\s:/<>]+\.[^@\s:/<>]+$/;
 /** One line, trimmed, bounded; null when nothing is left. Stops a var from injecting extra security.txt fields. */
 const oneLine = (v: unknown): string | null => {
   if (typeof v !== "string") return null;
-  const s = v.replace(/[\r\n\u2028\u2029]+/g, " ").trim();
+  const s = v.replace(/[\s\u2028\u2029]+/g, " ").trim();
   return s && s.length <= MAX_FIELD ? s : null;
 };
 
