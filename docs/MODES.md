@@ -19,9 +19,9 @@ exposes it as `useMode()` (and as `data-mindmaps-mode` on `<html>`), and the MCP
 
 | | personal | org | multitenant (and unset) |
 |---|---|---|---|
-| Workspace switcher, "New workspace", People for a team space | hidden | as before | as before |
+| Workspace switcher, "New workspace", People for a team space | hidden | the organisation's workspace; no "New workspace" once it exists | as before |
 | `GET /api/workspaces` | your personal home only | as before | as before |
-| `POST /api/workspaces` | 403 `team_spaces_disabled` | as before | as before |
+| `POST /api/workspaces` | 403 `team_spaces_disabled` | the first account makes the organisation; after that 409 `organisation_exists` | as before |
 | A mindmap created into a named workspace | 403 `team_spaces_disabled` | as before | as before |
 | Inviting someone into a team space | 403 `team_spaces_disabled` | as before | as before |
 | Mindmap list, artefact list, recall (app and MCP), `search` | the personal home, plus what was shared with you | as before | as before |
