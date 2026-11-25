@@ -117,6 +117,17 @@ listen on the four ports above's successors (`E2E_MODE_PORT`, default
 it runs `scripts/install.mjs --dry-run` from a temp copy of the repo and tests
 `scripts/lib/install-config.mjs` directly.
 
+## The Google sign-in instance
+
+Google sign-in needs credentials and Google's servers, so one more Worker
+(`wrangler.test-google.toml`, port `E2E_MODE_PORT + 5`) sets dummy
+`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` and uses `e2e/support/google-entry.ts`
+as its entry point. That file imports the real Worker unchanged and only answers
+fetches to `oauth2.googleapis.com` itself: the authorization `code` is the
+identity (base64url JSON `{sub, email, name}`), echoed back as the id token and
+as the tokeninfo claims. The Worker has no test hook. Specs: `e2e/google`
+(project `google`); they walk the real start and callback routes.
+
 ## Layout
 
 ```
