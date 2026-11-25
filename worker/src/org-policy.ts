@@ -265,7 +265,7 @@ export async function joinOrganisation(
     return refuse(
       403,
       "email_unproven",
-      "Joining by your address needs that address proven first. Sign in with Google or your organisation's SSO, then join.",
+      "Joining by your address needs that address proven first. Confirm it by email, or sign in with Google or your organisation's SSO, then join.",
     );
 
   const at = Date.now();

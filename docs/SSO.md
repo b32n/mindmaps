@@ -43,10 +43,12 @@ Policy applies to **verified domains only**.
   whose address is proven**, is offered a **Join** button (a banner in the app) and
   joins with the default role the admin chose (viewer or editor). It is an explicit
   step, never silent. *Proven* means the session came through Google or through
-  this organisation's SSO. Password-only accounts are unproven: anyone can type
-  an address into a password form. They are told that proving it would unlock a
-  join, and nothing more (the organisation is not named). When email verification
-  from the email-setup work lands, a verified address will count as proven too.
+  this organisation's SSO, or that the address was confirmed by the emailed link
+  (or a completed password reset) where the instance sends email. An address that
+  was only there before verification existed (`grandfathered`) is not proof.
+  Accounts with none of these are unproven: anyone can type an address into a
+  password form. They are told that proving it would unlock a join, and nothing
+  more (the organisation is not named).
 - **Restrict invites.** Optional. Invitations may only go to addresses on a
   verified domain. The owner and admins are never locked out by it.
 

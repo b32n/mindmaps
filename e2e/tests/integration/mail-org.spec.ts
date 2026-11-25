@@ -1,14 +1,16 @@
 import { test, expect } from "@playwright/test";
 import { PrivateWorker } from "../../support/private-worker";
 import { inviteRaw, listWorkspaces } from "../../support/api";
-import { tokenIn, waitForMail } from "../../support/mail";
+import { mailbox, tokenIn, waitForMail } from "../../support/mail";
 import { createOrganisation, organisation, signUp } from "../../support/organisation";
 import { newUser } from "../../support/users";
+import { dns, join, joinOffers, putPolicy, recordName, uniqueDomain, userOn, verifyDomain } from "../../support/sso";
 
 // Outbound email (docs/EMAIL.md, SIGNUP.md) on an instance with an organisation
 // (docs/MODES.md, SSO.md): sign-up answers every address alike, the first
-// account is still decided by the insert, and an invitation can be accepted
-// only once the address is confirmed.
+// account is still decided by the insert, an invitation can be accepted
+// only once the address is confirmed, and an address confirmed by email
+// proves itself for joining an organisation by its domain.
 
 const MAIL = { MAIL_FROM: "mindmaps@mail.example.test", MAIL_FROM_NAME: "mindmaps", MAIL_TRANSPORT: "capture" };
 
@@ -77,5 +79,44 @@ test.describe("org mode, sign-up closed, email on", () => {
     expect(listed.map((i) => i.token)).toEqual([sent.token]);
     expect((await guest.post(`/api/invites/${sent.token}/accept`)).status()).toBe(200);
     expect((await organisation(guest)).state).toBe("member");
+  });
+});
+
+test.describe("joining an organisation by its domain, email on", () => {
+  let w: PrivateWorker;
+  test.beforeEach(async () => {
+    w = await new PrivateWorker({ mode: "multitenant", signup: "open", vars: MAIL }).start();
+  });
+  test.afterEach(async () => w.dispose());
+
+  test("an address confirmed by email is proof enough to join; before that it is not", async () => {
+    const domain = uniqueDomain();
+    const owner = await w.client();
+    const ownerUser = { ...newUser("owner"), email: userOn(domain, "owner").email };
+    await owner.post("/api/auth/register", { data: { email: ownerUser.email, password: ownerUser.password, name: "o" } });
+    await owner.post("/api/auth/login", { data: { email: ownerUser.email, password: ownerUser.password } });
+    const org = await (await createOrganisation(owner, { name: "Acme" })).json();
+    await verifyDomain(owner, org.id, domain);
+    expect((await putPolicy(owner, org.id, { auto_join: true, default_role: "viewer" })).status()).toBe(200);
+
+    const joiner = await w.client();
+    const j = { ...newUser("joiner"), email: userOn(domain, "joiner").email };
+    await joiner.post("/api/auth/register", { data: { email: j.email, password: j.password, name: "j" } });
+    await joiner.post("/api/auth/login", { data: { email: j.email, password: j.password } });
+
+    expect(await (await joinOffers(joiner)).json()).toMatchObject({ offers: [], unproven: true });
+    const early = await join(joiner, org.id);
+    expect(early.status()).toBe(403);
+    expect((await early.json()).code).toBe("email_unproven");
+
+    const [msg] = await waitForMail(joiner, j.email);
+    expect((await joiner.post("/api/auth/verify-email", { data: { token: tokenIn(msg) } })).status()).toBe(200);
+    const offers = (await (await joinOffers(joiner)).json()) as { offers: { workspace_id: string }[]; unproven: boolean };
+    expect(offers.unproven).toBe(false);
+    expect(offers.offers.map((o) => o.workspace_id)).toEqual([org.id]);
+    expect((await join(joiner, org.id)).status()).toBe(200);
+    expect((await listWorkspaces(joiner)).some((x) => x.id === org.id)).toBe(true);
+    expect((await mailbox(joiner, j.email)).length).toBeGreaterThan(0);
+    await dns.clearTxt(recordName(domain));
   });
 });

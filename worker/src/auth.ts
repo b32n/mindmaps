@@ -177,7 +177,7 @@ export interface SessionUser {
 
 /** The signed-in person, plus what this session proved. Never sent to the browser as is: see `publicUser`. */
 export interface SessionContext extends SessionUser {
-  proven_via: "google" | "sso" | null;
+  proven_via: "google" | "sso" | "email" | null;
   sso_workspace_id: string | null;
 }
 
@@ -191,7 +191,10 @@ export async function userForToken(
   if (!token) return null;
   const row = await db
     .prepare(
-      `SELECT u.id, u.email, u.name, u.avatar_url, s.proven_via, s.sso_workspace_id
+      // A confirmed address (the emailed link, or a reset) proves it as well as Google or SSO
+      // does; one that was merely there before verification existed ('grandfathered') does not.
+      `SELECT u.id, u.email, u.name, u.avatar_url, s.sso_workspace_id,
+              COALESCE(s.proven_via, CASE WHEN u.email_verified_via IN ('email','reset') THEN 'email' END) AS proven_via
          FROM auth_sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = ? AND s.expires_at > ? AND u.status = 'active'`,
     )
