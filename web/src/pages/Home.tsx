@@ -147,7 +147,7 @@ function useCanonical() {
 }
 
 export function HomePage() {
-  const { user } = useAuth();
+  const { user, mode } = useAuth();
   useCanonical();
 
   return (
@@ -255,35 +255,38 @@ export function HomePage() {
         </div>
       </section>
 
-      <section className="lp-section" id="self-host">
-        <div className="lp-wrap">
-          <Reveal className="lp-section-head">
-            <p className="lp-kicker">Hosted or self-hosted</p>
-            <h2 className="lp-h2">Free to try. Free to run yourself.</h2>
-            <p className="lp-sub">
-              The hosted instance is free to try. mindmaps is also open source (MIT) and you
-              can run your own copy: it costs nothing from us, but it needs your own
-              Cloudflare account. The Workers Paid plan is recommended for real use, and R2
-              storage needs a payment method on file. Check{" "}
-              <a href={CF_PRICING_URL} target="_blank" rel="noreferrer noopener" style={{ color: "var(--lp-accent)" }}>
-                Cloudflare's pricing
-              </a>{" "}
-              for current numbers.
-            </p>
-            <div className="lp-actions" style={{ marginTop: 20 }}>
-              <a className="lp-btn lp-btn-ghost" href={INSTALL_URL} target="_blank" rel="noreferrer noopener">
-                Self-hosting instructions
-              </a>
-              <a className="lp-btn lp-btn-ghost" href={DEPLOY_URL} target="_blank" rel="noreferrer noopener">
-                Deploy to Cloudflare
-              </a>
-              <a className="lp-btn lp-btn-ghost" href={REPO_URL} target="_blank" rel="noreferrer noopener">
-                Source on GitHub
-              </a>
-            </div>
-          </Reveal>
-        </div>
-      </section>
+      {/* "The hosted instance is free to try" is only true of the hosted service. */}
+      {mode === "multitenant" && (
+        <section className="lp-section" id="self-host">
+          <div className="lp-wrap">
+            <Reveal className="lp-section-head">
+              <p className="lp-kicker">Hosted or self-hosted</p>
+              <h2 className="lp-h2">Free to try. Free to run yourself.</h2>
+              <p className="lp-sub">
+                The hosted instance is free to try. mindmaps is also open source (MIT) and you
+                can run your own copy: it costs nothing from us, but it needs your own
+                Cloudflare account. The Workers Paid plan is recommended for real use, and R2
+                storage needs a payment method on file. Check{" "}
+                <a href={CF_PRICING_URL} target="_blank" rel="noreferrer noopener" style={{ color: "var(--lp-accent)" }}>
+                  Cloudflare's pricing
+                </a>{" "}
+                for current numbers.
+              </p>
+              <div className="lp-actions" style={{ marginTop: 20 }}>
+                <a className="lp-btn lp-btn-ghost" href={INSTALL_URL} target="_blank" rel="noreferrer noopener">
+                  Self-hosting instructions
+                </a>
+                <a className="lp-btn lp-btn-ghost" href={DEPLOY_URL} target="_blank" rel="noreferrer noopener">
+                  Deploy to Cloudflare
+                </a>
+                <a className="lp-btn lp-btn-ghost" href={REPO_URL} target="_blank" rel="noreferrer noopener">
+                  Source on GitHub
+                </a>
+              </div>
+            </Reveal>
+          </div>
+        </section>
+      )}
 
       <section className="lp-cta">
         <h2>See what your agent knows.</h2>
