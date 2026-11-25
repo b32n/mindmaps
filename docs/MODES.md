@@ -29,6 +29,10 @@ exposes it as `useMode()` (and as `data-mindmaps-mode` on `<html>`), and the MCP
 | MCP tools | no `workspace` argument; `list_mindmaps` does not name workspaces | as before | as before |
 | Sharing (people, public links) | untouched | as before | as before |
 
+In the org column, "as before" means the behaviour of an instance before modes
+existed: any member can still create workspaces, so an org install can hold
+several. Narrowing org to a single organisation is separate, later work.
+
 **multitenant is exactly what every install did before modes existed.** The
 hosted service is pinned to it (below), so none of this changes there.
 
