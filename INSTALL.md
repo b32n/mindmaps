@@ -1,6 +1,6 @@
 # Installing mindmaps
 
-mindmaps runs entirely in **your** Cloudflare account. The free plan is enough.
+mindmaps runs entirely in **your** Cloudflare account. The free plan is enough to try it; Workers Paid is recommended for real use.
 Nothing is sent to the author, and there is no account with us.
 
 You need: a free [Cloudflare account](https://dash.cloudflare.com/sign-up), and
