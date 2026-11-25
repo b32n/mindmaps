@@ -31,12 +31,23 @@ export const mindboxWorker = {
 };
 
 /**
+ * The mock services the SSO specs use (e2e/support/mock-services.mjs): an OIDC
+ * identity provider, and a DNS-over-HTTPS resolver the Workers ask when a domain
+ * is verified. One process, two ports, right after the four Workers above.
+ * `E2E_IDP_PORT` and `E2E_DOH_PORT` move them.
+ */
+export const IDP_PORT = port("E2E_IDP_PORT", MAIN_PORT + 4);
+export const DOH_PORT = port("E2E_DOH_PORT", MAIN_PORT + 5);
+export const IDP_ORIGIN = `http://127.0.0.1:${IDP_PORT}`;
+export const DOH_ENDPOINT = `http://127.0.0.1:${DOH_PORT}/dns-query`;
+
+/**
  * One Worker per way of setting MINDMAPS_MODE, beyond the main one (which leaves
- * it unset). They sit on the ports after the four above and run the same
+ * it unset). They sit on the ports after the mock services and run the same
  * wrangler.test.toml (sign-up open) with the var passed through E2E_VARS.
  * `E2E_MODE_PORT` moves the first of them.
  */
-const MODE_PORT_BASE = port("E2E_MODE_PORT", MAIN_PORT + 4);
+const MODE_PORT_BASE = port("E2E_MODE_PORT", MAIN_PORT + 6);
 
 export const MODE_CASES = ["personal", "org", "multitenant", "empty", "invalid"] as const;
 export type ModeCase = (typeof MODE_CASES)[number];
