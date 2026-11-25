@@ -10,7 +10,7 @@
  */
 
 import { hashPassword, passwordProblems, randomHex, sha256 } from "./auth";
-import { mailConfigured, resetEmail, sendMail, verificationEmail, type MailEnv } from "./mail";
+import { mailConfigured, resetEmail, sendMail, signupAttemptEmail, verificationEmail, type MailEnv } from "./mail";
 
 export interface EmailAuthEnv extends MailEnv {
   DB: D1Database;
@@ -33,6 +33,8 @@ export const RATE_LIMITED = "Too many attempts. Wait a while and try again.";
 /** [attempts, window]. Per address and per client address, the second only when the client address is known. */
 export const LIMITS = {
   register_ip: [10, HOUR],
+  /** "someone tried to sign up with your address" mails to one owner, so sign-up cannot be used to mail-bomb them */
+  notice_email: [3, HOUR],
   login_email: [10, 15 * MIN],
   login_ip: [30, 15 * MIN],
   resend_user: [3, HOUR],
@@ -64,14 +66,15 @@ export async function rateHit(db: D1Database, limit: Limit, subject: string | nu
   const t = now();
   const row = await db
     .prepare(
-      `INSERT INTO rate_limits (key,count,window_start,created_at,updated_at) VALUES (?1,1,?2,?2,?2)
+      `INSERT INTO rate_limits (key,count,window_start,window_ms,status,created_at,updated_at) VALUES (?1,1,?2,?4,'active',?2,?2)
        ON CONFLICT(key) DO UPDATE SET
          count = CASE WHEN window_start <= ?3 THEN 1 ELSE count + 1 END,
          window_start = CASE WHEN window_start <= ?3 THEN ?2 ELSE window_start END,
+         window_ms = ?4, status = 'active', expired_at = NULL,
          updated_at = ?2
        RETURNING count`,
     )
-    .bind(await keyOf(limit, subject), t, t - window)
+    .bind(await keyOf(limit, subject), t, t - window, window)
     .first<{ count: number }>();
   return (row?.count ?? 1) <= max;
 }
@@ -239,6 +242,20 @@ export async function sendResetEmail(
   if (!mailConfigured(env)) return false;
   const token = await issueToken(env.DB, userId, "reset", email);
   const msg = resetEmail(`${origin}/reset-password?token=${token}`, RESET_TTL_MS / MIN);
+  return (await sendMail(env, { to: email, ...msg })).ok;
+}
+
+/**
+ * Tell the owner of an address that someone tried to sign up with it. Sign-up
+ * answers the same for a taken address as for a new one, so this is how they
+ * find out. Counted per address, so a sign-up form cannot be used to flood
+ * someone's inbox; over the limit nothing is sent and nothing changes for the
+ * person asking.
+ */
+export async function sendSignupAttemptEmail(env: EmailAuthEnv, origin: string, email: string): Promise<boolean> {
+  if (!mailConfigured(env)) return false;
+  if (!(await rateHit(env.DB, "notice_email", email))) return false;
+  const msg = signupAttemptEmail(`${origin}/login`, `${origin}/forgot-password`);
   return (await sendMail(env, { to: email, ...msg })).ok;
 }
 

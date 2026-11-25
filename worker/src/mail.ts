@@ -106,16 +106,25 @@ export async function capturedMail(env: MailEnv, to: string) {
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-function layout(heading: string, paragraphs: string[], action: string, url: string, foot: string) {
-  const text = [heading, "", ...paragraphs, "", `${action}:`, url, "", foot].join("\n");
+function layout(heading: string, paragraphs: string[], actions: { label: string; url: string }[], foot: string) {
+  const text = [
+    heading, "", ...paragraphs, "",
+    ...actions.flatMap((a) => [`${a.label}:`, a.url, ""]),
+    foot,
+  ].join("\n");
   const html =
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(heading)}</title></head>` +
     `<body style="margin:0;padding:24px;background:#ffffff;color:#1a1a1a;font:16px/1.5 -apple-system,Segoe UI,Helvetica,Arial,sans-serif">` +
     `<main style="max-width:480px;margin:0 auto">` +
     `<h1 style="font-size:20px;margin:0 0 16px">${esc(heading)}</h1>` +
     paragraphs.map((p) => `<p style="margin:0 0 16px">${esc(p)}</p>`).join("") +
-    `<p style="margin:0 0 16px"><a href="${esc(url)}" style="color:#0b57d0">${esc(action)}</a></p>` +
-    `<p style="margin:0 0 16px;font-size:14px">Or copy this address into your browser:<br>${esc(url)}</p>` +
+    actions
+      .map(
+        (a) =>
+          `<p style="margin:0 0 16px"><a href="${esc(a.url)}" style="color:#0b57d0">${esc(a.label)}</a></p>` +
+          `<p style="margin:0 0 16px;font-size:14px">Or copy this address into your browser:<br>${esc(a.url)}</p>`,
+      )
+      .join("") +
     `<p style="margin:0;font-size:14px;color:#555555">${esc(foot)}</p>` +
     `</main></body></html>`;
   return { text, html };
@@ -128,8 +137,7 @@ export function verificationEmail(url: string, hours: number): Omit<MailMessage,
       "Confirm this address to finish setting up your mindmaps account.",
       `The link works once and expires in ${hours} hours.`,
     ],
-    "Confirm email address",
-    url,
+    [{ label: "Confirm email address", url }],
     "If you didn't create a mindmaps account, ignore this message and nothing will happen.",
   );
   return { subject: "Confirm your email address", text, html };
@@ -142,9 +150,29 @@ export function resetEmail(url: string, minutes: number): Omit<MailMessage, "to"
       "Someone asked to reset the password for this mindmaps account.",
       `The link works once and expires in ${minutes} minutes. Using it signs you out everywhere.`,
     ],
-    "Choose a new password",
-    url,
+    [{ label: "Choose a new password", url }],
     "If this wasn't you, ignore this message: your password has not changed.",
   );
   return { subject: "Reset your password", text, html };
+}
+
+/**
+ * Sent to the owner of an address when someone tries to sign up with it again.
+ * Sign-up answers the same whether the address is new or taken, so this message
+ * is the only way the owner learns of it.
+ */
+export function signupAttemptEmail(signInUrl: string, forgotUrl: string): Omit<MailMessage, "to"> {
+  const { text, html } = layout(
+    "Someone tried to sign up with your address",
+    [
+      "Someone just tried to create a mindmaps account with this email address, but there is already one.",
+      "If that was you, sign in instead. If you have forgotten your password, you can ask for a link to choose a new one.",
+    ],
+    [
+      { label: "Sign in", url: signInUrl },
+      { label: "Reset your password", url: forgotUrl },
+    ],
+    "If this wasn't you, ignore this message: nothing about your account has changed.",
+  );
+  return { subject: "Someone tried to sign up with your email address", text, html };
 }

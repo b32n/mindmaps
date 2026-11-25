@@ -43,8 +43,11 @@ import { modeProblem, readMode } from "./mode";
 import { capturedMail, mailConfigured, type EmailBinding } from "./mail";
 import {
   INVALID_LINK, RATE_LIMITED, UNCONFIGURED, clientIp, consumeToken, isVerified, markVerified, rateBlocked,
-  rateHit, resetPassword, revokeAccess, sendResetEmail, sendVerificationEmail, type Limit,
+  rateHit, resetPassword, revokeAccess, sendResetEmail, sendSignupAttemptEmail, sendVerificationEmail, type Limit,
 } from "./emailauth";
+import { turnstileSiteKey, verifyTurnstile } from "./turnstile";
+import { hashCount, noteHash, probeOn } from "./probe";
+import { housekeepingDue, sweepTechnical } from "./housekeeping";
 import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
 export interface Env {
@@ -79,6 +82,16 @@ export interface Env {
   MAIL_DOMAIN?: string;
   /** "capture" keeps mail in R2 for tests; never set it on a real install */
   MAIL_TRANSPORT?: string;
+  /**
+   * Cloudflare Turnstile on sign-up, forgot-password and resend-verification;
+   * on only when the site key (a var) and the secret are both set. See turnstile.ts.
+   */
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
+  /** Siteverify's address; only the e2e suite points this elsewhere */
+  TURNSTILE_VERIFY_URL?: string;
+  /** "1" lets the e2e suite see where passwords are hashed (probe.ts); never set it on a real install */
+  HASH_PROBE?: string;
   /** where the browser lands after Google sends us back */
   APP_ORIGIN?: string;
   /** stable public origin; see issuerOf in oauth.ts */
@@ -231,6 +244,12 @@ export default {
         return sent ? json(env, sent) : json(env, { error: "not found" }, 404);
       }
 
+      if (seg[0] === "api" && seg[1] === "_probe" && seg[2] === "hash" && req.method === "GET") {
+        return probeOn(env)
+          ? json(env, { count: hashCount(url.searchParams.get("who") ?? "") })
+          : json(env, { error: "not found" }, 404);
+      }
+
       if (!user) return json(env, { error: "not signed in" }, 401);
       return await route(req, env, seg, user, ctx);
     } catch (err: any) {
@@ -282,6 +301,21 @@ export default {
         (err) => console.error("account deletion sweep failed", err),
       ),
     );
+    // The rate-limit and email-token tables: expired rows are marked, and old
+    // rate-limit counters removed (housekeeping.ts). Due every few minutes, not every one.
+    if (housekeepingDue(_event.scheduledTime))
+      ctx.waitUntil(
+        sweepTechnical(env.DB).then(
+          (n) => {
+            if (n.rateExpired || n.rateRemoved || n.tokensExpired)
+              console.log(
+                `housekeeping: expired ${n.rateExpired} rate limit${n.rateExpired === 1 ? "" : "s"}, ` +
+                  `removed ${n.rateRemoved}, expired ${n.tokensExpired} email token${n.tokensExpired === 1 ? "" : "s"}`,
+              );
+          },
+          (err) => console.error("housekeeping failed", err),
+        ),
+      );
     // The archived rows themselves. Kept separate from the object reap above so
     // a failure in either cannot strand the other: the row sweep is a plain
     // delete, the object reap talks to R2 and can fail transiently.
@@ -1751,6 +1785,11 @@ async function authRoute(
     for (const [limit, subject] of checks) if (!(await rateHit(env.DB, limit, subject))) return false;
     return true;
   };
+  /** The Turnstile check, when the instance has one: a refusal to return, or null to carry on. */
+  const challenge = async (token: unknown) => {
+    const r = await verifyTurnstile(env, token, ip);
+    return r.ok ? null : json(env, { error: r.error, code: r.code }, r.status);
+  };
   /** Mail is sent after the response, so how long a request takes does not say whether an account exists. */
   const origin = env.APP_ORIGIN ?? issuerOf(req, env);
 
@@ -1762,12 +1801,14 @@ async function authRoute(
       // can this instance send mail, and has this user's address been proven
       emailEnabled: mailConfigured(env),
       emailVerified: user ? await isVerified(env.DB, user.id) : null,
+      // the public key of the sign-up check, or null when it is off (turnstile.ts)
+      turnstileSiteKey: turnstileSiteKey(env),
     });
   }
 
   if (action === "register" && m === "POST") {
     if (!(await within(["register_ip", ip]))) return tooMany();
-    const { email, password, name } = await body();
+    const { email, password, name, turnstileToken } = await body();
     const addr = String(email ?? "").trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr))
       return json(env, { error: "That doesn't look like an email address." }, 400);
@@ -1776,15 +1817,58 @@ async function authRoute(
     if (problems.length)
       return json(env, { error: "Your password needs " + problems.join(", ") + ".", problems }, 400);
 
+    // After the cheap checks and the rate limit, before anything that costs: the
+    // database lookups and the password hash.
+    const refused = await challenge(turnstileToken);
+    if (refused) return refused;
+
     const existing = await env.DB.prepare(`SELECT id FROM users WHERE email = ?`)
       .bind(addr)
       .first();
-    if (existing)
+
+    /*
+     * With mail, sign-up gives the same answer for an address that is taken as
+     * for a new one, so it cannot be used to find out who has an account (see
+     * docs/SIGNUP.md): the same status and body, no session either way, and the
+     * difference reaches only the address's owner, by email. Without mail there
+     * is nobody to tell, so a taken address is still refused outright, as it
+     * always was; that is the one place the question can still be asked.
+     */
+    const mail = mailConfigured(env);
+    if (existing && !mail)
       return json(env, { error: "An account with that email already exists." }, 409);
 
+    // Closed sign-up refuses a stranger whether or not they hold an account.
     if (!(await signupAllowed(env, addr))) return json(env, { error: SIGNUP_CLOSED }, 403);
 
+    // The hash is spent for a taken address too, so the time it takes says nothing.
+    noteHash(env, addr);
     const { hash, salt } = await hashPassword(password);
+
+    if (mail) {
+      let taken = !!existing;
+      if (!taken) {
+        const uid = id();
+        try {
+          await env.DB.prepare(
+            `INSERT INTO users (id,email,name,password_hash,password_salt,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?)`,
+          )
+            .bind(uid, addr, String(name ?? "").trim(), hash, salt, now(), now())
+            .run();
+          await ensurePersonalWorkspace(env.DB, uid);
+          await createStarterBoard(env, uid, issuerOf(req, env));
+          ctx.waitUntil(sendVerificationEmail(env, origin, uid, addr));
+        } catch (err) {
+          // Two sign-ups for one new address at once: the loser is a taken address.
+          if (!/UNIQUE|constraint/i.test(String((err as Error)?.message))) throw err;
+          taken = true;
+        }
+      }
+      if (taken) ctx.waitUntil(sendSignupAttemptEmail(env, origin, addr));
+      return json(env, { ok: true, confirm: "email" });
+    }
+
     const uid = id();
     await env.DB.prepare(
       `INSERT INTO users (id,email,name,password_hash,password_salt,created_at,updated_at)
@@ -1800,7 +1884,6 @@ async function authRoute(
     // Awaited, not fire-and-forget: the redirect lands on /app immediately and
     // a board that appears a beat later reads as a bug. It cannot throw.
     await createStarterBoard(env, uid, issuerOf(req, env));
-    ctx.waitUntil(sendVerificationEmail(env, origin, uid, addr));
     return signIn(req, env, uid);
   }
 
@@ -1823,7 +1906,14 @@ async function authRoute(
       await rateHit(env.DB, "login_ip", ip);
       return json(env, { error: "Email or password is incorrect." }, 401);
     };
-    if (!row?.password_hash || !row.password_salt) return await bad();
+    // The same work whether or not the account has a password to check: without
+    // it a missing account would answer visibly faster than a wrong password.
+    noteHash(env, addr);
+    if (!row?.password_hash || !row.password_salt) {
+      const decoy = await decoyHash();
+      await verifyPassword(String(password ?? ""), decoy.hash, decoy.salt);
+      return await bad();
+    }
     if (!(await verifyPassword(String(password ?? ""), row.password_hash, row.password_salt)))
       return await bad();
 
@@ -1849,6 +1939,8 @@ async function authRoute(
     if (!mailConfigured(env)) return json(env, { error: UNCONFIGURED, code: "email_unconfigured" }, 501);
     if (await isVerified(env.DB, user.id)) return json(env, { ok: true, alreadyVerified: true });
     if (!(await within(["resend_user", user.id], ["resend_ip", ip]))) return tooMany();
+    const refused = await challenge((await body()).turnstileToken);
+    if (refused) return refused;
     ctx.waitUntil(sendVerificationEmail(env, origin, user.id, user.email));
     return json(env, { ok: true });
   }
@@ -1860,10 +1952,13 @@ async function authRoute(
    */
   if (action === "forgot-password" && m === "POST") {
     if (!mailConfigured(env)) return json(env, { error: UNCONFIGURED, code: "email_unconfigured" }, 501);
-    const addr = String((await body()).email ?? "").trim().toLowerCase();
+    const asked = await body();
+    const addr = String(asked.email ?? "").trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr))
       return json(env, { error: "That doesn't look like an email address." }, 400);
     if (!(await within(["forgot_email", addr], ["forgot_ip", ip]))) return tooMany();
+    const refused = await challenge(asked.turnstileToken);
+    if (refused) return refused;
     const row = await env.DB.prepare(`SELECT id FROM users WHERE email = ? AND status = 'active'`)
       .bind(addr)
       .first<{ id: string }>();
@@ -2099,6 +2194,10 @@ function landingUrl(next: string, appOrigin: string, selfOrigin: string): string
   }
   return `${appOrigin}${next.startsWith("/") ? next : "/app"}`;
 }
+
+/** A fixed hash to check a password against when there is no account to check it against (login). */
+let decoy: Promise<{ hash: string; salt: string }> | null = null;
+const decoyHash = () => (decoy ??= hashPassword("decoy-password-never-matches", "0".repeat(32)));
 
 /** Issue a session cookie for a user id. */
 async function signIn(req: Request, env: Env, userId: string): Promise<Response> {
