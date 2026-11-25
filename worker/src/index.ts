@@ -1934,8 +1934,10 @@ async function authRoute(
       )
         .bind(uid, email, String(info.name ?? ""), info.picture ?? null, sub, now(), now())
         .run();
-      // Only inside this branch: `existing` means a returning account, and a
-      // second Google sign-in is not a signup.
+      // The workspace first: the starter board references it (same order as
+      // register). Only inside this branch: `existing` means a returning
+      // account, and a second Google sign-in is not a signup.
+      await ensurePersonalWorkspace(env.DB, uid);
       await createStarterBoard(env, uid, issuerOf(req, env));
     }
 
