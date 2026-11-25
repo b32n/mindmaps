@@ -78,6 +78,14 @@ test("an unverified-by-Google claim cannot be linked to an existing account by a
   await r.dispose();
 });
 
+test("a Google claim that does not say the address is verified is not linked to an existing account either", async ({ existing, playwright, baseURL }) => {
+  const r = await playwright.request.newContext({ baseURL });
+  const res = await googleSignIn(r, { email: existing.user.email, sub: sub(), email_verified: undefined });
+  expect(res.headers().location).toContain("/login?error=");
+  expect((await me(r)).user).toBeNull();
+  await r.dispose();
+});
+
 test("a returning Google user is not re-linked or re-created", async ({ playwright, baseURL }) => {
   const r = await playwright.request.newContext({ baseURL });
   const who = newUser("again");
