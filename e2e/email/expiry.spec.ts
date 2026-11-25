@@ -149,7 +149,7 @@ test("accounts that existed before email verification are grandfathered as verif
 
 /** The backfill statement out of the migration itself, in a temp file (the ALTERs around it cannot be run twice). */
 function backfillFile(): string {
-  const migration = readFileSync(fileURLToPath(new URL("../../worker/migrations/0030_email_auth.sql", import.meta.url)), "utf8");
+  const migration = readFileSync(fileURLToPath(new URL("../../worker/migrations/0033_email_auth.sql", import.meta.url)), "utf8");
   const statement = migration.match(/^UPDATE users[^;]*;/m)?.[0];
   if (!statement) throw new Error("no backfill statement in the migration");
   const file = join(mkdtempSync(join(tmpdir(), "mindmaps-backfill-")), "backfill.sql");
