@@ -23,7 +23,7 @@
  * invitation to a lookalike address.
  */
 
-import { INVITE_RESTRICTED_MESSAGE, inviteRefused, workspaceOfTarget } from "./policy";
+import { INVITE_RESTRICTED_MESSAGE, inviteRefused, workspaceOfTarget } from "./org-policy";
 import { assertNotBlocked } from "./scope";
 import { MEMBER_ROLE, NOT_CLOSED, canAdmin, canWrite, boardRole, isOwner, nodeRole, workspaceRole, type Role } from "./access";
 
@@ -107,7 +107,7 @@ export async function invite(
   if (!email.includes("@")) return null;
 
   // An organisation that restricts invitations to its verified domains refuses
-  // the rest, whoever asks (policy.ts). Not applied to a role change for someone
+  // the rest, whoever asks (org-policy.ts). Not applied to a role change for someone
   // already in the workspace: that is not an invitation, and it must never be
   // the thing that locks a member out.
   const restricted = async (): Promise<InviteResult | null> =>

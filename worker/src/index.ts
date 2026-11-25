@@ -46,7 +46,7 @@ import {
 } from "./organisation";
 import { SsoRequiredError, blockedWorkspaces, scopeDb, unscoped } from "./scope";
 import { addDomain, removeDomain, verifyDomain } from "./domains";
-import { guard, joinOffers, joinOrganisation, securityOf, setEnforce, setPolicy, ssoSummary } from "./policy";
+import { guard, joinOffers, joinOrganisation, securityOf, setEnforce, setPolicy, ssoSummary } from "./org-policy";
 import { callbackUrl, completeSso, isEnabled, linkIdentity, removeConfig, resolveIdentity, saveConfig, setEnabled, startLogin, startTest } from "./sso";
 import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
@@ -1816,7 +1816,7 @@ async function canWriteEdge(env: Env, user: SessionUser, edgeId: string): Promis
 
 /**
  * `/api/workspaces/:id/{security,domains,policy,sso,join}`. Who may do what is
- * decided in policy.ts (`guard`); what each does is in domains.ts, policy.ts and
+ * decided in org-policy.ts (`guard`); what each does is in domains.ts, org-policy.ts and
  * sso.ts. Returns null for a shape that is not one of these, so routing carries on.
  */
 async function orgSettingsRoute(req: Request, env: Env, seg: string[], user: SessionContext): Promise<Response | null> {
@@ -2207,7 +2207,7 @@ async function authRoute(
 
     // Google has just vouched for `email`; that proves the address for this
     // session only if it is the account's address (matched by `google_sub`, the
-    // account's may differ). Domain auto-join asks for this proof (policy.ts).
+    // account's may differ). Domain auto-join asks for this proof (org-policy.ts).
     const account = await env.DB.prepare(`SELECT email FROM users WHERE id = ?`).bind(uid).first<{ email: string }>();
     const { token, expiresAt } = await createSession(
       env.DB,

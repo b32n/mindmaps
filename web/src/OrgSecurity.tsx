@@ -2,7 +2,7 @@
  * An organisation's domains, sign-up policy and SSO, for its owner and admins.
  *
  * Three small sections in the workspace dialog. What each person may do is
- * decided by the server (worker/src/policy.ts); this hides what it would refuse
+ * decided by the server (worker/src/org-policy.ts); this hides what it would refuse
  * (SSO is the owner's; none of it exists on a personal install) and reports
  * what it says. The client secret is only ever sent, never shown: the form
  * knows that one is stored, not what it is.

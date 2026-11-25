@@ -10,7 +10,7 @@ import {
 
 // Domain policy, per organisation and for verified domains only: who may join
 // by themselves (auto-join, a step the person takes, never silent), and who may
-// be invited (restrict invites). See worker/src/policy.ts and docs/SSO.md.
+// be invited (restrict invites). See worker/src/org-policy.ts and docs/SSO.md.
 
 test.use({ baseURL: modeWorkers.multitenant.baseURL });
 const BASE = modeWorkers.multitenant.baseURL;
