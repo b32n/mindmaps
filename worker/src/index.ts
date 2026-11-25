@@ -866,6 +866,11 @@ async function route(
   // after the response; see moveBoardVectors.
   if (a === "boards" && b && c === "move" && !d && m === "POST") {
     const body = await req.json<any>().catch(() => ({}));
+    // Nothing new goes into a team space while they are hidden (personal mode).
+    if (!policyFor(env).teamSpaces && typeof body?.workspace_id === "string") {
+      const to = await env.DB.prepare(`SELECT personal FROM workspaces WHERE id = ?`).bind(body.workspace_id).first<{ personal: number }>();
+      if (to && !to.personal) return json(env, TEAM_SPACES_DISABLED, 403);
+    }
     const res = await moveBoard(env, user.id, b, body?.workspace_id);
     if (!res.ok) return json(env, { error: res.error }, res.status);
     ctx.waitUntil(moveBoardVectors(env as Parameters<typeof moveBoardVectors>[0], res.id, res.workspace_id));
@@ -942,10 +947,16 @@ async function route(
   // What is waiting for this person to accept or decline, by the address they
   // signed in with. Nothing here joins anyone: see members.ts.
   if (a === "invites" && !b && m === "GET") {
-    return json(env, { invites: await pendingFor(env, user.email) });
+    const pending = await pendingFor(env, user.email);
+    // Team spaces are hidden in personal mode (policy.ts): so are invitations to them.
+    return json(env, { invites: policyFor(env).teamSpaces ? pending : pending.filter((i) => i.target_type !== "workspace") });
   }
 
   if (a === "invites" && b && (c === "accept" || c === "decline") && !d && m === "POST") {
+    if (c === "accept" && !policyFor(env).teamSpaces) {
+      const inv = await env.DB.prepare(`SELECT target_type FROM invites WHERE token = ?`).bind(b).first<{ target_type: string }>();
+      if (inv?.target_type === "workspace") return json(env, TEAM_SPACES_DISABLED, 403);
+    }
     const res =
       c === "accept"
         ? await acceptInvite(env, user.id, user.email, b)

@@ -72,7 +72,13 @@ What "hidden" covers, exactly:
   `workspace` argument is gone; `create_mindmap` writes to the personal home) are
   all refused or ignored. An agent connected to a team space before the switch
   keeps working, in the personal home, and goes back to the team space when the
-  mode is switched back.
+  mode is switched back. Moving a mindmap *into* a team space
+  (`POST /api/boards/:id/move`) is refused the same way; moving one out to the
+  personal home still works.
+- **Invitations to a team space are not offered.** `GET /api/invites` leaves them
+  out and accepting one answers 403 `team_spaces_disabled`; the invitation itself
+  is untouched and is offered again when the mode is switched back. An invitation
+  to a single mindmap is not a team space and works as ever.
 - **A mindmap already shared with someone keeps working for them**, even when it
   sits in a hidden team space. Sharing is not removed or weakened by hiding: the
   person it was shared with still has it in their list, opens it by its id, and
