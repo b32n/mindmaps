@@ -65,6 +65,16 @@ to everyone:
 npx wrangler secret put ALLOW_SIGNUPS      # enter: true
 ```
 
+## Single sign-on and verified domains (optional)
+
+For org and multitenant installs: the owner of an organisation can verify its
+email domains, set a join policy and connect an OIDC provider from the workspace
+dialog. Nothing needs installing. One optional secret, `SSO_SECRET_KEY`
+(`npx wrangler secret put SSO_SECRET_KEY`), encrypts the stored client secrets;
+without it a key is generated and kept in the database. Domain verification uses
+Cloudflare's DNS-over-HTTPS and needs no setup. See [docs/SSO.md](docs/SSO.md).
+A personal install refuses all of it.
+
 ## Your own domain
 
 Needs a domain whose DNS is on this Cloudflare account.

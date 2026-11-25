@@ -28,7 +28,7 @@ that, so you can plan around it:
   all keep working. Personal mode will not remove any of them.
 - **Switching an install to personal later hides team spaces; it deletes
   nothing.** Switch back and they return.
-- **SSO and a sign-in domain policy** ship before the modes are launched.
+- **SSO and a sign-in domain policy** are per organisation: see [SSO.md](SSO.md).
 
 ## Organisations
 
@@ -112,8 +112,8 @@ Personal. No tools changed.
 
 ### Still to come
 
-SSO and a verified-domain sign-up policy hang off the organisation; neither is
-here yet.
+SSO and a verified-domain policy hang off each organisation; see [SSO.md](SSO.md).
+A personal install refuses all of it.
 
 ## If it is unset, or empty
 
