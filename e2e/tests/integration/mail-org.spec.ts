@@ -80,6 +80,25 @@ test.describe("org mode, sign-up closed, email on", () => {
     expect((await guest.post(`/api/invites/${sent.token}/accept`)).status()).toBe(200);
     expect((await organisation(guest)).state).toBe("member");
   });
+
+  test("the page that asks for an invite also asks to confirm the address", async ({ browser }) => {
+    const owner = await w.client();
+    await signUp(owner, "owner");
+    const org = await (await createOrganisation(owner, { name: "Acme" })).json();
+    const g = newUser("late");
+    // sign-up is closed, so the address is let in by an invitation, which is then declined
+    const sent = (await inviteRaw(owner, "workspaces", org.id, g.email)).invited!;
+    const guest = await w.client();
+    await guest.post("/api/auth/register", { data: { email: g.email, password: g.password, name: g.name } });
+    await guest.post("/api/auth/login", { data: { email: g.email, password: g.password } });
+    expect((await guest.post(`/api/invites/${sent.token}/decline`)).status()).toBe(200);
+
+    const ctx = await w.context(browser, guest);
+    const page = await ctx.newPage();
+    await page.goto("/app");
+    await expect(page.getByText(/Ask your admin for an invite/i)).toBeVisible();
+    await expect(page.getByText(/Confirm your email/i)).toBeVisible();
+  });
 });
 
 test.describe("joining an organisation by its domain, email on", () => {
