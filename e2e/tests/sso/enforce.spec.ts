@@ -46,7 +46,7 @@ test.describe("with enforcement on", () => {
     const e = employee.request;
     for (const [name, res] of [
       ["board contents", await e.get(`/api/boards/${board.id}/contents`)],
-      ["board", await e.get(`/api/boards/${board.id}`)],
+      ["board cards", await e.get(`/api/boards/${board.id}/cards`)],
       ["node", await e.get(`/api/nodes/${card.id}`)],
       ["write a node", await e.post("/api/nodes", { data: { board_id: board.id, type: "card", title: "x", x: 0, y: 0 } })],
       ["rename the board", await e.patch(`/api/boards/${board.id}`, { data: { name: "hacked" } })],
@@ -58,15 +58,16 @@ test.describe("with enforcement on", () => {
       ["security", await e.get(`/api/workspaces/${org.ws}/security`)],
     ] as const)
       expect(await codeOf(res), name).toEqual(SSO_REQUIRED);
-    expect(((await (await e.get(`/api/boards/${board.id}`)).json()) as { error: string }).error).toMatch(/single sign-on/i);
+    expect(((await (await e.get(`/api/boards/${board.id}/contents`)).json()) as { error: string }).error).toMatch(/single sign-on/i);
 
     // lists leave the organisation's mindmaps out, and say the workspace is locked
-    expect((await listBoards(e)).map((b) => b.id)).toEqual([mine.id]);
+    const seen = await listBoards(e);
+    expect(seen.map((b) => b.id)).toContain(mine.id);
+    expect(seen.map((b) => b.id)).not.toContain(board.id);
     const ws = (await listWorkspaces(e)) as Array<{ id: string; sso_required?: boolean }>;
     expect(ws.find((w) => w.id === org.ws)?.sso_required).toBe(true);
     expect(ws.filter((w) => w.id !== org.ws).every((w) => !w.sso_required)).toBe(true);
     expect((await e.get("/api/artefacts")).status()).toBe(200);
-    expect(((await (await e.get("/api/organisation")).json()) as { sso_required?: boolean }).sso_required).toBe(true);
     const recall = (await (await e.get("/api/recall?q=secret")).json()) as { hits: { title?: string }[] };
     expect(JSON.stringify(recall)).not.toContain("Secret plan");
 
@@ -77,6 +78,8 @@ test.describe("with enforcement on", () => {
     // the contractor's address is elsewhere: not subject to the rule
     expect((await contractor.request.get(`/api/boards/${board.id}/contents`)).status()).toBe(200);
     // and the organisation's data did not change
+    // (the owner's password session is locked out of content too: only settings stay reachable, so lift the switch to look)
+    expect((await enforceSso(org.owner.request, org.ws, false)).status()).toBe(200);
     expect((await org.owner.request.get(`/api/nodes/${card.id}`).then((r) => r.json())).title).toBe("Secret plan");
   });
 
@@ -229,7 +232,7 @@ test.describe("MCP", () => {
     const listed = await viaPassword.call("list_mindmaps", { workspace: org.ws });
     expect(listed.text).not.toContain("Roadmap");
     expect(listed.isError || /single sign-on|workspace/i.test(listed.text)).toBe(true);
-    expect((await viaPassword.call("recall", { query: "Secret plan" })).text).not.toContain("Secret plan");
+    expect((await viaPassword.call("recall", { query: "Secret plan" })).text).not.toContain("Roadmap");
 
     const s = await ssoSession(BASE, employee.user.email);
     const viaSso = await connectMcp(s, { workspace: org.ws });

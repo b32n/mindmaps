@@ -1043,6 +1043,7 @@ async function chooseWorkspace(env: McpEnv, userId: string, grant: TokenGrant, a
   const mine = await workspacesFor(env.DB, userId);
   if (!asked) {
     const home = mine.find((w) => w.id === grant.workspaceId);
+    if (home?.sso_required) throw new SsoRequiredError(home.id);
     return home
       ? { ok: true, workspace: home }
       : {
@@ -1053,8 +1054,11 @@ async function chooseWorkspace(env: McpEnv, userId: string, grant: TokenGrant, a
   }
 
   const byId = mine.find((w) => w.id === asked);
+  if (byId?.sso_required) throw new SsoRequiredError(byId.id);
   if (byId) return { ok: true, workspace: byId };
   const named = mine.filter((w) => w.name.toLowerCase() === asked.toLowerCase());
+  const lockedByName = named.find((w) => w.sso_required);
+  if (lockedByName) throw new SsoRequiredError(lockedByName.id);
   if (named.length > 1)
     return {
       ok: false,
