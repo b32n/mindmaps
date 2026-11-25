@@ -21,10 +21,13 @@ export function OrgSecurityPanel({ workspace }: { workspace: Workspace }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
 
-  const load = useCallback(() => {
-    api.security(ws).then(setSec).catch((e: Error) => setError(e.message));
-  }, [ws]);
-  useEffect(load, [load]);
+  const load = useCallback(
+    () => api.security(ws).then(setSec).catch((e: Error) => setError(e.message)),
+    [ws],
+  );
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   /** One action at a time: report its failure in one place, then re-read. */
   const run = async (what: string, f: () => Promise<unknown>, done?: string) => {
@@ -37,8 +40,9 @@ export function OrgSecurityPanel({ workspace }: { workspace: Workspace }) {
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      // Re-read before letting go, or a control shows its old value for a beat and a quick second click undoes the first.
+      await load();
       setBusy(null);
-      load();
     }
   };
 
