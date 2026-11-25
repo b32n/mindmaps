@@ -1,4 +1,5 @@
 import { test, expect } from "../../fixtures";
+import { modeWorkers } from "../../support/hosts";
 
 const REPO = "https://github.com/b32n/mindmaps";
 
@@ -74,6 +75,30 @@ test.describe("launch links and cost text", () => {
     );
   });
 });
+
+// "The hosted instance is free to try" describes the hosted service only, so a
+// personal or org install must not show that section. Multitenant (and unset,
+// which is the same thing) keep it.
+for (const mode of ["personal", "org", "multitenant"] as const) {
+  test.describe(`hosted-or-self-hosted section, ${mode} mode`, () => {
+    test.use({ baseURL: modeWorkers[mode].baseURL });
+
+    test(mode === "multitenant" ? "is shown" : "is not shown", async ({ page }) => {
+      await page.goto("/");
+      // The mode arrives with /api/auth/me; wait for it so "absent" is not just "not rendered yet".
+      await expect(page.locator("html")).toHaveAttribute("data-mindmaps-mode", mode);
+      await expect(page.locator("footer.lp-foot")).toBeVisible();
+      const section = page.locator("#self-host");
+      if (mode === "multitenant") {
+        await expect(section).toContainText("The hosted instance is free to try");
+      } else {
+        await expect(section).toHaveCount(0);
+        await expect(page.getByText("The hosted instance is free to try")).toHaveCount(0);
+        await expect(page.getByText("Hosted or self-hosted")).toHaveCount(0);
+      }
+    });
+  });
+}
 
 test.describe("robots.txt", () => {
   test("allows the public pages and disallows the app, API and per-user paths", async ({ request }) => {
