@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { auth } from "../api";
 import { useAuth } from "../AuthContext";
+import { Turnstile, type TurnstileHandle } from "../Turnstile";
 
 /**
  * Mirrors the server's policy in worker/src/auth.ts. Shown live as the user
@@ -150,7 +151,7 @@ export function LoginPage() {
 }
 
 export function RegisterPage() {
-  const { signIn } = useAuth();
+  const { signIn, turnstileSiteKey } = useAuth();
   const nav = useNavigate();
 
   const [name, setName] = useState("");
@@ -159,6 +160,9 @@ export function RegisterPage() {
   const [touched, setTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const [checked, setChecked] = useState(false);
+  const challenge = useRef<TurnstileHandle>(null);
 
   const failing = RULES.filter((r) => !r.ok(password));
   const strong = failing.length === 0;
@@ -172,14 +176,38 @@ export function RegisterPage() {
     setBusy(true);
     setError(null);
     try {
-      const { user } = await auth.register(email, password, name);
-      signIn(user);
-      nav("/app", { replace: true });
+      const out = await auth.register(email, password, name, token ?? undefined);
+      if ("user" in out) {
+        signIn(out.user);
+        nav("/app", { replace: true });
+      } else {
+        // The same answer whether or not the address already had an account.
+        setChecked(true);
+        setBusy(false);
+      }
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
+      challenge.current?.reset(); // a token works once
     }
   }
+
+  if (checked)
+    return (
+      <div className="auth-page">
+        <div className="auth-card">
+          <Link to="/" className="auth-brand">mindmaps</Link>
+          <h1>Check your email</h1>
+          <p className="auth-alt" role="status">
+            We've sent a message to <strong>{email.trim().toLowerCase()}</strong>. Open the link in it to confirm the
+            address. If you already had an account, the message says so and shows how to sign in.
+          </p>
+          <p className="auth-alt">
+            <Link to="/login">Sign in</Link>
+          </p>
+        </div>
+      </div>
+    );
 
   return (
     <div className="auth-page">
@@ -230,7 +258,9 @@ export function RegisterPage() {
           </ul>
         )}
 
-        <button className="auth-submit" disabled={busy || !strong}>
+        {turnstileSiteKey && <Turnstile ref={challenge} siteKey={turnstileSiteKey} action="register" onToken={setToken} />}
+
+        <button className="auth-submit" disabled={busy || !strong || (!!turnstileSiteKey && !token)}>
           {busy ? "Creating…" : "Create account"}
         </button>
         <p className="auth-alt">

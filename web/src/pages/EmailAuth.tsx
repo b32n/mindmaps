@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { auth } from "../api";
 import { useAuth } from "../AuthContext";
 import { RULES } from "./Auth";
+import { Turnstile, type TurnstileHandle } from "../Turnstile";
 
 /**
  * The pages behind the links in the emails: confirm an address, ask for a
@@ -74,21 +75,24 @@ export function VerifyEmailPage() {
 }
 
 export function ForgotPasswordPage() {
-  const { emailEnabled, loading } = useAuth();
+  const { emailEnabled, loading, turnstileSiteKey } = useAuth();
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const challenge = useRef<TurnstileHandle>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await auth.forgotPassword(email);
+      await auth.forgotPassword(email, token ?? undefined);
       setSent(true);
     } catch (err) {
       setError((err as Error).message);
+      challenge.current?.reset(); // a token works once
     }
     setBusy(false);
   }
@@ -128,7 +132,12 @@ export function ForgotPasswordPage() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </label>
-            <button className="auth-submit" disabled={busy}>{busy ? "Sending…" : "Send reset link"}</button>
+            {turnstileSiteKey && (
+              <Turnstile ref={challenge} siteKey={turnstileSiteKey} action="forgot-password" onToken={setToken} />
+            )}
+            <button className="auth-submit" disabled={busy || (!!turnstileSiteKey && !token)}>
+              {busy ? "Sending…" : "Send reset link"}
+            </button>
             <p className="auth-alt"><Link to="/login">Back to sign in</Link></p>
           </>
         )}
@@ -218,19 +227,23 @@ export function ResetPasswordPage() {
  * confirmed, invitations to it are held back, and that is worth saying.
  */
 export function VerifyBanner() {
-  const { user, emailEnabled, emailVerified } = useAuth();
-  const [state, setState] = useState<"idle" | "busy" | "sent" | "limited" | "failed">("idle");
+  const { user, emailEnabled, emailVerified, turnstileSiteKey } = useAuth();
+  const [state, setState] = useState<"idle" | "check" | "busy" | "sent" | "limited" | "failed">("idle");
+  const challenge = useRef<TurnstileHandle>(null);
   if (!user || !emailEnabled || emailVerified) return null;
 
-  async function resend() {
+  async function resend(token?: string) {
     setState("busy");
     try {
-      await auth.resendVerification();
+      await auth.resendVerification(token);
       setState("sent");
     } catch (err) {
       setState((err as Error & { status?: number }).status === 429 ? "limited" : "failed");
+      challenge.current?.reset(); // a token works once
     }
   }
+  // With the sign-up check on, pressing the button shows it; solving it sends the mail.
+  const press = () => (turnstileSiteKey ? setState("check") : resend());
 
   return (
     <div className="verify-banner" role="status">
@@ -243,7 +256,15 @@ export function VerifyBanner() {
               ? "We couldn't send that. Try again in a moment."
               : `Confirm your email: we sent a link to ${user.email}. Until you do, invitations to it wait.`}
       </span>
-      <button className="verify-banner-btn" onClick={resend} disabled={state === "busy"}>
+      {state === "check" && turnstileSiteKey && (
+        <Turnstile
+          ref={challenge}
+          siteKey={turnstileSiteKey}
+          action="resend-verification"
+          onToken={(t) => t && void resend(t)}
+        />
+      )}
+      <button className="verify-banner-btn" onClick={press} disabled={state === "busy" || state === "check"}>
         Resend email
       </button>
     </div>

@@ -1939,3 +1939,6 @@ a.card-open { display: block; box-sizing: border-box; text-align: center; text-d
 .verify-banner-btn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent-line); }
 .verify-banner-btn:disabled { opacity: 0.45; cursor: default; }
 a.auth-link-button { text-align: center; text-decoration: none; }
+
+.turnstile { margin: 4px 0; }
+.verify-banner .turnstile { margin: 0 8px; }
