@@ -237,8 +237,9 @@ function PrivacyBody({ ctx }: { ctx: Ctx }) {
         <ul>
           <li>
             <strong>Your account:</strong> your email address, a display name, and either a password (stored only as a
-            salted, slow hash, never the password itself) or, if you sign in with Google, Google's account identifier and
-            your profile picture address.
+            salted, slow hash, never the password itself) or, if you sign in with Google or your organisation's single
+            sign-on, the identifier that provider gives for you (and, for Google, your profile picture address). Where
+            an instance has email turned on it also records whether you have confirmed the address, and how.
           </li>
           <li>
             <strong>Your content:</strong> mindmaps, cards and their documents, links between cards, sheets, documents,
@@ -288,8 +289,9 @@ function PrivacyBody({ ctx }: { ctx: Ctx }) {
             : "The software does not use your content to train AI models."}
         </p>
         <p>
-          There is no analytics, no advertising network, no tracking pixels and no third-party scripts or fonts on these
-          pages or in the app.
+          There is no analytics, no advertising network, no tracking pixels and no third-party fonts on these pages or in
+          the app. The one third-party script is Cloudflare's sign-up check, and only on an instance that has turned it
+          on (see below).
         </p>
       </Section>
 
@@ -307,8 +309,23 @@ function PrivacyBody({ ctx }: { ctx: Ctx }) {
             content. Your picture is then loaded from Google's servers when it is shown.
           </li>
           <li>
-            <strong>Email.</strong> Where an instance has email turned on (for verifying an address or resetting a
-            password), those messages are sent through Cloudflare Email Sending. Nothing else is sent by email.
+            <strong>Email.</strong> Where an instance has email turned on, these messages are sent through Cloudflare
+            Email Sending: one to verify an address, one to reset a password, and one telling the owner of an address that
+            someone tried to sign up with it (so a person who already has an account hears about it, and the sign-up form
+            does not reveal whether an address is registered). Nothing else is sent by email, and an instance without
+            email turned on sends none.
+          </li>
+          <li>
+            <strong>Cloudflare Turnstile</strong>, only where the operator has turned on the sign-up check. When you sign
+            up or ask for an email, your browser loads a script from Cloudflare and runs a short check there; Cloudflare
+            sees technical details such as your IP address and browser, and tells the instance only whether you passed. It
+            is a third party, and its own privacy policy applies to what it receives. Where it is off, nothing is loaded
+            from Cloudflare for this.
+          </li>
+          <li>
+            <strong>Your organisation's identity provider</strong>, only where the operator has set up single sign-on for
+            your organisation and you choose to sign in that way. It tells the instance your name and a verified email
+            address; the instance sends it nothing about your content.
           </li>
           <li>
             <strong>Anthropic</strong>, only if the operator has configured the optional research-thread feature and you

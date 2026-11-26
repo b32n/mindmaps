@@ -50,6 +50,19 @@ test.describe("privacy policy", () => {
     await expect(body).toContainText("Delete account");
   });
 
+  test("names the sign-up check, single sign-on and the sign-up-attempt email, each only where turned on", async ({ page }) => {
+    await page.goto("/privacy");
+    const who = page.locator("#who-else");
+    const item = (name: string) => who.locator("li", { hasText: name });
+    await expect(item("Cloudflare Turnstile")).toContainText("only where the operator has turned on the sign-up check");
+    await expect(item("Cloudflare Turnstile")).toContainText("Where it is off, nothing is loaded");
+    await expect(item("identity provider")).toContainText("only where the operator has set up single sign-on");
+    await expect(item("Email.")).toContainText("someone tried to sign up with it");
+    await expect(item("Email.")).toContainText("an instance without email turned on sends none");
+    // The claim about scripts has to stay true when the check is on.
+    await expect(page.locator("#what-we-do")).toContainText("The one third-party script is Cloudflare's sign-up check");
+  });
+
   test("on the hosted service the operator is the Mindmaps project", async ({ page }) => {
     await page.goto("/privacy");
     const note = page.getByTestId("operator-note");
