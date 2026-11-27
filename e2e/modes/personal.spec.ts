@@ -206,7 +206,12 @@ test.describe("sharing is untouched", () => {
     const theirs = await context.newPage();
     await signUpViaForm(theirs, who);
     await expectSignedInShell(theirs, who.name);
+    // joining is by accepting; personal mode has no workspace menu, so the rail holds the invitation
+    const invitations = theirs.getByRole("region", { name: "Invitations" });
+    await expect(invitations).toContainText("For an outsider");
+    await invitations.getByRole("button", { name: "Accept" }).click();
     await expect(new Rail(theirs).names()).toContainText(["For an outsider"]);
+    await expect(invitations).toHaveCount(0);
     await createNode(context.request, record.id, { title: "Outsider card" });
     expect((await contents(page.request, record.id)).nodes.map((n) => n.title)).toContain("Outsider card");
     await context.close();

@@ -1947,3 +1947,11 @@ a.card-open { display: block; box-sizing: border-box; text-align: center; text-d
   background: var(--danger-soft); color: var(--danger);
   font-size: var(--t-sm);
 }
+
+/* Invitations in the rail, where personal mode has no workspace menu to hold them. */
+.rail-invites {
+  display: flex; flex-direction: column; gap: var(--s2);
+  margin: var(--s2); padding: var(--s2) var(--s3);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  font-size: var(--t-sm);
+}

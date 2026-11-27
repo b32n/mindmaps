@@ -9,6 +9,7 @@ import { TrashDialog } from "./TrashDialog";
 import { ArtefactsView } from "./ArtefactsView";
 import { MembersPanel } from "./MembersPanel";
 import { CloseWorkspace, RenameWorkspace } from "./WorkspaceAdmin";
+import { PendingInvites } from "./PendingInvites";
 import { WorkspaceMenu } from "./WorkspaceMenu";
 import { useModePolicy } from "./policy";
 import { Recall } from "./Recall";
@@ -302,6 +303,16 @@ export function BoardApp() {
                 // A workspace you just joined is where you want to be.
                 if (invite.target_type === "workspace") setWsId(invite.target_id);
               }
+            }}
+          />
+        )}
+
+        {!teamSpaces && (
+          <PendingInvites
+            invites={invites}
+            onAnswered={(invite, accepted) => {
+              setInvites((xs) => xs.filter((x) => x.token !== invite.token));
+              if (accepted) void refreshAll();
             }}
           />
         )}
