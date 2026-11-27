@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { CLOSED_PORT, DOH_ENDPOINT, DOH_PORT, FAKE_GOOGLE_PORT, IDP_PORT, MAIN_PORT as PORT, MODE_CASES, mailWorker, mindboxWorker, modeWorkers, originWorker } from "./e2e/support/hosts";
+import { CLOSED_PORT, DOH_ENDPOINT, DOH_PORT, FAKE_GOOGLE_PORT, FAKE_TURNSTILE_PORT, IDP_PORT, MAIN_PORT as PORT, MODE_CASES, mailWorker, mindboxWorker, modeWorkers, originWorker, turnstileWorker } from "./e2e/support/hosts";
 
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 // The second Worker: same app, sign-up closed (wrangler.test-closed.toml).
@@ -132,6 +132,28 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 30_000,
     },
+    // Mail captured and the sign-up check on, with a local stand-in for Siteverify beside it.
+    {
+      command: "node e2e/support/serve.mjs",
+      env: {
+        E2E_PORT: String(turnstileWorker.port),
+        E2E_STATE_DIR: ".e2e-state-turnstile",
+        E2E_CONFIG: "wrangler.test-turnstile.toml",
+        E2E_VARS: JSON.stringify(turnstileWorker.vars),
+      },
+      url: `${turnstileWorker.baseURL}/api/auth/me`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+    {
+      command: "node e2e/support/fake-turnstile.mjs",
+      env: { E2E_FAKE_TURNSTILE_PORT: String(FAKE_TURNSTILE_PORT) },
+      port: FAKE_TURNSTILE_PORT,
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
     // One Worker per MINDMAPS_MODE setting (see e2e/support/hosts.ts). The
     // invalid one answers 500 to everything, so readiness is the port, not a URL.
     ...MODE_CASES.map((name) => ({
@@ -201,6 +223,13 @@ export default defineConfig({
       testDir: "./e2e/email",
       testMatch: /.*\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: mailWorker.baseURL },
+    },
+    // The sign-up check (Cloudflare Turnstile), against the Worker that has it on.
+    {
+      name: "turnstile",
+      testDir: "./e2e/turnstile",
+      testMatch: /.*\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: turnstileWorker.baseURL },
     },
     // The installer's script and helpers; no browser, no Worker.
     { name: "installer", testDir: "./e2e/installer", testMatch: /.*\.spec\.ts/ },

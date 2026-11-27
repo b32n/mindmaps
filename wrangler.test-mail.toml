@@ -37,5 +37,7 @@ ALLOW_SIGNUPS = "true"
 MAIL_FROM = "mindmaps@mail.example.test"
 MAIL_FROM_NAME = "mindmaps"
 MAIL_TRANSPORT = "capture"
+# lets specs see where passwords are hashed (worker/src/probe.ts)
+HASH_PROBE = "1"
 GOOGLE_CLIENT_ID = "e2e-google-client"
 GOOGLE_CLIENT_SECRET = "e2e-google-secret"

@@ -103,3 +103,21 @@ export const mailWorker = {
     GOOGLE_TOKENINFO_URL: `http://127.0.0.1:${FAKE_GOOGLE_PORT}/tokeninfo`,
   },
 };
+
+/**
+ * The Turnstile Worker (wrangler.test-turnstile.toml): outbound mail captured and
+ * the sign-up check on, with a local stand-in for Siteverify beside it. After the
+ * email Worker and the fake Google; `E2E_TURNSTILE_PORT` and
+ * `E2E_FAKE_TURNSTILE_PORT` move them.
+ */
+export const TURNSTILE_PORT = port("E2E_TURNSTILE_PORT", FAKE_GOOGLE_PORT + 1);
+export const FAKE_TURNSTILE_PORT = port("E2E_FAKE_TURNSTILE_PORT", TURNSTILE_PORT + 1);
+
+export const turnstileWorker = {
+  port: TURNSTILE_PORT,
+  baseURL: `http://127.0.0.1:${TURNSTILE_PORT}`,
+  /** the stand-in for Siteverify */
+  verifyURL: `http://127.0.0.1:${FAKE_TURNSTILE_PORT}`,
+  siteKey: "e2e-turnstile-site",
+  vars: { TURNSTILE_VERIFY_URL: `http://127.0.0.1:${FAKE_TURNSTILE_PORT}/siteverify` },
+};

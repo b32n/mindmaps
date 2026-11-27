@@ -1,4 +1,4 @@
-import { expect, test } from "../fixtures";
+import { expect, register, test } from "../fixtures";
 import { addMember, createBoard, createWorkspace, inviteRaw, listBoards, listWorkspaces, membersOf } from "../support/api";
 import { linkIn, mailbox, tokenIn, unissuedToken, waitForMail } from "../support/mail";
 import { newUser, strongPassword } from "../support/users";
@@ -159,7 +159,7 @@ test.describe("resending", () => {
       const c = await mk({ "x-e2e-client-ip": ip });
       const u = newUser("ipresend");
       // sign-up itself counts towards the sign-up limit only
-      await c.post("/api/auth/register", { data: { email: u.email, password: u.password, name: u.name } });
+      await register(c, u);
       for (let i = 0; i < 3; i++) results.push((await c.post("/api/auth/resend-verification")).status());
       await c.dispose();
     }
@@ -168,7 +168,7 @@ test.describe("resending", () => {
 
     const other = await mk({ "x-e2e-client-ip": "198.51.100.7" });
     const u = newUser("ipresend2");
-    await other.post("/api/auth/register", { data: { email: u.email, password: u.password, name: u.name } });
+    await register(other, u);
     expect((await other.post("/api/auth/resend-verification")).status()).toBe(200);
     await other.dispose();
   });
@@ -185,9 +185,7 @@ test.describe("what an unverified address cannot do", () => {
 
     // someone who does not control the address registers it, and signs in again
     const squatter = await playwright.request.newContext({ baseURL });
-    const reg = await squatter.post("/api/auth/register", { data: { email: victim.email, password: strongPassword(), name: "squatter" } });
-    expect(reg.status()).toBe(200);
-    await squatter.post("/api/auth/login", { data: { email: victim.email, password: "wrong" } });
+    await register(squatter, { ...victim, password: strongPassword(), name: "squatter" });
     expect((await listWorkspaces(squatter)).map((w) => w.id)).not.toContain(ws.id);
     expect((await squatter.get(`/api/workspaces/${ws.id}/members`)).status()).toBeGreaterThanOrEqual(403);
     // and the invite is still pending for the real owner of the address
@@ -265,7 +263,7 @@ test.describe("what an unverified address cannot do", () => {
     const token = sent.invited!.token;
 
     const c = await playwright.request.newContext({ baseURL });
-    await c.post("/api/auth/register", { data: { email: person.email, password: person.password, name: person.name } });
+    await register(c, person);
     expect((await listWorkspaces(c)).map((w) => w.id)).not.toContain(ws.id);
     // signing in again changes nothing
     await c.post("/api/auth/login", { data: { email: person.email, password: person.password } });

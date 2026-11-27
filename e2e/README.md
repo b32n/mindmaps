@@ -154,6 +154,32 @@ against it; `e2e/tests/auth/email-off*.spec.ts` run against the main Worker, whi
 has no sender. Every test config sets `CLIENT_IP_HEADER` to a header nothing sends,
 so per-client rate limits only apply where a spec sends `x-e2e-client-ip`.
 
+## The Turnstile instance
+
+`wrangler.test-turnstile.toml` runs a Worker with mail captured (as above) and
+Cloudflare Turnstile on, whose `TURNSTILE_VERIFY_URL` points at a local stand-in for
+Siteverify (`e2e/support/fake-turnstile.mjs`; the real one is never called). The stand-in
+accepts a token starting `pass` once, refuses `fail…`, answers 500 for `outage…`, and
+records what it was sent (`e2e/support/turnstile.ts`). The browser cannot reach
+Cloudflare's widget script either, so UI specs replace it with a stand-in the test
+drives (`e2e/support/fake-turnstile-script.ts`). Ports follow the email Worker
+(`E2E_TURNSTILE_PORT`, `E2E_FAKE_TURNSTILE_PORT`); the `turnstile` project runs
+`e2e/turnstile`. Registering a user there needs a token: `register(request, user, passing())`.
+
+On a mail-configured Worker sign-up signs nobody in (docs/SIGNUP.md), so
+`register()` in `fixtures.ts` signs in afterwards and `signUpAndInViaForm` does the
+same through the form.
+
+Two debugging windows exist only where a test config switches them on, and answer `404`
+otherwise: `/api/_mail` (captured mail, `MAIL_TRANSPORT=capture`) and
+`/api/_probe/hash?who=<address>` (how many times a password hash was spent for an
+address, `HASH_PROBE=1`, `worker/src/probe.ts`). The probe is how specs show that a
+rate-limited request never reached the hash.
+
+`e2e/support/expiry.ts` can start its private Worker with extra vars and run the cron
+handler (`scheduled(time)`, through wrangler's local `/cdn-cgi/handler/scheduled`); the
+housekeeping spec uses both.
+
 ## Layout
 
 ```

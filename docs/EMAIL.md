@@ -71,12 +71,15 @@ rule, not ours).
 
 ## Confirming an address
 
-A password sign-up is emailed a link to `/verify-email?token=…`. The link:
+A password sign-up is emailed a link to `/verify-email?token=…`. (Sign-up does not
+sign anyone in where email is on, and answers the same for an address that is taken:
+see [SIGNUP.md](SIGNUP.md).) The link:
 
 - works once and expires after 24 hours;
 - is stored only as a SHA-256 hash, in `email_tokens`, and is never deleted: its
-  `status` moves from `active` to `used`, `superseded` (a newer link was sent) or
-  `revoked` (the account was deleted or its password reset);
+  `status` moves from `active` to `used`, `superseded` (a newer link was sent),
+  `revoked` (the account was deleted or its password reset) or `expired` (marked by
+  the scheduled sweep once past its time, see SIGNUP.md);
 - is confirmed by pressing a button on the page, not by opening it, so a mail
   scanner that fetches links cannot use it up.
 
@@ -136,6 +139,7 @@ client address:
 | What | Limit |
 |---|---|
 | Sign-up | 10 an hour per client |
+| "Someone tried to sign up with your address" mails | 3 an hour per address |
 | Sign-in, failures only | 10 per 15 minutes per address; 30 per client |
 | Resend verification | 3 an hour per account; 20 per client |
 | Request a password reset | 3 an hour per address; 20 per client |
@@ -146,15 +150,18 @@ Over a limit the answer is `429` with `code: "rate_limited"` and `Retry-After`.
 Sign-in counts only failures, so a correct password is never locked out by its own
 successes, but a locked address stays locked for the window even for the right
 password. The per-client limits are skipped when the request carries no client
-address. Rows are reused in place and never deleted.
+address. Rows are reused in place; a scheduled sweep marks the ones whose window has
+passed and removes counters a week after that (SIGNUP.md, "Housekeeping"). Every limit is
+counted before any password hash is spent.
 
 ## Without email
 
 When `MAIL_FROM` or the binding is missing:
 
 - `GET /api/auth/me` has `emailEnabled: false`;
-- sign-up works and sends nothing; the app shows no banner and no
-  "Forgot your password?" link;
+- sign-up works and sends nothing, signs the new account in, and still answers `409`
+  for a taken address (there is nobody to tell instead; SIGNUP.md explains the cost);
+  the app shows no banner and no "Forgot your password?" link;
 - `POST /api/auth/forgot-password` and `/resend-verification` answer `501` with
   `code: "email_unconfigured"`; the `/forgot-password` page says email is not set
   up and to ask whoever runs the instance;
@@ -173,16 +180,14 @@ person can ask again.
 
 ## Not covered yet
 
-- A CAPTCHA (Cloudflare Turnstile) on sign-up, sign-in and reset. The limits
-  above slow a single source; they do not stop a distributed one.
-- Sign-up still answers `409 An account with that email already exists.`, which
-  reveals that an address is registered. Hiding it means confirming by email
-  before the account exists.
 - Changing the email on an account.
-- Cleaning up old `rate_limits` and `email_tokens` rows (they are small and
-  never deleted today).
+- A CAPTCHA on sign-in. Turnstile guards sign-up, forgot-password and
+  resend-verification ([SIGNUP.md](SIGNUP.md)); sign-in relies on the limits above,
+  which slow a single source but do not stop a distributed one.
 
 ## Tests
+
+(Sign-up, Turnstile and housekeeping specs are listed in [SIGNUP.md](SIGNUP.md).)
 
 `e2e/email` runs against a Worker whose `MAIL_TRANSPORT` is `capture`: nothing is
 sent, messages are kept in R2 and read back through `GET /api/_mail?to=…`, which

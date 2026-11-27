@@ -36,3 +36,5 @@ bucket_name = "mindmaps-e2e"
 # Per-client rate limits read this header, which the suite sends only where it tests them (docs/EMAIL.md).
 CLIENT_IP_HEADER = "x-e2e-client-ip"
 ALLOW_SIGNUPS = "true"
+# lets specs see where passwords are hashed (worker/src/probe.ts)
+HASH_PROBE = "1"

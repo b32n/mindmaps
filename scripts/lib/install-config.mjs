@@ -97,7 +97,7 @@ export async function chooseMode({ flag, yes, existing, hosted, ask }) {
  * wrangler.local.toml: the committed wrangler.toml with this install's IDs,
  * optional pieces and [vars] filled in.
  */
-export function localToml(template, { name, dbId, search, domain, mindbox, mode, mail }) {
+export function localToml(template, { name, dbId, search, domain, mindbox, mode, mail, turnstile }) {
   // The committed wrangler.toml carries a default MINDMAPS_MODE (for the Deploy
   // button). This install's choice replaces it: drop it, then write ours, or
   // none when the choice is to leave it unset.
@@ -120,6 +120,9 @@ export function localToml(template, { name, dbId, search, domain, mindbox, mode,
     toml = toml.replace(/^(compatibility_date = ".*")$/m, `$1\n\n${SEND_EMAIL_BLOCK}`);
     vars.push(...mailVars(mail));
   }
+
+  // The Turnstile SITE key (public). The secret is a Worker secret and never in this file.
+  if (turnstile) vars.push(`TURNSTILE_SITE_KEY = "${turnstile}"`);
 
   if (vars.length) {
     // One [vars] table only: a second one is a TOML error.

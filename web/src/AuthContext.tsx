@@ -7,6 +7,8 @@ interface AuthState {
   googleEnabled: boolean;
   /** this instance can send email, so verification and password reset exist */
   emailEnabled: boolean;
+  /** the key of the sign-up check, or null when this instance has none */
+  turnstileSiteKey: string | null;
   /** the signed-in address is confirmed (true when signed out: nothing to nag about) */
   emailVerified: boolean;
   /** ask the server again who we are, e.g. after confirming the address */
@@ -26,6 +28,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [googleEnabled, setGoogleEnabled] = useState(false);
   const [emailEnabled, setEmailEnabled] = useState(false);
   const [emailVerified, setEmailVerified] = useState(true);
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -39,6 +42,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setMode(r.mode);
           setEmailEnabled(!!r.emailEnabled);
           setEmailVerified(r.emailVerified !== false);
+          setTurnstileSiteKey(r.turnstileSiteKey || null);
         })
         .catch(() => setUser(null))
         .finally(() => setLoading(false)),
@@ -71,7 +75,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ user, googleEnabled, emailEnabled, emailVerified, refresh, mode, loading, signIn, signOut }}
+      value={{ user, googleEnabled, emailEnabled, turnstileSiteKey, emailVerified, refresh, mode, loading, signIn, signOut }}
     >
       {children}
     </Ctx.Provider>

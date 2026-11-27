@@ -3,11 +3,18 @@ import { rememberSession } from "./support/people";
 import { newUser, type TestUser } from "./support/users";
 
 /** Register through the real API. The session cookie lands on `request`'s jar. */
-export async function register(request: APIRequestContext, user: TestUser) {
+export async function register(request: APIRequestContext, user: TestUser, turnstileToken?: string) {
   const res = await request.post("/api/auth/register", {
-    data: { email: user.email, password: user.password, name: user.name },
+    data: { email: user.email, password: user.password, name: user.name, turnstileToken },
   });
-  expect(res.status(), `register ${user.email}: ${await res.text()}`).toBe(200);
+  const text = await res.text();
+  expect(res.status(), `register ${user.email}: ${text}`).toBe(200);
+  // Where the instance can send email, sign-up signs nobody in (it answers the same for
+  // every address, docs/SIGNUP.md); the account exists, so sign in as the app would.
+  if (JSON.parse(text).confirm === "email") {
+    const login = await request.post("/api/auth/login", { data: { email: user.email, password: user.password } });
+    expect(login.status(), `sign in ${user.email}: ${await login.text()}`).toBe(200);
+  }
   rememberSession(user.email, request);
 }
 

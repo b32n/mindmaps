@@ -59,3 +59,10 @@ export async function googleSignIn(
   ).toString("base64url");
   return request.get(`/api/auth/google/callback?code=${code}&state=${state}`, { maxRedirects: 0 });
 }
+
+/** How many times the Worker spent a password hash for this address (HASH_PROBE, worker/src/probe.ts). */
+export async function hashesFor(request: APIRequestContext, address: string): Promise<number> {
+  const res = await request.get(`/api/_probe/hash?who=${encodeURIComponent(address)}`);
+  expect(res.status(), "hash probe").toBe(200);
+  return (await res.json()).count;
+}

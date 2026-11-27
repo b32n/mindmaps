@@ -75,6 +75,18 @@ domain, adds the DNS records and writes the sender to your config. Flags:
 See [docs/EMAIL.md](docs/EMAIL.md) for what it does, what to do when a step
 cannot be automated, and what an unconfirmed address can and cannot do.
 
+## Sign-up protection
+
+Where email is on, sign-up answers the same for a new address and a taken one, so it
+cannot be used to find out who has an account (the owner of a taken address is emailed
+instead). Optionally the installer also protects sign-up with Cloudflare Turnstile: it
+is on by default for the hosted service's `multitenant` mode and asked for `personal`
+and `org`. Flags: `--turnstile` (make a widget for your `--domain`),
+`--turnstile-site-key <key>` with the secret in the `TURNSTILE_SECRET_KEY` environment
+variable (for a widget you made in the dashboard), `--no-turnstile`. The secret goes to
+`wrangler secret put` and is never printed. See [docs/SIGNUP.md](docs/SIGNUP.md) for
+what each does, the API token it needs and what to do by hand.
+
 ## Single sign-on and verified domains (optional)
 
 For org and multitenant installs: the owner of an organisation can verify its
