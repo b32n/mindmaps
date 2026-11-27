@@ -1978,3 +1978,21 @@ a.card-open { display: block; box-sizing: border-box; text-align: center; text-d
 .org-invites { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
 .org-invites li { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
 .org-invite-actions { display: flex; gap: var(--s2); flex-shrink: 0; }
+
+/* ---- organisation security: domains, policy, SSO --------------------------- */
+
+.org-sec { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s3) 0; padding-top: var(--s3); border-top: 1px solid var(--line); }
+.org-sec-h { margin: var(--s2) 0 0; font-size: var(--t-sm); font-weight: 600; }
+.org-domains, .org-policy, .org-sso { display: flex; flex-direction: column; gap: var(--s2); }
+.org-domain { display: flex; flex-direction: column; gap: 2px; }
+.org-domain-head { display: flex; align-items: center; gap: var(--s2); }
+.org-domain-actions { margin-left: auto; display: flex; gap: 6px; }
+.org-check { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-sm); }
+.org-sec code { font-family: var(--mono); font-size: var(--t-xs); word-break: break-all; }
+.join-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line); background: var(--surface);
+  font-size: var(--t-sm);
+}
+.join-banner { flex-direction: column; align-items: stretch; margin: var(--s2); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.join-offer { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }

@@ -30,6 +30,7 @@ import {
   payloadFromInput, payloadProblem, type ArtefactKind,
 } from "./artefacts";
 import { cardEditStmts, cardInsertStmts, mcpActor, versionLine, writeArtefact, writeCard, type Actor } from "./versions";
+import { SsoRequiredError } from "./scope";
 import {
   BOARD_READABLE, IN_BOARD_WORKSPACE, IN_WORKSPACE, NODE_READABLE, NOT_CLOSED, boardRole, canWrite, ensurePersonalWorkspace,
   workspacesFor, type WorkspaceRow,
@@ -867,6 +868,10 @@ async function callTool(id: Id, env: McpEnv, grant: TokenGrant, params: any): Pr
   try {
     return await runTool(id, env, grant, name, args);
   } catch (err: any) {
+    // The organisation requires SSO and this connection did not come through
+    // it: something the agent (and the person behind it) can act on.
+    if (err instanceof SsoRequiredError)
+      return rpcOk(id, toolText(`${err.message} Connect again from a session signed in through the organisation's SSO.`, true));
     const ref = crypto.randomUUID().slice(0, 8);
     console.error("mcp tool failed", name, ref, err);
     return rpcOk(id, toolText(`That failed (ref ${ref}); nothing was written.`, true));
@@ -1072,6 +1077,7 @@ async function chooseWorkspace(env: McpEnv, userId: string, grant: TokenGrant, a
   const mine = await workspacesFor(env.DB, userId);
   if (!asked) {
     const home = mine.find((w) => w.id === grant.workspaceId);
+    if (home?.sso_required) throw new SsoRequiredError(home.id);
     return home
       ? { ok: true, workspace: home }
       : {
@@ -1082,8 +1088,11 @@ async function chooseWorkspace(env: McpEnv, userId: string, grant: TokenGrant, a
   }
 
   const byId = mine.find((w) => w.id === asked);
+  if (byId?.sso_required) throw new SsoRequiredError(byId.id);
   if (byId) return { ok: true, workspace: byId };
   const named = mine.filter((w) => w.name.toLowerCase() === asked.toLowerCase());
+  const lockedByName = named.find((w) => w.sso_required);
+  if (lockedByName) throw new SsoRequiredError(lockedByName.id);
   if (named.length > 1)
     return {
       ok: false,

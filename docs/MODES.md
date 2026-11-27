@@ -38,7 +38,8 @@ hosted service is pinned to it (below), so none of this changes there.
 
 **org keeps today's shared-workspace behaviour,** with one organisation per
 instance: first-run setup and creating it are described under
-[Organisations](#organisations). Single sign-on is separate, later work.
+[Organisations](#organisations). Single sign-on and a sign-in domain policy are
+per organisation: see [SSO.md](SSO.md).
 
 ### Personal
 
@@ -171,8 +172,8 @@ Personal. No tools changed.
 
 ### Still to come
 
-SSO and a verified-domain sign-up policy hang off the organisation; neither is
-here yet.
+SSO and a verified-domain policy hang off each organisation; see [SSO.md](SSO.md).
+A personal install refuses all of it.
 
 ## If it is unset, or empty
 

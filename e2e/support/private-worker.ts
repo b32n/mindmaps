@@ -8,6 +8,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
+import { DOH_ENDPOINT } from "./hosts";
 import { request as pwRequest, type APIRequestContext, type Browser, type BrowserContext } from "@playwright/test";
 
 const root = new URL("../..", import.meta.url).pathname;
@@ -52,6 +53,8 @@ export interface PrivateWorkerOptions {
   mode?: string;
   /** "closed" is the Worker's real default: first account, then invitation only. */
   signup?: "open" | "closed";
+  /** More Worker vars (`wrangler dev --var`), e.g. PUBLIC_ORIGIN. */
+  vars?: Record<string, string>;
 }
 
 export class PrivateWorker {
@@ -89,7 +92,10 @@ export class PrivateWorker {
   }
 
   private async listen() {
-    const vars = this.opts.mode === undefined ? [] : ["--var", `MINDMAPS_MODE:${this.opts.mode}`];
+    // DOH_ENDPOINT: the SSO specs' mock resolver (e2e/support/mock-services.mjs).
+    const all: Record<string, string> = { DOH_ENDPOINT, ...this.opts.vars };
+    if (this.opts.mode !== undefined) all.MINDMAPS_MODE = this.opts.mode;
+    const vars = Object.entries(all).flatMap(([k, v]) => ["--var", `${k}:${v}`]);
     for (let attempt = 0; attempt < 3; attempt++) {
       const inspector = await freePort();
       this.proc = spawn(

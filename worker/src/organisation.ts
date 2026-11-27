@@ -15,6 +15,7 @@
  */
 
 import { workspaceRole, type Role } from "./access";
+import { blockedFor, unscoped } from "./scope";
 import { cleanName, NAME_MAX } from "./lifecycle";
 import { readMode, type Mode, type ModeEnv } from "./mode";
 
@@ -115,6 +116,8 @@ export interface OrganisationInfo {
   state: OrganisationState;
   can_create: boolean;
   organisation: { workspace_id: string; name: string; role: Role } | null;
+  /** Member only: this session is locked out of the organisation until it signs in with the organisation's SSO. */
+  sso_required?: boolean;
   /** Outside only: what the organisation is called, so the page can say whom to ask. */
   organisation_name: string | null;
   /** Setup only: shared workspaces this account owns, which could become the organisation. */
@@ -144,8 +147,12 @@ export async function organisationFor(env: OrganisationEnv, user: { id: string }
     return { ...base, state: "setup", can_create: true, adoptable: rows.results ?? [] };
   }
 
-  const role = await workspaceRole(env.DB, user.id, org.workspace_id);
-  if (role) return { ...base, state: "member", organisation: { workspace_id: org.workspace_id, name: org.name, role } };
+  // Read past an enforce-SSO lock: being locked out is a thing to tell the person, not a reason to say they are not a member.
+  const role = await workspaceRole(unscoped(env.DB), user.id, org.workspace_id);
+  if (role) {
+    const locked = blockedFor(env.DB, user.id).has(org.workspace_id);
+    return { ...base, state: "member", organisation: { workspace_id: org.workspace_id, name: org.name, role }, ...(locked ? { sso_required: true } : {}) };
+  }
 
   const me = await env.DB.prepare(`SELECT created_at FROM users WHERE id = ?`).bind(user.id).first<{ created_at: number }>();
   return { ...base, state: "outside", gated: (me?.created_at ?? 0) >= org.created_at, organisation_name: org.name };

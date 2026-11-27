@@ -39,6 +39,48 @@ export interface Workspace {
   personal: number;
   role: "owner" | "admin" | "editor" | "viewer";
   updated_at?: number | null;
+  /** This session is locked out of it by the organisation's enforce-SSO. */
+  sso_required?: boolean;
+}
+
+/** An organisation's verified domain, as the settings show it. */
+export interface OrgDomain {
+  id: string;
+  domain: string;
+  status: "pending" | "verified" | "removed";
+  record: { type: "TXT"; name: string; value: string } | null;
+  verified_at: number | null;
+  created_at: number;
+}
+
+export interface OrgPolicy {
+  auto_join: boolean;
+  default_role: "viewer" | "editor";
+  restrict_invites: boolean;
+  enforce_sso: boolean;
+}
+
+export interface OrgSso {
+  status: "none" | "draft" | "tested" | "enabled";
+  issuer: string | null;
+  client_id: string | null;
+  has_secret: boolean;
+  tested_at: number | null;
+  redirect_uri: string;
+}
+
+export interface OrgSecurity {
+  workspace_id: string;
+  domains: OrgDomain[];
+  policy: OrgPolicy;
+  sso: OrgSso;
+}
+
+/** An organisation whose verified domain covers this person's address and that they may join. */
+export interface JoinOffer {
+  workspace_id: string;
+  name: string;
+  role: "viewer" | "editor";
 }
 
 /** A workspace its owner closed. It can be reopened until `reopen_until`. */
@@ -228,6 +270,9 @@ export interface OrganisationInfo {
 }
 
 export const auth = {
+  /** "Sign in with SSO": the address names an organisation; the answer is where its provider is. */
+  ssoStart: (email: string, next?: string) =>
+    req<{ url: string }>("/auth/sso/start", { method: "POST", body: JSON.stringify({ email, next }) }),
   me: () => req<{ user: User | null; googleEnabled: boolean; mode: Mode }>("/auth/me"),
   register: (email: string, password: string, name: string) =>
     req<{ user: User }>("/auth/register", {
@@ -316,6 +361,27 @@ export const api = {
     req<Workspace>("/workspaces", { method: "POST", body: JSON.stringify({ name }) }),
 
   organisation: () => req<OrganisationInfo>("/organisation"),
+
+  // Domains, policy and SSO of an organisation (owner/admin; SSO owner only).
+  security: (ws: string) => req<OrgSecurity>(`/workspaces/${ws}/security`),
+  addDomain: (ws: string, domain: string) =>
+    req<OrgDomain>(`/workspaces/${ws}/domains`, { method: "POST", body: JSON.stringify({ domain }) }),
+  verifyDomain: (ws: string, id: string) =>
+    req<{ ok: true; domain: OrgDomain }>(`/workspaces/${ws}/domains/${id}/verify`, { method: "POST" }),
+  removeDomain: (ws: string, id: string) => req<{ ok: true }>(`/workspaces/${ws}/domains/${id}`, { method: "DELETE" }),
+  setPolicy: (ws: string, patch: Partial<Omit<OrgPolicy, "enforce_sso">>) =>
+    req<{ policy: OrgPolicy }>(`/workspaces/${ws}/policy`, { method: "PUT", body: JSON.stringify(patch) }),
+  saveSso: (ws: string, body: { issuer: string; client_id: string; client_secret?: string }) =>
+    req<{ sso: OrgSso }>(`/workspaces/${ws}/sso`, { method: "PUT", body: JSON.stringify(body) }),
+  removeSso: (ws: string) => req<{ ok: true; sso: OrgSso }>(`/workspaces/${ws}/sso`, { method: "DELETE" }),
+  testSso: (ws: string) => req<{ url: string }>(`/workspaces/${ws}/sso/test`, { method: "POST" }),
+  enableSso: (ws: string, enabled: boolean) =>
+    req<{ ok: true; sso: OrgSso }>(`/workspaces/${ws}/sso/enable`, { method: "POST", body: JSON.stringify({ enabled }) }),
+  enforceSso: (ws: string, enforced: boolean) =>
+    req<{ ok: true; enforce_sso: boolean }>(`/workspaces/${ws}/sso/enforce`, { method: "POST", body: JSON.stringify({ enforced }) }),
+  joinOffers: () => req<{ offers: JoinOffer[]; unproven: boolean }>("/join-offers"),
+  joinOrganisation: (ws: string) =>
+    req<{ ok: true; workspace_id: string; role: string }>(`/workspaces/${ws}/join`, { method: "POST" }),
 
   /** A name for a new one, or (org mode, existing data) the id of a workspace you own to make it the organisation. */
   createOrganisation: (body: { name?: string; workspace_id?: string }) =>

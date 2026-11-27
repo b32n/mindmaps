@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { CLOSED_PORT, MAIN_PORT as PORT, MODE_CASES, mindboxWorker, modeWorkers, originWorker } from "./e2e/support/hosts";
+import { CLOSED_PORT, DOH_ENDPOINT, DOH_PORT, IDP_PORT, MAIN_PORT as PORT, MODE_CASES, mindboxWorker, modeWorkers, originWorker } from "./e2e/support/hosts";
 
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 // The second Worker: same app, sign-up closed (wrangler.test-closed.toml).
@@ -36,6 +36,8 @@ export default defineConfig({
   webServer: [
     {
       command: "node e2e/support/serve.mjs",
+      // Every Worker the SSO specs use is told where the mock DNS resolver is.
+      env: { E2E_VARS: JSON.stringify({ DOH_ENDPOINT }) },
       url: `${BASE_URL}/api/auth/me`,
       // Locally, keep a server you started yourself (`npm run e2e:serve`) for
       // fast reruns. On CI always start a fresh one.
@@ -97,6 +99,17 @@ export default defineConfig({
       stdout: "pipe",
       stderr: "pipe",
     },
+    {
+      // The OIDC identity provider and DNS-over-HTTPS resolver the SSO specs
+      // talk to (e2e/support/mock-services.mjs). Nothing leaves the machine.
+      command: "node e2e/support/mock-services.mjs",
+      env: { E2E_IDP_PORT: String(IDP_PORT), E2E_DOH_PORT: String(DOH_PORT) },
+      port: IDP_PORT,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
     // One Worker per MINDMAPS_MODE setting (see e2e/support/hosts.ts). The
     // invalid one answers 500 to everything, so readiness is the port, not a URL.
     ...MODE_CASES.map((name) => ({
@@ -104,7 +117,7 @@ export default defineConfig({
       env: {
         E2E_PORT: String(modeWorkers[name].port),
         E2E_STATE_DIR: `.e2e-state-mode-${name}`,
-        E2E_VARS: JSON.stringify({ MINDMAPS_MODE: modeWorkers[name].value }),
+        E2E_VARS: JSON.stringify({ MINDMAPS_MODE: modeWorkers[name].value, DOH_ENDPOINT }),
       },
       port: modeWorkers[name].port,
       reuseExistingServer: false,
