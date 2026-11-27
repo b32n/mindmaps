@@ -241,6 +241,13 @@ export default defineConfig({
       testMatch: /.*\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: mailWorker.baseURL },
     },
+    // Google sign-in start and callback, against the email Worker with Google faked.
+    {
+      name: "google",
+      testDir: "./e2e/google",
+      testMatch: /.*\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: mailWorker.baseURL },
+    },
     // The sign-up check (Cloudflare Turnstile), against the Worker that has it on.
     {
       name: "turnstile",

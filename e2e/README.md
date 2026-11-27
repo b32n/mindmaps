@@ -155,7 +155,7 @@ deliberate; `modes.spec.ts` and `create-ui.spec.ts` use the shared mode Workers.
 `wrangler.test-mail.toml` runs a Worker with outbound email on and
 `MAIL_TRANSPORT=capture`: messages are kept in R2 and read back with
 `GET /api/_mail?to=<address>` (`e2e/support/mail.ts`). Google sign-in points at a
-fake Google (`e2e/support/fake-google.mjs`). Ports follow the mode Workers
+fake Google (`e2e/support/fake-google.mjs`); `e2e/google` (project `google`) walks the real Google start and callback routes against it (new-user starter board, returning user, linked password account). Ports follow the mode Workers
 (`E2E_MAIL_PORT`, `E2E_FAKE_GOOGLE_PORT`). The `email` project (`e2e/email`) runs
 against it; `e2e/tests/auth/email-off*.spec.ts` run against the main Worker, which
 has no sender. Every test config sets `CLIENT_IP_HEADER` to a header nothing sends,

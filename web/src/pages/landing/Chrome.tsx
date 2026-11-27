@@ -83,7 +83,11 @@ export function LandingFooter() {
         <a href="https://github.com/b32n/mindmaps/blob/main/INSTALL.md" target="_blank" rel="noreferrer noopener">
           Self-host
         </a>
-        <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noreferrer noopener">
+        <a
+          href="https://github.com/b32n/mindmaps#connect-an-agent-harness-mcp"
+          target="_blank"
+          rel="noreferrer noopener"
+        >
           MCP
         </a>
         <Link to="/privacy">Privacy</Link>

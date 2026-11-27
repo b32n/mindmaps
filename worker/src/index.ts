@@ -2451,8 +2451,10 @@ async function authRoute(
         .run();
       if ((made.meta?.changes ?? 0) < 1) return fail(SIGNUP_CLOSED);
       if (googleVerified) await markVerified(env.DB, uid, "google");
-      // Only inside this branch: `existing` means a returning account, and a
-      // second Google sign-in is not a signup.
+      // The workspace first: the starter board references it (same order as
+      // register). Only inside this branch: `existing` means a returning
+      // account, and a second Google sign-in is not a signup.
+      await ensurePersonalWorkspace(env.DB, uid);
       await createStarterBoard(env, uid, issuerOf(req, env));
     }
 
