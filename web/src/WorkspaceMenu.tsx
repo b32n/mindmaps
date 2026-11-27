@@ -12,26 +12,45 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { api, type Workspace } from "./api";
+import { useAuth } from "./AuthContext";
+import { api, type ClosedWorkspace, type MyInvite, type Workspace } from "./api";
 import { Modal } from "./ui/Modal";
-import { IconCheck, IconPeople, IconPlus } from "./ui/Icons";
+import { IconCheck, IconLogout, IconPeople, IconPlus } from "./ui/Icons";
+
+const ROLE_LABEL = { owner: "Owner", admin: "Admin", editor: "Can edit", viewer: "Can view" } as const;
+const NOUN = { workspace: "the workspace", board: "the mindmap", node: "the artefact" } as const;
 
 export function WorkspaceMenu({
   workspaces,
   currentId,
+  invites,
   onSwitch,
   onCreated,
   onManage,
+  onLeft,
+  onReopened,
+  onAnswered,
 }: {
   workspaces: Workspace[];
   currentId: string | null;
+  /** Invitations waiting for this person. Nothing joins until one is accepted. */
+  invites: MyInvite[];
   onSwitch: (id: string) => void;
   onCreated: (w: Workspace) => void;
   /** Opens the members panel. Absent for a personal workspace. */
   onManage: (w: Workspace) => void;
+  /** After leaving a workspace, so the caller can drop it and move off it. */
+  onLeft: (w: Workspace) => void;
+  /** After the owner reopens a closed workspace. */
+  onReopened: () => void;
+  /** After an invitation is accepted or declined. */
+  onAnswered: (invite: MyInvite, accepted: boolean) => void;
 }) {
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [leaving, setLeaving] = useState<Workspace | null>(null);
+  const [closed, setClosed] = useState<ClosedWorkspace[]>([]);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +73,65 @@ export function WorkspaceMenu({
       window.removeEventListener("mousedown", onDown);
     };
   }, [open]);
+
+  // The owner's closed workspaces, read when the menu opens: it is a list
+  // nobody needs until they go looking for it, so it is not worth a request on
+  // every page load.
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    api
+      .closedWorkspaces()
+      .then((rows) => live && setClosed(rows.filter((r) => r.reopenable)))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [open, workspaces.length]);
+
+  const answer = async (invite: MyInvite, accept: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (accept) await api.acceptInvite(invite.token);
+      else await api.declineInvite(invite.token);
+      onAnswered(invite, accept);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reopen = async (w: ClosedWorkspace) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.reopenWorkspace(w.id);
+      setClosed((xs) => xs.filter((x) => x.id !== w.id));
+      onReopened();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const leave = async () => {
+    if (!leaving) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.removeMember("workspaces", leaving.id, user!.id);
+      const left = leaving;
+      setLeaving(null);
+      onLeft(left);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const create = async () => {
     const trimmed = name.trim();
@@ -82,6 +160,11 @@ export function WorkspaceMenu({
         aria-expanded={open}
       >
         <span className="ws-name">{current ? label(current) : "Workspace"}</span>
+        {invites.length > 0 && (
+          <span className="ws-badge" title="Invitations waiting for you">
+            {invites.length}
+          </span>
+        )}
         <svg className="ws-caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
           <path d="M2 4l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
         </svg>
@@ -103,11 +186,7 @@ export function WorkspaceMenu({
               <span className="ws-item-main">
                 <span className="ws-item-name">{label(w)}</span>
                 {/* Personal needs no role: there is only ever one of you in it. */}
-                {!w.personal && (
-                  <span className="ws-item-role">
-                    {w.role === "owner" ? "Owner" : w.role === "admin" ? "Admin" : w.role === "editor" ? "Can edit" : "Can view"}
-                  </span>
-                )}
+                {!w.personal && <span className="ws-item-role">{ROLE_LABEL[w.role]}</span>}
               </span>
               {!w.personal && (w.role === "owner" || w.role === "admin") && (
                 <span
@@ -122,8 +201,71 @@ export function WorkspaceMenu({
                   <IconPeople size={13} />
                 </span>
               )}
+              {/* Any member but the owner can leave. The owner transfers first,
+                  so the control is not offered rather than offered and refused. */}
+              {!w.personal && w.role !== "owner" && (
+                <span
+                  className="ws-item-leave"
+                  title="Leave workspace"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setLeaving(w);
+                    setError(null);
+                    setOpen(false);
+                  }}
+                >
+                  <IconLogout size={13} />
+                </span>
+              )}
             </button>
           ))}
+
+          {invites.length > 0 && (
+            <>
+              <div className="ws-sep" />
+              <div className="ws-section">Invitations</div>
+              {invites.map((i) => (
+                <div className="ws-invite" key={i.token}>
+                  <span className="ws-invite-what">
+                    <strong>{i.invited_by.name || i.invited_by.email}</strong> invited you to{" "}
+                    {i.target_type === "workspace" ? "" : `${NOUN[i.target_type]} `}
+                    <strong>{i.target_name}</strong>
+                    <span className="ws-item-role"> · {ROLE_LABEL[i.role]}</span>
+                  </span>
+                  <span className="ws-invite-actions">
+                    <button className="btn btn-small btn-primary" disabled={busy} onClick={() => void answer(i, true)}>
+                      Accept
+                    </button>
+                    <button className="btn btn-small btn-quiet" disabled={busy} onClick={() => void answer(i, false)}>
+                      Decline
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+
+          {closed.length > 0 && (
+            <>
+              <div className="ws-sep" />
+              <div className="ws-section">Closed workspaces</div>
+              {closed.map((w) => (
+                <div className="ws-closed-row" key={w.id}>
+                  <span className="ws-invite-what">
+                    {w.name}
+                    <span className="ws-item-role">
+                      {" "}
+                      · Reopen until {new Date(w.reopen_until).toLocaleDateString()}
+                    </span>
+                  </span>
+                  <button className="btn btn-small" disabled={busy} onClick={() => void reopen(w)}>
+                    Reopen
+                  </button>
+                </div>
+              ))}
+            </>
+          )}
+          {error && <p className="trash-error">{error}</p>}
 
           <div className="ws-sep" />
 
@@ -182,6 +324,27 @@ export function WorkspaceMenu({
             start something new.
           </p>
         </div>
+        {error && <p className="trash-error">{error}</p>}
+      </Modal>
+
+      <Modal
+        open={!!leaving}
+        title={`Leave ${leaving?.name ?? ""}`}
+        description="You will lose access to its mindmaps. An owner or admin can invite you again."
+        onClose={() => setLeaving(null)}
+        width={420}
+        footer={
+          <>
+            <span className="ws-spacer" />
+            <button className="btn" onClick={() => setLeaving(null)}>
+              Cancel
+            </button>
+            <button className="btn btn-danger" onClick={() => void leave()} disabled={busy}>
+              Leave workspace
+            </button>
+          </>
+        }
+      >
         {error && <p className="trash-error">{error}</p>}
       </Modal>
     </div>

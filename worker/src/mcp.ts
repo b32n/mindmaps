@@ -31,7 +31,7 @@ import {
 } from "./artefacts";
 import { cardEditStmts, cardInsertStmts, mcpActor, versionLine, writeArtefact, writeCard, type Actor } from "./versions";
 import {
-  BOARD_READABLE, IN_BOARD_WORKSPACE, IN_WORKSPACE, NODE_READABLE, boardRole, canWrite, ensurePersonalWorkspace,
+  BOARD_READABLE, IN_BOARD_WORKSPACE, IN_WORKSPACE, NODE_READABLE, NOT_CLOSED, boardRole, canWrite, ensurePersonalWorkspace,
   workspacesFor, type WorkspaceRow,
   nodeRole, recallScope,
 } from "./access";
@@ -1212,6 +1212,7 @@ async function sharedArtefacts(env: McpEnv, userId: string): Promise<string> {
        JOIN boards b ON b.id = n.board_id
       WHERE g.user_id = ?1
         AND n.type IN (${ARTEFACT_SQL})
+        AND ${NOT_CLOSED("b")}
         AND NOT ${BOARD_READABLE("b", 1)}
       ORDER BY n.updated_at DESC
       LIMIT 100`,

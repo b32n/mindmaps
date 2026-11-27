@@ -46,7 +46,7 @@ test.describe("the Share dialog on a mindmap", () => {
     await expect(theirs.getByRole("heading", { level: 1, name: "Quarterly plan" })).toBeVisible();
   });
 
-  test("an address with no account waits as a pending invite until that person signs up", async ({
+  test("an address with no account waits as a pending invite until that person signs up and accepts", async ({
     page,
     account,
     browser,
@@ -63,6 +63,11 @@ test.describe("the Share dialog on a mindmap", () => {
     const theirs = await context.newPage();
     await signUpViaForm(theirs, who);
     await expectSignedInShell(theirs, who.name);
+    // signing up is not accepting: the mindmap is not theirs yet, the invitation is on the menu
+    await expect(new Rail(theirs).names()).not.toContainText(["For a newcomer"]);
+    expect((await membersOf(page.request, "boards", record.id)).pending.map((p) => p.email)).toEqual([who.email]);
+    await theirs.locator(".ws-trigger").click();
+    await theirs.locator(".ws-invite").filter({ hasText: "For a newcomer" }).getByRole("button", { name: "Accept" }).click();
     await expect(new Rail(theirs).names()).toContainText(["For a newcomer"]);
     expect((await membersOf(page.request, "boards", record.id)).pending).toEqual([]);
     await context.close();

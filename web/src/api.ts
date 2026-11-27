@@ -38,6 +38,27 @@ export interface Workspace {
   owner_id: string;
   personal: number;
   role: "owner" | "admin" | "editor" | "viewer";
+  updated_at?: number | null;
+}
+
+/** A workspace its owner closed. It can be reopened until `reopen_until`. */
+export interface ClosedWorkspace {
+  id: string;
+  name: string;
+  closed_at: number;
+  reopen_until: number;
+  reopenable: boolean;
+}
+
+/** An invitation waiting for the signed-in person to accept or decline it. */
+export interface MyInvite {
+  token: string;
+  target_type: "workspace" | "board" | "node";
+  target_id: string;
+  target_name: string;
+  role: "viewer" | "editor";
+  invited_by: { email: string; name: string | null };
+  created_at: number;
 }
 
 export interface Member {
@@ -52,6 +73,8 @@ export interface PendingInvite {
   token: string;
   email: string;
   role: "viewer" | "editor";
+  /** Whether the address already has an account, so the invite is waiting on an answer rather than a sign-up. */
+  has_account?: number;
 }
 
 /** A share link, as its owner sees it. */
@@ -296,7 +319,7 @@ export const api = {
     email: string,
     role: "viewer" | "editor",
   ) =>
-    req<{ added?: { email: string }; invited?: { email: string } }>(`/${kind}/${id}/members`, {
+    req<{ added?: { email: string }; invited?: { email: string; existing?: boolean } }>(`/${kind}/${id}/members`, {
       method: "POST",
       body: JSON.stringify({ email, role }),
     }),
@@ -313,6 +336,34 @@ export const api = {
     req<{ ok: true; owner_id: string }>(`/workspaces/${id}/transfer`, {
       method: "POST",
       body: JSON.stringify({ user_id: userId }),
+    }),
+
+  renameWorkspace: (id: string, name: string) =>
+    req<{ id: string; name: string; updated_at: number }>(`/workspaces/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  /** Owner only. Soft: the workspace can be reopened for 30 days. */
+  closeWorkspace: (id: string) =>
+    req<{ ok: true; closed_at: number; reopen_until: number }>(`/workspaces/${id}/close`, { method: "POST" }),
+
+  reopenWorkspace: (id: string) => req<{ ok: true }>(`/workspaces/${id}/reopen`, { method: "POST" }),
+
+  /** The workspaces this person closed. */
+  closedWorkspaces: () => req<ClosedWorkspace[]>("/workspaces/closed"),
+
+  /** Invitations waiting for this person. */
+  invites: () => req<{ invites: MyInvite[] }>("/invites").then((r) => r.invites),
+  acceptInvite: (token: string) =>
+    req<{ ok: true; target_type: MyInvite["target_type"]; target_id: string }>(`/invites/${token}/accept`, { method: "POST" }),
+  declineInvite: (token: string) => req<{ ok: true }>(`/invites/${token}/decline`, { method: "POST" }),
+
+  /** Move a top-level mindmap, with its sub-mindmaps, to another workspace. */
+  moveBoard: (id: string, workspaceId: string) =>
+    req<{ ok: true; id: string; workspace_id: string }>(`/boards/${id}/move`, {
+      method: "POST",
+      body: JSON.stringify({ workspace_id: workspaceId }),
     }),
 
   revokeInvite: (token: string) => req<{ ok: true }>(`/invites/${token}`, { method: "DELETE" }),

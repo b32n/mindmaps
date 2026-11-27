@@ -302,7 +302,10 @@ async function build(env: AccountEnv, who: Who, zip: ZipWriter): Promise<void> {
 /**
  * Workspaces this account owns that other active people are still in. Deleting
  * the account would delete them, content and all, so it is refused until each
- * is transferred to another member or emptied.
+ * is transferred to another member, emptied, or closed. A closed workspace is
+ * not in the way: its people have already lost access, and the owner chose that
+ * knowing deleting the account deletes it for good (the 30 days to reopen it
+ * end with the account).
  *
  * Nothing here relies on `workspaces.owner_id ... ON DELETE CASCADE`: the
  * `users` row is never deleted (only marked), and the workspace rows go by name
@@ -312,7 +315,7 @@ export async function deletionBlockers(db: D1Database, userId: string): Promise<
   const rows = await db
     .prepare(
       `SELECT w.id, w.name FROM workspaces w
-        WHERE w.owner_id = ?1
+        WHERE w.owner_id = ?1 AND w.status = 'active'
           AND EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id
                        WHERE m.workspace_id = w.id AND m.user_id <> ?1 AND u.status = 'active')
         ORDER BY w.created_at`,

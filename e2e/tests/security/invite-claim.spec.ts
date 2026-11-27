@@ -1,10 +1,12 @@
 import { test, expect } from "../../fixtures";
 import { addMember, createBoard, createWorkspace, listWorkspaces } from "../../support/api";
+import { acceptInvite, pendingInvites } from "../../support/lifecycle";
 import { newUser } from "../../support/users";
 
-// Pending invites are claimed by e-mail address when someone signs up (or
-// signs in). The app never sends a message and never asks the new person to
-// prove they own the mailbox.
+// Pending invites are matched to a person by e-mail address when they sign up
+// (or in), and become access only when that person accepts. The app never
+// sends a message and never asks the new person to prove they own the mailbox,
+// so accepting is the only thing between an address and the invited access.
 
 test.describe("how an invite is matched to a sign-up", () => {
   test("only the exact address (case aside) claims it: plus-addresses and look-alikes do not", async ({ account, request, playwright, baseURL }) => {
@@ -35,7 +37,7 @@ test.describe("how an invite is matched to a sign-up", () => {
     await fresh.dispose();
   });
 
-  test("one sign-up claims every invite that is waiting for its address", async ({ account, request, playwright, baseURL }) => {
+  test("one sign-up finds every invite waiting for its address, and each gives its own role once accepted", async ({ account, request, playwright, baseURL }) => {
     void account;
     const first = await createWorkspace(request, "First");
     const second = await createWorkspace(request, "Second");
@@ -45,6 +47,8 @@ test.describe("how an invite is matched to a sign-up", () => {
     await addMember(request, "workspaces", second.id, who.email, "editor");
     const fresh = await playwright.request.newContext({ baseURL });
     await fresh.post("/api/auth/register", { data: { email: who.email, password: who.password, name: who.name } });
+    expect((await listWorkspaces(fresh)).map((w) => w.name)).toEqual(["Personal"]);
+    for (const invite of await pendingInvites(fresh)) expect((await acceptInvite(fresh, invite.token)).status()).toBe(200);
     const mine = await listWorkspaces(fresh);
     expect(mine.map((w) => [w.name, w.role])).toEqual(expect.arrayContaining([["First", "viewer"], ["Second", "editor"]]));
     await fresh.dispose();
@@ -52,23 +56,12 @@ test.describe("how an invite is matched to a sign-up", () => {
 });
 
 test.describe("known problems with invites", () => {
-  test.fixme("a sign-up that has not proved it owns the invited address does not receive the invite's access", async ({
+  test("registering an invited address, on its own, gives no access: the invitation has to be accepted", async ({
     account,
     request,
     playwright,
     baseURL,
   }) => {
-    // Expected: access granted by an invite goes to the person who controls
-    // that mailbox, so a sign-up is only given the membership once the address
-    // is verified. Actual: `claimInvites` (worker/src/members.ts) runs during
-    // registration and sign-in with the address as typed, and the app has no
-    // e-mail verification at all. Anyone who learns that "x@example.com" was
-    // invited to a workspace can register that address with their own
-    // password and is a member immediately, with the invited role, before the
-    // real owner of the mailbox does anything. If the real person registers
-    // later they are told the address is taken (409). Observed: a stranger
-    // registered the invited address and listed the workspace and its
-    // mindmaps.
     void account;
     const ws = await createWorkspace(request, "Confidential");
     const board = await createBoard(request, "Plans", { workspace_id: ws.id });
@@ -78,8 +71,37 @@ test.describe("known problems with invites", () => {
     const attacker = await playwright.request.newContext({ baseURL });
     const res = await attacker.post("/api/auth/register", { data: { email: victim.email, password: newUser().password, name: "Not the victim" } });
     expect(res.status()).toBe(200);
-
     expect((await listWorkspaces(attacker)).map((w) => w.name)).not.toContain("Confidential");
+    expect((await attacker.get(`/api/boards/${board.id}/contents`)).status()).toBe(404);
+    await attacker.dispose();
+  });
+
+  test.fixme("a sign-up that has not proved it owns the invited address cannot accept the invitation", async ({
+    account,
+    request,
+    playwright,
+    baseURL,
+  }) => {
+    // Expected: an invitation is accepted only by the person who controls that
+    // mailbox, so accepting needs the address to be verified. Actual: the app has
+    // no e-mail verification. Anyone who learns that "x@example.com" was invited
+    // can register that address with their own password, see the invitation and
+    // accept it. That is one explicit step more than before (registering alone
+    // used to join), and an existing account can no longer be joined to a
+    // workspace without its owner agreeing, but a stranger still gets in. If the
+    // real person registers later they are told the address is taken (409).
+    void account;
+    const ws = await createWorkspace(request, "Confidential");
+    const board = await createBoard(request, "Plans", { workspace_id: ws.id });
+    const victim = newUser("victim");
+    await addMember(request, "workspaces", ws.id, victim.email, "editor");
+
+    const attacker = await playwright.request.newContext({ baseURL });
+    await attacker.post("/api/auth/register", { data: { email: victim.email, password: newUser().password, name: "Not the victim" } });
+    const [invite] = await pendingInvites(attacker);
+    const accepted = await acceptInvite(attacker, invite.token);
+
+    expect(accepted.status()).not.toBe(200);
     expect((await attacker.get(`/api/boards/${board.id}/contents`)).status()).toBe(404);
     await attacker.dispose();
   });

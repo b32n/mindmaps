@@ -45,8 +45,10 @@ for (const c of CASES) {
       const team = await createWorkspace(page.request, "Crew");
       await page.goto("/app");
       const { panel } = await openWorkspacePeople(page, "Crew");
-      const { status } = await panel.invite(existing.user.email, "Can edit");
+      const { status, body } = await panel.invite(existing.user.email, "Can edit");
       expect(status).toBe(201);
+      // joining a workspace is by accepting the invitation
+      expect((await existing.request.post(`/api/invites/${(body.invited as { token: string }).token}/accept`)).status()).toBe(200);
       const theirs = await openAs(existing);
       await theirs.goto("/app");
       await switchWorkspace(theirs, /Crew/);

@@ -12,6 +12,7 @@ import {
 import { openWorkspacePeople, switchWorkspace } from "../../support/members";
 import { Rail } from "../../support/rail";
 import { signUpViaForm, expectSignedInShell } from "../../support/auth";
+import { acceptInvite, pendingInvites } from "../../support/lifecycle";
 import { newUser } from "../../support/users";
 
 // Workspace membership through the People dialog (the workspace menu's people
@@ -19,7 +20,7 @@ import { newUser } from "../../support/users";
 // invited. Two browser contexts, two cookie jars.
 
 test.describe("inviting someone who already has an account", () => {
-  test("they are added at once, and see the workspace with its mindmaps in their own menu", async ({
+  test("they are invited, not added: they accept from their own menu and then see the workspace with its mindmaps", async ({
     page,
     account,
     request,
@@ -34,21 +35,28 @@ test.describe("inviting someone who already has an account", () => {
     const { panel } = await openWorkspacePeople(page, "Platform team");
     const { status, body } = await panel.invite(existing.user.email);
     expect(status).toBe(201);
-    expect(body.added).toMatchObject({ email: existing.user.email, role: "editor" });
+    expect(body.added).toBeUndefined();
+    expect(body.invited).toMatchObject({ email: existing.user.email, role: "editor", existing: true });
 
-    await expect(panel.note()).toHaveText(`${existing.user.email} now has access.`);
+    await expect(panel.note()).toHaveText(`Invited ${existing.user.email}. They become a member when they accept.`);
+    await expect(panel.row(existing.user.email)).toContainText("waiting for them to accept");
     await expect(panel.row(existing.user.email)).toContainText("Can edit");
-    await expect(panel.row(existing.user.name)).toBeVisible();
 
     const theirs = await openAs(existing);
     await theirs.goto("/app");
     await theirs.locator(".ws-trigger").click();
+    // not a member yet: the menu offers the invitation, not the workspace
+    await expect(theirs.getByRole("menuitem", { name: /Platform team/ })).toHaveCount(0);
+    await theirs.locator(".ws-invite").filter({ hasText: "Platform team" }).getByRole("button", { name: "Accept" }).click();
     await expect(theirs.getByRole("menuitem", { name: /Platform team/ })).toContainText("Can edit");
     await theirs.getByRole("menuitem", { name: /Platform team/ }).click();
     await expect(new Rail(theirs).names()).toHaveText(["Roadmap"]);
     // a member does not get the owner's People button
     await theirs.locator(".ws-trigger").click();
     await expect(theirs.getByRole("menuitem", { name: /Platform team/ }).locator(".ws-item-people")).toHaveCount(0);
+
+    // and the owner's list has them as a member
+    expect((await membersOf(request, "workspaces", ws.id)).members.map((m) => m.email)).toEqual([existing.user.email]);
   });
 
   test("a viewer is listed as Can view, and the workspace says so in their menu", async ({
@@ -64,12 +72,14 @@ test.describe("inviting someone who already has an account", () => {
     const { panel } = await openWorkspacePeople(page, "Read only crowd");
     await panel.invite(existing.user.email, "Can view");
     await expect(panel.row(existing.user.email)).toContainText("Can view");
-    expect((await membersOf(request, "workspaces", ws.id)).members.map((m) => m.role)).toEqual(["viewer"]);
 
     const theirs = await openAs(existing);
     await theirs.goto("/app");
     await theirs.locator(".ws-trigger").click();
+    await expect(theirs.locator(".ws-invite").filter({ hasText: "Read only crowd" })).toContainText("Can view");
+    await theirs.locator(".ws-invite").filter({ hasText: "Read only crowd" }).getByRole("button", { name: "Accept" }).click();
     await expect(theirs.getByRole("menuitem", { name: /Read only crowd/ })).toContainText("Can view");
+    expect((await membersOf(request, "workspaces", ws.id)).members.map((m) => m.role)).toEqual(["viewer"]);
   });
 
   test("the address is matched case-insensitively and with stray spaces", async ({ page, account, request, existing }) => {
@@ -78,7 +88,11 @@ test.describe("inviting someone who already has an account", () => {
     await page.goto("/app");
     const { panel } = await openWorkspacePeople(page, "Casing");
     const { body } = await panel.invite(`  ${existing.user.email.toUpperCase()}  `);
-    expect(body.added).toBeTruthy();
+    expect(body.invited).toMatchObject({ email: existing.user.email, existing: true });
+    // matched to the account all the same: it is waiting for them, and accepting it makes them the one member
+    const [mine] = await pendingInvites(existing.request);
+    expect(mine.target_id).toBe(ws.id);
+    expect((await acceptInvite(existing.request, mine.token)).status()).toBe(200);
     expect((await membersOf(request, "workspaces", ws.id)).members).toHaveLength(1);
   });
 
@@ -137,7 +151,7 @@ test.describe("inviting someone with no account yet", () => {
     expect(status).toBe(201);
     expect(body.invited).toMatchObject({ email: who.email, role: "viewer" });
 
-    await expect(panel.note()).toHaveText(`Invited ${who.email}. They will get access when they sign up with that address.`);
+    await expect(panel.note()).toHaveText(`Invited ${who.email}. They can accept once they sign up with that address.`);
     await expect(panel.row(who.email)).toContainText("waiting for them to sign up");
     await expect(panel.row(who.email)).toContainText("Can view");
     expect((await membersOf(request, "workspaces", ws.id)).pending.map((p) => p.email)).toEqual([who.email]);
@@ -149,7 +163,7 @@ test.describe("inviting someone with no account yet", () => {
     expect((await membersOf(request, "workspaces", ws.id)).pending).toEqual([]);
   });
 
-  test("signing up with that address through the form lands in the workspace, with the role invited", async ({
+  test("signing up with that address through the form leaves an invitation to accept, which gives the role invited", async ({
     page,
     account,
     request,
@@ -167,6 +181,8 @@ test.describe("inviting someone with no account yet", () => {
     await signUpViaForm(theirs, who);
     await expectSignedInShell(theirs, who.name);
     await theirs.locator(".ws-trigger").click();
+    await expect(theirs.getByRole("menuitem", { name: /Welcome/ })).toHaveCount(0);
+    await theirs.locator(".ws-invite").filter({ hasText: "Welcome" }).getByRole("button", { name: "Accept" }).click();
     await expect(theirs.getByRole("menuitem", { name: /Welcome/ })).toContainText("Can view");
     await theirs.getByRole("menuitem", { name: /Welcome/ }).click();
     await expect(new Rail(theirs).names()).toHaveText(["Onboarding"]);
