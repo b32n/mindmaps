@@ -1,0 +1,12 @@
+# Public pages are open; the signed-in app, the API and per-user content are not.
+User-agent: *
+Allow: /$
+Allow: /brain
+Allow: /login
+Allow: /register
+Disallow: /app
+Disallow: /api/
+Disallow: /mcp
+Disallow: /oauth/
+Disallow: /s/
+Disallow: /f/

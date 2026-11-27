@@ -6,7 +6,26 @@ MCP, so they remember between sessions.
 
 **You own it.** It runs in your own Cloudflare account. Your data sits in your
 database and your storage. There is no server of ours in the middle, no
-telemetry, and no account with us. The free Cloudflare plan is enough.
+telemetry, and no account with us.
+
+<!-- screenshot: needs Bharat's OK -->
+
+## Self-hosting
+
+mindmaps is open source (MIT). Run your own copy on your own Cloudflare account
+with the Deploy button, an agent, or one command: see [Install](#install-about-five-minutes)
+and [INSTALL.md](./INSTALL.md). The hosted instance at
+<https://mindmaps.b32n.io> is the same code, if you would rather not run it.
+
+## Cost
+
+- **Hosted instance:** free to try.
+- **Self-hosted:** the software is free. It runs in your own Cloudflare account,
+  so Cloudflare's pricing applies, not ours. The Workers Free plan can run it for
+  trying it out; Workers Paid is recommended for real use. R2 (file storage) must
+  be switched on and asks for a payment method on file, even within its free
+  allowance. See [Cloudflare's Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/)
+  for current numbers.
 
 ## Install (about five minutes)
 
