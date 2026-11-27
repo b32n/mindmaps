@@ -258,6 +258,17 @@ export interface User {
 /** What kind of instance this is; set by MINDMAPS_MODE on the Worker (docs/MODES.md). */
 export type Mode = "personal" | "org" | "multitenant";
 
+/** Who runs this instance, for /privacy and /terms. Both are whatever the operator set, or null. */
+export interface LegalInfo {
+  mode: Mode;
+  operator: { name: string | null; contact: string | null };
+}
+
+export const legal = {
+  info: () => req<LegalInfo>("/legal"),
+};
+
+
 /** What the organisation means for this person on this instance (GET /api/organisation). */
 export interface OrganisationInfo {
   mode: Mode;

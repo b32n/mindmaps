@@ -41,6 +41,8 @@ import { blocksToMarkdown, parseDoc } from "./markdown";
 import { createStarterBoard } from "./starter";
 import { deleteAccount, deletionBlockers, exportAccount, exportFilename, finishDeletions, type AccountEnv } from "./account";
 import { modeProblem, readMode } from "./mode";
+import { legalInfo, securityTxtResponse } from "./legal";
+
 import { capturedMail, mailConfigured, type EmailBinding } from "./mail";
 import {
   INVALID_LINK, RATE_LIMITED, UNCONFIGURED, clientIp, consumeToken, isVerified, markVerified, rateBlocked,
@@ -79,6 +81,12 @@ export interface Env {
    * refuse every request with a 500. See mode.ts and docs/MODES.md.
    */
   MINDMAPS_MODE?: string;
+  /** optional: where vulnerability reports go, published in /.well-known/security.txt; see legal.ts */
+  SECURITY_CONTACT?: string;
+  /** optional: who runs this instance, and how to reach them, shown on /privacy and /terms */
+  OPERATOR_NAME?: string;
+  OPERATOR_CONTACT?: string;
+
   /**
    * DNS-over-HTTPS endpoint used to verify domains (Cloudflare's JSON API shape).
    * Default is Cloudflare's; the test suite points it at a mock. See domains.ts.
@@ -249,6 +257,11 @@ export default {
         });
       }
 
+      // What the privacy policy and terms pages need to know: the mode and who
+      // runs this instance. Public, because those pages are readable signed out.
+      if (seg[0] === "api" && seg[1] === "legal" && seg.length === 2 && req.method === "GET")
+        return json(env, legalInfo(env));
+
       const user = await userForToken(env.DB, readCookie(req, SESSION_COOKIE));
 
       // From here on, everything this request reads goes through a handle that
@@ -375,6 +388,8 @@ async function mcpSurface(
   // the bare one. Clients differ on which they try, so serve both.
   if (seg[0] === ".well-known") {
     const doc = seg[1];
+    if (doc === "security.txt" && seg.length === 2 && (m === "GET" || m === "HEAD"))
+      return securityTxtResponse(req, env);
     if (doc === "oauth-protected-resource") return protectedResourceMetadata(req, env);
     if (doc === "oauth-authorization-server" || doc === "openid-configuration")
       return authorizationServerMetadata(req, env);

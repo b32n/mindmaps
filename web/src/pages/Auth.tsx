@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Link, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { auth } from "../api";
 import { useAuth, useMode } from "../AuthContext";
+import { LegalLinks } from "./Legal";
 import { Turnstile, type TurnstileHandle } from "../Turnstile";
 
 /**
@@ -169,6 +170,7 @@ export function LoginPage() {
         <p className="auth-alt">
           No account? <Link to="/register">Create one</Link>
         </p>
+        <LegalLinks />
       </form>
     </div>
   );
@@ -289,6 +291,10 @@ export function RegisterPage() {
         </button>
         <p className="auth-alt">
           Already have an account? <Link to="/login">Sign in</Link>
+        </p>
+        <p className="auth-alt legal-agree">
+          By creating an account you agree to the <Link to="/terms">Terms</Link> and the{" "}
+          <Link to="/privacy">Privacy policy</Link>.
         </p>
       </form>
     </div>

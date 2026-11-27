@@ -73,6 +73,39 @@ export const modeWorkers = Object.fromEntries(
   ]),
 ) as Record<ModeCase, { name: ModeCase; port: number; baseURL: string; value: string }>;
 
+/** mode switch, mail, fake Google, Turnstile and its stand-in take the five ports after the mode Workers, then one spare */
+const LEGAL_OFFSET = 6;
+
+/**
+ * Two more Workers for /privacy, /terms and security.txt, which read the
+ * operator's own settings. Both sit after the mode Workers, and well clear of the
+ * ports the email and sign-up-check Workers use (the five after the mode Workers),
+ * so a branch that has both never sees them overlap.
+ *
+ *   legalOrg     MINDMAPS_MODE=org with SECURITY_CONTACT, OPERATOR_NAME and
+ *                OPERATOR_CONTACT set
+ *   legalHosted  MINDMAPS_MODE=multitenant with OPERATOR_CONTACT set
+ */
+export const legalOrgWorker = {
+  port: MODE_PORT_BASE + MODE_CASES.length + LEGAL_OFFSET,
+  baseURL: `http://127.0.0.1:${MODE_PORT_BASE + MODE_CASES.length + LEGAL_OFFSET}`,
+  vars: {
+    MINDMAPS_MODE: "org",
+    SECURITY_CONTACT: "security@example.test",
+    OPERATOR_NAME: "Example Org Ltd",
+    OPERATOR_CONTACT: "privacy@example.test",
+  },
+};
+
+export const legalHostedWorker = {
+  port: MODE_PORT_BASE + MODE_CASES.length + LEGAL_OFFSET + 1,
+  baseURL: `http://127.0.0.1:${MODE_PORT_BASE + MODE_CASES.length + LEGAL_OFFSET + 1}`,
+  vars: {
+    MINDMAPS_MODE: "multitenant",
+    OPERATOR_CONTACT: "https://privacy.example.test/contact",
+  },
+};
+
 /**
  * One more Worker, started and stopped by e2e/modes/switch.spec.ts rather than
  * by Playwright: the same database run under one MINDMAPS_MODE after another.

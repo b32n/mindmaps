@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { CLOSED_PORT, DOH_ENDPOINT, DOH_PORT, FAKE_GOOGLE_PORT, FAKE_TURNSTILE_PORT, IDP_PORT, MAIN_PORT as PORT, MODE_CASES, mailWorker, mindboxWorker, modeWorkers, originWorker, turnstileWorker } from "./e2e/support/hosts";
+import { CLOSED_PORT, DOH_ENDPOINT, DOH_PORT, FAKE_GOOGLE_PORT, FAKE_TURNSTILE_PORT, IDP_PORT, MAIN_PORT as PORT, MODE_CASES, legalHostedWorker, legalOrgWorker, mailWorker, mindboxWorker, modeWorkers, originWorker, turnstileWorker } from "./e2e/support/hosts";
 
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 // The second Worker: same app, sign-up closed (wrangler.test-closed.toml).
@@ -164,6 +164,23 @@ export default defineConfig({
         E2E_VARS: JSON.stringify({ MINDMAPS_MODE: modeWorkers[name].value, DOH_ENDPOINT }),
       },
       port: modeWorkers[name].port,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe" as const,
+      stderr: "pipe" as const,
+    })),
+    // Workers with the operator's own settings, for /privacy, /terms and security.txt.
+    ...[
+      { name: "legal-org", worker: legalOrgWorker },
+      { name: "legal-hosted", worker: legalHostedWorker },
+    ].map(({ name, worker }) => ({
+      command: "node e2e/support/serve.mjs",
+      env: {
+        E2E_PORT: String(worker.port),
+        E2E_STATE_DIR: `.e2e-state-${name}`,
+        E2E_VARS: JSON.stringify(worker.vars),
+      },
+      port: worker.port,
       reuseExistingServer: false,
       timeout: 120_000,
       stdout: "pipe" as const,
