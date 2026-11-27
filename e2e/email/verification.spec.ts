@@ -1,5 +1,5 @@
 import { expect, register, test } from "../fixtures";
-import { addMember, createWorkspace, listWorkspaces, membersOf } from "../support/api";
+import { addMember, createBoard, createWorkspace, inviteRaw, listBoards, listWorkspaces, membersOf } from "../support/api";
 import { linkIn, mailbox, tokenIn, unissuedToken, waitForMail } from "../support/mail";
 import { newUser, strongPassword } from "../support/users";
 
@@ -193,50 +193,87 @@ test.describe("what an unverified address cannot do", () => {
     await squatter.dispose();
   });
 
-  test("an unverified account is not added when someone invites its address; it waits, and lands on verifying", async ({ account, request, makePerson }) => {
+  test("an unverified account is not added when someone invites its address; it cannot accept, and can once verified", async ({ account, request, makePerson }) => {
     const ws = await createWorkspace(request, "Team");
     const person = await makePerson("pending");
 
-    const res = await addMember(request, "workspaces", ws.id, person.user.email);
+    const res = await inviteRaw(request, "workspaces", ws.id, person.user.email);
     expect(res.added).toBeUndefined();
     expect(res.invited?.email).toBe(person.user.email);
+    const token = res.invited!.token;
     expect((await listWorkspaces(person.request)).map((w) => w.id)).not.toContain(ws.id);
 
-    // verifying is what releases it
+    // not acceptable while the address is unproven
+    const early = await person.request.post(`/api/invites/${token}/accept`);
+    expect(early.status()).toBe(403);
+    expect((await early.json()).code).toBe("email_unverified");
+    expect((await listWorkspaces(person.request)).map((w) => w.id)).not.toContain(ws.id);
+
+    // verifying joins them to nothing; they accept
     const [msg] = await waitForMail(person.request, person.user.email);
     expect((await verify(person.request, tokenIn(msg))).status()).toBe(200);
-    const mine = await listWorkspaces(person.request);
-    expect(mine.find((w) => w.id === ws.id)?.role).toBe("editor");
+    expect((await listWorkspaces(person.request)).map((w) => w.id)).not.toContain(ws.id);
+    expect((await person.request.post(`/api/invites/${token}/accept`)).status()).toBe(200);
+    expect((await listWorkspaces(person.request)).find((w) => w.id === ws.id)?.role).toBe("editor");
     expect((await membersOf(request, "workspaces", ws.id)).pending).toHaveLength(0);
     expect(account).toBeTruthy();
   });
 
-  test("a verified account is added at once, as before", async ({ account, request, makePerson }) => {
+  test("a verified account gets a workspace invitation to accept, as on an instance without email", async ({ account, request, makePerson }) => {
     const ws = await createWorkspace(request, "Team");
     const person = await makePerson("verified");
     const [msg] = await waitForMail(person.request, person.user.email);
     await verify(person.request, tokenIn(msg));
 
-    const res = await addMember(request, "workspaces", ws.id, person.user.email, "viewer");
-    expect(res.added?.role).toBe("viewer");
+    const res = await inviteRaw(request, "workspaces", ws.id, person.user.email, "viewer");
+    expect(res.added).toBeUndefined();
+    expect(res.invited?.existing).toBe(true);
+    expect((await listWorkspaces(person.request)).map((w) => w.id)).not.toContain(ws.id);
+    expect((await person.request.post(`/api/invites/${res.invited!.token}/accept`)).status()).toBe(200);
     expect((await listWorkspaces(person.request)).find((w) => w.id === ws.id)?.role).toBe("viewer");
     expect(account).toBeTruthy();
   });
 
-  test("an invite that arrived before the account existed is claimed on verification, not before", async ({ account, request, playwright, baseURL }) => {
+  test("sharing a mindmap with an unverified account waits for verification; a verified one has it at once", async ({ account, request, makePerson }) => {
+    const board = await createBoard(request, "Shared");
+    const person = await makePerson("sharee");
+
+    const res = await inviteRaw(request, "boards", board.id, person.user.email, "viewer");
+    expect(res.added).toBeUndefined();
+    expect(res.invited?.email).toBe(person.user.email);
+    expect((await listBoards(person.request)).map((b) => b.id)).not.toContain(board.id);
+    expect((await person.request.post(`/api/invites/${res.invited!.token}/accept`)).status()).toBe(403);
+
+    const [msg] = await waitForMail(person.request, person.user.email);
+    await verify(person.request, tokenIn(msg));
+    const other = await createBoard(request, "Shared too");
+    const now = await inviteRaw(request, "boards", other.id, person.user.email, "viewer");
+    expect(now.added?.role).toBe("viewer");
+    expect((await listBoards(person.request)).map((b) => b.id)).toContain(other.id);
+    // the earlier one is now theirs to accept
+    expect((await person.request.post(`/api/invites/${res.invited!.token}/accept`)).status()).toBe(200);
+    expect((await listBoards(person.request)).map((b) => b.id)).toContain(board.id);
+    expect(account).toBeTruthy();
+  });
+
+  test("an invite that arrived before the account existed cannot be accepted before verification, and still needs an accept after", async ({ account, request, playwright, baseURL }) => {
     const ws = await createWorkspace(request, "Team");
     const person = newUser("late");
-    await addMember(request, "workspaces", ws.id, person.email);
+    const sent = await inviteRaw(request, "workspaces", ws.id, person.email);
+    const token = sent.invited!.token;
 
     const c = await playwright.request.newContext({ baseURL });
     await register(c, person);
     expect((await listWorkspaces(c)).map((w) => w.id)).not.toContain(ws.id);
-    // signing in again (which is when invites are looked for) changes nothing
+    // signing in again changes nothing
     await c.post("/api/auth/login", { data: { email: person.email, password: person.password } });
     expect((await listWorkspaces(c)).map((w) => w.id)).not.toContain(ws.id);
+    expect((await c.post(`/api/invites/${token}/accept`)).status()).toBe(403);
 
     const [msg] = await waitForMail(c, person.email);
     expect((await verify(c, tokenIn(msg))).status()).toBe(200);
+    expect((await listWorkspaces(c)).map((w) => w.id)).not.toContain(ws.id);
+    expect((await c.post(`/api/invites/${token}/accept`)).status()).toBe(200);
     expect((await listWorkspaces(c)).map((w) => w.id)).toContain(ws.id);
     await c.dispose();
     expect(account).toBeTruthy();

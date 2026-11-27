@@ -80,14 +80,29 @@ targets another workspace the person belongs to. **Personal is only used when
 named**, unless it is the workspace chosen at connect time. A workspace the person
 does not belong to gets the same `No workspace "x".` as one that does not exist. A
 view-only member can look in a workspace but not create there. If the workspace the
-connection was set up for is no longer reachable, the tools say so instead of
-falling back to another.
+connection was set up for is no longer reachable (the person left it, or the owner
+closed it), the tools say so instead of falling back to another.
+
+A **closed** workspace is invisible here for everyone: `list_mindmaps`, `recall` and
+`search` leave it out, and a tool given the id of a mindmap or card in it answers as it
+does for one that does not exist, so nothing can be written into it. It comes back, with
+everything in it, if its owner reopens it within 30 days. Moving a mindmap between
+workspaces (in the app, or `POST /api/boards/:id/move`) is reflected immediately: the
+mindmap and its cards are listed and searched under the new workspace and no longer under
+the old. There is no tool for any of this; closing, reopening and moving are the app's.
 
 Not changed: a tool given an explicit mindmap or card id (`add_card`,
 `get_mindmap`, `recall` or `search` narrowed with `mindmap_id`, …) works on it
 wherever it is, gated by the person's role on it as before. Tokens issued before
 this existed have no workspace and keep their old behaviour: create in Personal,
 read across everything reachable, until the person connects again.
+
+In **personal** mode (`MINDMAPS_MODE`, see docs/MODES.md) none of this is offered:
+the consent page has no picker and connects to the personal home, the tools have
+no `workspace` argument, and `list_mindmaps`, `search`, `recall` and
+`create_mindmap` work in the personal home plus whatever was shared with the
+person. A token connected to a team space earlier keeps working there once the
+mode is switched back. org and multitenant are as described above.
 
 ### Read
 

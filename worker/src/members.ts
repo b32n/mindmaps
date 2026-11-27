@@ -1,25 +1,32 @@
 /**
  * Inviting people, and letting them in.
  *
- * Two cases, and they are genuinely different:
+ * An invitation is not access. It is an `invites` row, and it becomes a row in
+ * `workspace_members`, `board_shares` or `artefact_grants` only when the person
+ * it is addressed to accepts it (`acceptInvite`). Nothing joins anyone on its
+ * own: not signing up, not signing in by any route, not being invited.
  *
- *   the invitee has an account   they become a member immediately
- *   they do not                  an invite row waits for them to sign up
+ * The address someone signs up with is the one invitations are matched to, so
+ * on an instance that can send email an invitation is only listed to, and only
+ * accepted by, an account whose address is verified (`mayClaimInvites`). Beyond
+ * that it takes an explicit act on their side, an account which already exists
+ * cannot be added without its owner saying yes, and the invitation can be
+ * declined.
  *
- * The second is why `invites` exists at all. Access cannot be a row in
- * `workspace_members` before there is a user to point at, and inventing a
- * placeholder user would put a half-real account in the table every read path
- * trusts.
+ * The one thing that still adds a person directly is sharing a single mindmap or
+ * artefact with an existing account: it grants one thing, and not the
+ * workspace around it.
  *
- * Invites are claimed by email on sign-in. That means the address someone signs
- * up with is what grants them access, so it must be compared the way an email
- * provider would: lowercased, trimmed, exact. No fuzzy matching, no plus-address
- * normalisation — being clever here is how you hand someone else's workspace to
- * a lookalike address.
+ * Invites are matched to an account by email. The match is the way an email
+ * provider would make it: lowercased, trimmed, exact. No fuzzy matching, no
+ * plus-address normalisation: being clever here is how you hand someone else's
+ * invitation to a lookalike address.
  */
 
 import { mayClaimInvites, type EmailAuthEnv } from "./emailauth";
-import { MEMBER_ROLE, canAdmin, canWrite, boardRole, isOwner, nodeRole, workspaceRole, type Role } from "./access";
+import { INVITE_RESTRICTED_MESSAGE, inviteRefused, workspaceOfTarget } from "./org-policy";
+import { assertNotBlocked } from "./scope";
+import { MEMBER_ROLE, NOT_CLOSED, canAdmin, canWrite, boardRole, isOwner, nodeRole, workspaceRole, type Role } from "./access";
 
 export interface MemberEnv extends EmailAuthEnv {
   DB: D1Database;
@@ -68,6 +75,8 @@ export async function canGrant(
 export interface Denied {
   status: 400 | 403 | 404 | 409;
   error: string;
+  /** Machine-readable, when there is one worth switching on. */
+  code?: string;
 }
 
 export interface InviteResult {
@@ -76,16 +85,16 @@ export interface InviteResult {
   /** Set when the invitee already had an account and is now a member. */
   added?: { userId: string; email: string; role: Role };
   /** Set when they do not, and something has to be sent to them. */
-  invited?: { token: string; email: string; role: Role };
+  invited?: { token: string; email: string; role: Role; existing?: true };
 }
 
 /**
  * Invite someone, by email.
  *
- * An existing account is added straight away rather than sent a link to click.
- * That matches what people expect of a workspace — you are added and you see it
- * appear — and avoids an invite that sits unclaimed because it went to a spam
- * folder. Someone who does not want to be there can leave.
+ * Whether or not the invitee has an account, a workspace invite waits for them
+ * to accept it. A mindmap or artefact shared with an existing account is theirs
+ * straight away, as before: it is one thing, it can be left, and it does not
+ * make them a member of anything.
  */
 export async function invite(
   env: MemberEnv,
@@ -98,7 +107,16 @@ export async function invite(
   const email = normaliseEmail(rawEmail);
   if (!email.includes("@")) return null;
 
-  const existing = await env.DB.prepare(`SELECT id, email FROM users WHERE lower(email) = ?`)
+  // An organisation that restricts invitations to its verified domains refuses
+  // the rest, whoever asks (org-policy.ts). Not applied to a role change for someone
+  // already in the workspace: that is not an invitation, and it must never be
+  // the thing that locks a member out.
+  const restricted = async (): Promise<InviteResult | null> =>
+    (await inviteRefused(env.DB, await workspaceOfTarget(env.DB, target, targetId), email))
+      ? { denied: { status: 403, error: INVITE_RESTRICTED_MESSAGE, code: "invite_domain_restricted" } }
+      : null;
+
+  const existing = await env.DB.prepare(`SELECT id, email FROM users WHERE lower(email) = ? AND status = 'active'`)
     .bind(email)
     .first<{ id: string; email: string }>();
 
@@ -107,7 +125,7 @@ export async function invite(
     // mistake, and refusing it tells the inviter nothing useful.
     if (existing.id === inviterId) return { added: { userId: existing.id, email, role } };
     if (target === "workspace") {
-      // Someone who is already in the workspace is not "added": inviting them
+      // Someone who is already in the workspace is not "invited": inviting them
       // again is a role change, and goes through exactly the rules a role
       // change does. Otherwise the invite form would be a way round them (an
       // admin demoting an admin, or writing a membership row for the owner).
@@ -124,25 +142,58 @@ export async function invite(
         if (!res.ok) return { denied: { status: res.status, error: res.error } };
         return { added: { userId: existing.id, email: existing.email, role } };
       }
+      const no = await restricted();
+      if (no) return no;
+      const token = await createInvite(env, inviterId, target, targetId, email, role);
+      return { invited: { token, email, role, existing: true } };
     }
+    const no = await restricted();
+    if (no) return no;
     // An account whose address was never proven may belong to someone who only
     // typed it in. Adding it would hand them access meant for the real owner,
-    // so the invite waits, as it would for an address with no account, and is
-    // claimed once the address is verified (see claimInvites).
+    // so the share waits as an invitation, as it would for an address with no
+    // account, and can be accepted once the address is verified (mayClaimInvites).
     if (await mayClaimInvites(env, existing.id)) {
       await addMember(env, target, targetId, existing.id, role, inviterId);
       return { added: { userId: existing.id, email: existing.email, role } };
     }
   }
 
-  const token = inviteToken();
-  await env.DB.prepare(
-    `INSERT INTO invites (token,target_type,target_id,email,role,invited_by,created_at)
-     VALUES (?,?,?,?,?,?,?)`,
-  )
-    .bind(token, target, targetId, email, role, inviterId, Date.now())
-    .run();
+  const no = await restricted();
+  if (no) return no;
+  const token = await createInvite(env, inviterId, target, targetId, email, role);
   return { invited: { token, email, role } };
+}
+
+/**
+ * Leave one invitation waiting for this address and target.
+ *
+ * Inviting again replaces what was pending rather than stacking beside it: two
+ * live invitations for one person and one workspace, possibly with different
+ * roles, would leave "which did they accept?" with no good answer. The earlier
+ * one is revoked, with its status, not deleted.
+ */
+async function createInvite(
+  env: MemberEnv,
+  inviterId: string,
+  target: Target,
+  targetId: string,
+  email: string,
+  role: "viewer" | "editor",
+): Promise<string> {
+  const token = inviteToken();
+  const at = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE invites SET status = 'revoked', revoked = 1, updated_at = ?4
+        WHERE email = ?1 AND target_type = ?2 AND target_id = ?3 AND status = 'pending'`,
+    ).bind(email, target, targetId, at),
+    env.DB.prepare(
+      `INSERT INTO invites (token,target_type,target_id,email,role,invited_by,created_at,status,updated_at)
+       VALUES (?,?,?,?,?,?,?,'pending',?)`,
+    ).bind(token, target, targetId, email, role, inviterId, at, at),
+  ]);
+  return token;
 }
 
 export async function addMember(
@@ -196,7 +247,7 @@ export async function membersOf(
   targetId: string,
 ): Promise<{
   members: MemberRow[];
-  pending: Array<{ token: string; email: string; role: Role }>;
+  pending: Array<{ token: string; email: string; role: Role; has_account: number }>;
   /** Workspaces only: who owns it, since no membership row says. */
   owner?: OwnerRow;
 }> {
@@ -212,13 +263,17 @@ export async function membersOf(
     .bind(targetId)
     .all<MemberRow>();
 
+  // `has_account` is what the people list says the invite is waiting on: for
+  // them to accept, or for them to sign up first.
   const pending = await env.DB.prepare(
-    `SELECT token, email, role FROM invites
-      WHERE target_type = ? AND target_id = ? AND accepted_at IS NULL AND revoked = 0
-      ORDER BY created_at`,
+    `SELECT i.token, i.email, i.role,
+            EXISTS (SELECT 1 FROM users u WHERE lower(u.email) = i.email AND u.status = 'active') AS has_account
+       FROM invites i
+      WHERE i.target_type = ? AND i.target_id = ? AND i.status = 'pending'
+      ORDER BY i.created_at`,
   )
     .bind(target, targetId)
-    .all<{ token: string; email: string; role: Role }>();
+    .all<{ token: string; email: string; role: Role; has_account: number }>();
 
   const owner =
     target === "workspace"
@@ -232,75 +287,215 @@ export async function membersOf(
   return { members: members.results ?? [], pending: pending.results ?? [], ...(owner ? { owner } : {}) };
 }
 
+export interface PendingForMe {
+  token: string;
+  target_type: Target;
+  target_id: string;
+  target_name: string;
+  role: "viewer" | "editor";
+  invited_by: { email: string; name: string | null };
+  created_at: number;
+}
+
 /**
- * Turn every invite addressed to this email into real access.
+ * What is waiting for this person to answer.
  *
- * Called on sign-in and on sign-up, not just sign-up: someone may be invited
- * after they already have an account but before they next log in, and an invite
- * that only ever fires at registration would strand them.
- *
- * Expired and revoked invites are skipped but left in place, so the inviter can
- * still see that they were sent.
+ * Read on demand, by address, so it is the same whichever way they signed in
+ * and nothing has to remember to run at the right moment. Invitations to
+ * something that has since been deleted or closed, or from someone whose
+ * account has been deleted, are left out: there is nothing to accept.
  */
-export async function claimInvites(
+export async function pendingFor(env: MemberEnv, rawEmail: string): Promise<PendingForMe[]> {
+  const email = normaliseEmail(rawEmail);
+  if (!email) return [];
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM (
+       SELECT i.token, i.target_type, i.target_id, i.role, i.created_at,
+              u.email AS inviter_email, u.name AS inviter_name,
+              CASE i.target_type
+                WHEN 'workspace' THEN (SELECT w.name FROM workspaces w WHERE w.id = i.target_id AND w.status = 'active')
+                WHEN 'board' THEN (SELECT b.name FROM boards b WHERE b.id = i.target_id AND ${NOT_CLOSED("b")})
+                ELSE (SELECT COALESCE(NULLIF(n.title, ''), 'Untitled') FROM nodes n JOIN boards b ON b.id = n.board_id
+                       WHERE n.id = i.target_id AND ${NOT_CLOSED("b")})
+              END AS target_name
+         FROM invites i JOIN users u ON u.id = i.invited_by
+        WHERE i.email = ?1 AND i.status = 'pending' AND u.status = 'active'
+          AND (i.expires_at IS NULL OR i.expires_at > ?2)
+     ) WHERE target_name IS NOT NULL
+     ORDER BY created_at DESC`,
+  )
+    .bind(email, Date.now())
+    .all<any>();
+  return (results ?? []).map((r) => ({
+    token: r.token,
+    target_type: r.target_type,
+    target_id: r.target_id,
+    target_name: r.target_name,
+    role: r.role,
+    invited_by: { email: r.inviter_email, name: r.inviter_name ?? null },
+    created_at: r.created_at,
+  }));
+}
+
+export type Answer = { ok: true; target_type: Target; target_id: string; role: Role } | ({ ok: false } & Denied);
+
+interface InviteRow {
+  token: string;
+  target_type: Target;
+  target_id: string;
+  email: string;
+  role: "viewer" | "editor";
+  invited_by: string;
+  status: string;
+  expires_at: number | null;
+}
+
+/**
+ * The invitation this person may answer, or why not.
+ *
+ * The same not-found for "no such token", "not addressed to you" and "taken
+ * back" so a token in someone else's hands tells them nothing; the inviter
+ * revoking is the one thing that looks, to the invitee, like it never was. An
+ * invitation already accepted or declined is a conflict.
+ */
+async function mine(env: MemberEnv, rawEmail: string, token: string): Promise<{ row: InviteRow } | { fail: Answer & { ok: false } }> {
+  const row = await env.DB.prepare(
+    `SELECT token, target_type, target_id, email, role, invited_by, status, expires_at FROM invites WHERE token = ?`,
+  )
+    .bind(token)
+    .first<InviteRow>();
+  const gone = { fail: { ok: false, status: 404, error: "not found" } as Answer & { ok: false } };
+  if (!row || row.email !== normaliseEmail(rawEmail)) return gone;
+  if (row.status === "revoked") return gone;
+  if (row.expires_at !== null && row.expires_at <= Date.now()) return gone;
+  if (row.status !== "pending")
+    return { fail: { ok: false, status: 409, error: `That invitation was already ${row.status}.` } };
+  return { row };
+}
+
+/** Is whatever this invitation is to hidden because its workspace is closed, or gone? */
+async function unavailable(db: D1Database, row: InviteRow): Promise<boolean> {
+  if (row.target_type === "workspace") {
+    const w = await db.prepare(`SELECT status FROM workspaces WHERE id = ?`).bind(row.target_id).first<{ status: string }>();
+    return !w || w.status !== "active";
+  }
+  const sql =
+    row.target_type === "board"
+      ? `SELECT 1 AS x FROM boards b WHERE b.id = ?1 AND ${NOT_CLOSED("b")}`
+      : `SELECT 1 AS x FROM nodes n JOIN boards b ON b.id = n.board_id WHERE n.id = ?1 AND ${NOT_CLOSED("b")}`;
+  return !(await db.prepare(sql).bind(row.target_id).first());
+}
+
+/**
+ * Accept: the person becomes a member, with the role they were invited with.
+ *
+ * Checked again now, not trusted from when it was sent. The inviter must still
+ * be able to hand this out: an admin who was demoted, or removed, after
+ * inviting someone must not be able to leave a standing offer behind them. If
+ * they cannot, the invitation is ended as revoked and the person is told it is
+ * no longer valid. Someone who already holds a membership keeps it: an
+ * invitation never lowers or replaces what is already in place.
+ */
+export async function acceptInvite(
   env: MemberEnv,
   userId: string,
   rawEmail: string,
-): Promise<number> {
-  const email = normaliseEmail(rawEmail);
-  if (!email) return 0;
-  // Invites are addressed to an email, so they are only handed to an account that has proven it owns it.
-  if (!(await mayClaimInvites(env, userId))) return 0;
+  token: string,
+): Promise<Answer> {
+  const found = await mine(env, rawEmail, token);
+  if ("fail" in found) return found.fail;
+  const { row } = found;
 
-  const { results } = await env.DB.prepare(
-    `SELECT token, target_type, target_id, role FROM invites
-      WHERE email = ? AND accepted_at IS NULL AND revoked = 0
-        AND (expires_at IS NULL OR expires_at > ?)`,
-  )
-    .bind(email, Date.now())
-    .all<{ token: string; target_type: Target; target_id: string; role: "viewer" | "editor" }>();
+  // Invitations are addressed to an email, so they are only handed to an account
+  // that has proven it owns the address (when the instance can send mail).
+  if (!(await mayClaimInvites(env, userId)))
+    return { ok: false, status: 403, error: "Confirm your email address first.", code: "email_unverified" };
 
-  const rows = results ?? [];
-  for (const row of rows) {
-    // Each invite is claimed on its own. One pointing at something since
-    // deleted must not stop the rest — the foreign key will refuse it and the
-    // others still land.
-    try {
-      // An invite must never overwrite something stronger already in place: the
-      // address may belong to the workspace's owner, or to someone since made
-      // an admin, and REPLACE would quietly demote them.
-      const held =
-        row.target_type === "workspace" &&
-        (await env.DB.prepare(
-          `SELECT 1 AS x FROM workspaces w
-            WHERE w.id = ?1
-              AND (w.owner_id = ?2
-                   OR EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id = ?2))`,
-        )
-          .bind(row.target_id, userId)
-          .first());
-      if (!held) await addMember(env, row.target_type, row.target_id, userId, row.role, null);
-      await env.DB.prepare(
-        `UPDATE invites SET accepted_at = ?, accepted_by = ? WHERE token = ?`,
-      )
-        .bind(Date.now(), userId, row.token)
-        .run();
-    } catch (err) {
-      console.error("invite claim failed", row.token, err);
-    }
+  if (await unavailable(env.DB, row)) return { ok: false, status: 404, error: "not found" };
+
+  // An organisation that requires SSO of this person is joined through its SSO.
+  assertNotBlocked(env.DB, userId, await workspaceOfTarget(env.DB, row.target_type, row.target_id));
+
+  const inviter = await env.DB.prepare(`SELECT status FROM users WHERE id = ?`).bind(row.invited_by).first<{ status: string }>();
+  if (inviter?.status !== "active" || !(await canGrant(env, row.invited_by, row.target_type, row.target_id))) {
+    await endInvite(env, row.token, "revoked");
+    return { ok: false, status: 409, error: "That invitation is no longer valid." };
   }
-  return rows.length;
+
+  const held =
+    row.target_type === "workspace" &&
+    (await env.DB.prepare(
+      `SELECT 1 AS x FROM workspaces w
+        WHERE w.id = ?1
+          AND (w.owner_id = ?2
+               OR EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id = ?2))`,
+    )
+      .bind(row.target_id, userId)
+      .first());
+
+  // An invitation sent before the organisation restricted invitations does not
+  // outlive the restriction: the standing offer is withdrawn rather than honoured.
+  if (!held && (await inviteRefused(env.DB, await workspaceOfTarget(env.DB, row.target_type, row.target_id), row.email))) {
+    await endInvite(env, row.token, "revoked");
+    return { ok: false, status: 409, error: INVITE_RESTRICTED_MESSAGE, code: "invite_domain_restricted" };
+  }
+
+  const at = Date.now();
+  const { table, key } = TABLES[row.target_type];
+  await env.DB.batch([
+    // Only while still pending, in the same transaction as the status change,
+    // so two answers racing cannot both win.
+    ...(held
+      ? []
+      : [
+          env.DB.prepare(
+            `INSERT OR REPLACE INTO ${table} (${key}, user_id, role, invited_by, created_at)
+             SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM invites WHERE token = ?6 AND status = 'pending')`,
+          ).bind(row.target_id, userId, row.role, row.invited_by, at, row.token),
+        ]),
+    env.DB.prepare(
+      `UPDATE invites SET status = 'accepted', accepted_at = ?2, accepted_by = ?3, updated_at = ?2
+        WHERE token = ?1 AND status = 'pending'`,
+    ).bind(row.token, at, userId),
+  ]);
+  return { ok: true, target_type: row.target_type, target_id: row.target_id, role: row.role };
 }
 
+/** Decline: the invitation ends, and nothing else changes. */
+export async function declineInvite(env: MemberEnv, rawEmail: string, token: string): Promise<Answer> {
+  const found = await mine(env, rawEmail, token);
+  if ("fail" in found) return found.fail;
+  await endInvite(env, found.row.token, "declined");
+  return { ok: true, target_type: found.row.target_type, target_id: found.row.target_id, role: found.row.role };
+}
+
+/**
+ * End a pending invitation with a status.
+ *
+ * `revoked` is set alongside for declined as well as revoked ones, because it
+ * is the column the Worker before 0030 reads: to it, a finished invitation is
+ * one that is accepted or revoked, and it must not offer a declined one again.
+ */
+async function endInvite(env: MemberEnv, token: string, status: "declined" | "revoked"): Promise<boolean> {
+  const res = await env.DB.prepare(
+    `UPDATE invites SET status = ?2, revoked = 1, updated_at = ?3 WHERE token = ?1 AND status = 'pending'`,
+  )
+    .bind(token, status, Date.now())
+    .run();
+  return (res.meta?.changes ?? 0) > 0;
+}
+
+/** The inviter takes an invitation back. Anyone else gets not-found. */
 export async function revokeInvite(
   env: MemberEnv,
   inviterId: string,
   token: string,
 ): Promise<boolean> {
   const res = await env.DB.prepare(
-    `UPDATE invites SET revoked = 1 WHERE token = ? AND invited_by = ? AND accepted_at IS NULL`,
+    `UPDATE invites SET status = 'revoked', revoked = 1, updated_at = ?3
+      WHERE token = ?1 AND invited_by = ?2 AND status = 'pending'`,
   )
-    .bind(token, inviterId)
+    .bind(token, inviterId, Date.now())
     .run();
   return (res.meta?.changes ?? 0) > 0;
 }
@@ -422,9 +617,19 @@ export async function removeWorkspaceMember(
   if (current === "admin" && targetId !== actorId && !isOwner(actor))
     return { ok: false, status: 403, error: "Only the owner can remove an admin." };
 
-  return (await removeMember(env, "workspace", workspaceId, targetId))
-    ? { ok: true }
-    : { ok: false, status: 404, error: "not found" };
+  // The record and the removal are one batch, and the record is written from
+  // the row about to go, so it holds the role they really had and exists only
+  // if they really were a member. Leaving and being removed look the same to
+  // the access tables and differ here: who did it.
+  const [, gone] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO workspace_member_events (id, workspace_id, user_id, status, role, actor_user_id, created_at, updated_at)
+       SELECT ?1, m.workspace_id, m.user_id, ?2, ${MEMBER_ROLE("m")}, ?3, ?4, ?4
+         FROM workspace_members m WHERE m.workspace_id = ?5 AND m.user_id = ?6`,
+    ).bind(crypto.randomUUID(), targetId === actorId ? "left" : "removed", actorId, Date.now(), workspaceId, targetId),
+    env.DB.prepare(`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`).bind(workspaceId, targetId),
+  ]);
+  return (gone?.meta?.changes ?? 0) > 0 ? { ok: true } : { ok: false, status: 404, error: "not found" };
 }
 
 export type Transfer = { ok: true; ownerId: string } | ({ ok: false } & Denied);

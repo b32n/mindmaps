@@ -25,7 +25,7 @@ test.describe("the workspace menu", () => {
     await expect(trigger(page)).toHaveText("Personal");
     await trigger(page).click();
     await expect(trigger(page)).toHaveAttribute("aria-expanded", "true");
-    await expect(menu(page).getByRole("menuitem")).toHaveText(["Personal", "New workspace"]);
+    await expect(menu(page).getByRole("menuitem")).toHaveText(["Personal", "Create organisation", "New workspace"]);
     await expect(menu(page).locator(".ws-item.on")).toHaveText("Personal");
   });
 

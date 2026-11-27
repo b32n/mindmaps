@@ -1,4 +1,5 @@
 import { expect, test as base, type APIRequestContext, type Page } from "@playwright/test";
+import { rememberSession } from "./support/people";
 import { newUser, type TestUser } from "./support/users";
 
 /** Register through the real API. The session cookie lands on `request`'s jar. */
@@ -14,6 +15,7 @@ export async function register(request: APIRequestContext, user: TestUser, turns
     const login = await request.post("/api/auth/login", { data: { email: user.email, password: user.password } });
     expect(login.status(), `sign in ${user.email}: ${await login.text()}`).toBe(200);
   }
+  rememberSession(user.email, request);
 }
 
 /** A user that exists on the server, plus an API client signed in as them. */
@@ -39,6 +41,8 @@ interface Fixtures {
    * their own cookie jar. Disposed with the test.
    */
   makePerson: (label?: string) => Promise<Person>;
+  /** Like `makePerson`, with an address on `domain` (for the verified-domain specs). */
+  personOn: (domain: string, label?: string) => Promise<Person>;
   /**
    * A page signed in as `person`, in its own browser context (its own cookie
    * jar), so two people can use the app side by side in one test. The context
@@ -68,6 +72,19 @@ export const test = base.extend<Fixtures>({
       const request = await playwright.request.newContext({ baseURL });
       made.push(request);
       const user = newUser(label);
+      await register(request, user);
+      return { user, request };
+    });
+    await Promise.all(made.map((r) => r.dispose()));
+  },
+
+  personOn: async ({ playwright, baseURL }, use) => {
+    const made: APIRequestContext[] = [];
+    await use(async (domain, label = "person") => {
+      const request = await playwright.request.newContext({ baseURL });
+      made.push(request);
+      const base = newUser(label);
+      const user = { ...base, email: `${label}-${base.email.split("-").pop()!.split("@")[0]}@${domain}` };
       await register(request, user);
       return { user, request };
     });

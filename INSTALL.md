@@ -37,9 +37,10 @@ to multitenant.
 
 The installer asks whether this install is for **personal** use (you, plus the
 people you invite) or an **org** (a team or company). It is stored as
-`MINDMAPS_MODE` and can be changed later. For now it only records the choice;
-see [docs/MODES.md](./docs/MODES.md) for what each mode means, how to set or
-change it, and what is not enforced yet.
+`MINDMAPS_MODE` and can be changed later. Personal has no team spaces (it hides
+them; nothing is deleted, and switching back shows them again); sharing works in
+every mode. See [docs/MODES.md](./docs/MODES.md) for what each mode does and how
+to set or change it.
 
 - **Deploy button** installs are `personal`: that is the default committed in
   `wrangler.toml`.
@@ -85,6 +86,16 @@ and `org`. Flags: `--turnstile` (make a widget for your `--domain`),
 variable (for a widget you made in the dashboard), `--no-turnstile`. The secret goes to
 `wrangler secret put` and is never printed. See [docs/SIGNUP.md](docs/SIGNUP.md) for
 what each does, the API token it needs and what to do by hand.
+
+## Single sign-on and verified domains (optional)
+
+For org and multitenant installs: the owner of an organisation can verify its
+email domains, set a join policy and connect an OIDC provider from the workspace
+dialog. Nothing needs installing. One optional secret, `SSO_SECRET_KEY`
+(`npx wrangler secret put SSO_SECRET_KEY`), encrypts the stored client secrets;
+without it a key is generated and kept in the database. Domain verification uses
+Cloudflare's DNS-over-HTTPS and needs no setup. See [docs/SSO.md](docs/SSO.md).
+A personal install refuses all of it.
 
 ## Your own domain
 

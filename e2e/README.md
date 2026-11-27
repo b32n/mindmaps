@@ -75,6 +75,19 @@ with `PUBLIC_ORIGIN`, `APP_ORIGIN` and `MINDBOX_ORIGIN`. The configured hosts
 configuration. `e2e/support/hosts.ts` holds the addresses; `e2e/support/urls.ts`
 holds the checks shared by all three configs.
 
+## The mode Workers
+
+One Worker per `MINDMAPS_MODE` setting (`personal`, `org`, `multitenant`, empty,
+and an invalid one), on the ports after the four above (`E2E_MODE_PORT` moves the
+first). `e2e/modes/` holds the specs: `mode.spec.ts` (what is exposed),
+`personal.spec.ts` (what personal hides, and that sharing is untouched),
+`unchanged.spec.ts` (every other mode keeps team spaces) and `switch.spec.ts`.
+That last one starts and stops its own Worker on the port after the mode Workers
+(`switchWorker` in `hosts.ts`), because it runs one database under org, then
+personal, then multitenant, then org again (`serve.mjs` with `E2E_KEEP_STATE=1`
+keeps the state dir). It cleans up after itself; if a run is killed, stop the
+Worker on that port by its PID.
+
 ## The sign-up-closed instance
 
 The Worker's real default is closed: the first account on an empty database is
@@ -116,6 +129,19 @@ listen on the four ports above's successors (`E2E_MODE_PORT`, default
 `e2e/installer` (project `installer`) needs no Worker and no Cloudflare account:
 it runs `scripts/install.mjs --dry-run` from a temp copy of the repo and tests
 `scripts/lib/install-config.mjs` directly.
+
+## Specs with a Worker of their own (`support/private-worker.ts`)
+
+Some things need a database nobody has touched, or one a mode is switched under.
+`e2e/tests/org` (first run, the organisation, the race, an install with data
+switched to org mode, MCP on an org instance) starts a `PrivateWorker` per test:
+its own free port, its own state dir (`.e2e-state-private-*`, ignored by git), and
+`wrangler.test-closed.toml` (sign-up closed, the real default) or
+`wrangler.test.toml` (open). `restart(mode)` stops it and starts it again on the
+same database with another `MINDMAPS_MODE`, which is how "existing data, then
+org mode" is exercised. It is stopped through its own process group, never by a
+name pattern. Each start costs a few seconds, so these specs are few and
+deliberate; `modes.spec.ts` and `create-ui.spec.ts` use the shared mode Workers.
 
 ## The email instance
 

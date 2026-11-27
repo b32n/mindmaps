@@ -416,14 +416,42 @@ h1, h2, h3 { letter-spacing: -0.02em; text-wrap: balance; }
 .ws-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-item-role { font-size: var(--t-xs); color: var(--faint); }
 
-.ws-item-people {
+.ws-item-people, .ws-item-leave {
   flex: 0 0 auto; width: 22px; height: 22px;
   display: grid; place-items: center;
   border-radius: var(--r-xs); color: var(--faint);
 }
-.ws-item-people:hover { background: var(--accent-soft); color: var(--accent); }
+.ws-item-people:hover, .ws-item-leave:hover { background: var(--accent-soft); color: var(--accent); }
 
 .ws-sep { height: 1px; margin: 4px 2px; background: var(--line); }
+
+/* How many invitations are waiting, on the trigger itself: the one place that
+   is always on screen, and the only way into a workspace you were asked to join. */
+.ws-badge {
+  flex: 0 0 auto; min-width: 16px; height: 16px; padding: 0 5px;
+  display: grid; place-items: center;
+  border-radius: 8px; background: var(--accent); color: #fff;
+  font-size: 10px; font-weight: 600; line-height: 1;
+}
+.ws-section { padding: 4px 7px 2px; font-size: var(--t-xs); color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; }
+.ws-invite, .ws-closed-row {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 7px; font-size: var(--t-sm); color: var(--ink);
+}
+.ws-closed-row { flex-direction: row; align-items: center; justify-content: space-between; gap: var(--s2); }
+.ws-invite-what { min-width: 0; line-height: 1.4; }
+.ws-invite-actions { display: flex; gap: 6px; }
+.ws-item-leave { margin-left: 2px; }
+
+/* The rename and close controls in a workspace's dialog. */
+.ws-admin { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--s3); }
+.ws-admin-row { display: flex; gap: 6px; }
+.ws-admin-row .input { flex: 1; min-width: 0; }
+.ws-admin-close { margin: var(--s3) 0 0; padding-top: var(--s3); border-top: 1px solid var(--line); align-items: flex-start; }
+
+/* The mindmap settings' workspace picker. */
+.mm-move { display: flex; gap: 6px; }
+.mm-move .input { flex: 1; min-width: 0; }
 
 /* Pushes the dialog's buttons right, matching the other dialogs. */
 .ws-spacer { flex: 1; }
@@ -1919,6 +1947,55 @@ a.card-open { display: block; box-sizing: border-box; text-align: center; text-d
   background: var(--danger-soft); color: var(--danger);
   font-size: var(--t-sm);
 }
+
+/* Invitations in the rail, where personal mode has no workspace menu to hold them. */
+.rail-invites {
+  display: flex; flex-direction: column; gap: var(--s2);
+  margin: var(--s2); padding: var(--s2) var(--s3);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  font-size: var(--t-sm);
+}
+
+/* =============================================================================
+   Organisation: first-run set-up, and the page for people not in it yet
+   ========================================================================== */
+
+.org-page {
+  min-height: 100%; width: 100%; display: flex; align-items: center; justify-content: center;
+  padding: var(--s7) var(--s5); background: var(--bg);
+}
+.org-card {
+  width: 100%; max-width: 520px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-xl); padding: var(--s6);
+  display: flex; flex-direction: column; gap: var(--s4);
+  box-shadow: var(--e2);
+}
+.org-card h1 { margin: 0; font-size: var(--t-xl); }
+.org-lede { margin: 0; color: var(--muted); line-height: 1.6; }
+.org-adopt { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
+.org-actions { display: flex; justify-content: flex-end; gap: var(--s2); }
+.org-invites { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.org-invites li { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.org-invite-actions { display: flex; gap: var(--s2); flex-shrink: 0; }
+
+/* ---- organisation security: domains, policy, SSO --------------------------- */
+
+.org-sec { display: flex; flex-direction: column; gap: var(--s2); margin: var(--s3) 0; padding-top: var(--s3); border-top: 1px solid var(--line); }
+.org-sec-h { margin: var(--s2) 0 0; font-size: var(--t-sm); font-weight: 600; }
+.org-domains, .org-policy, .org-sso { display: flex; flex-direction: column; gap: var(--s2); }
+.org-domain { display: flex; flex-direction: column; gap: 2px; }
+.org-domain-head { display: flex; align-items: center; gap: var(--s2); }
+.org-domain-actions { margin-left: auto; display: flex; gap: 6px; }
+.org-check { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-sm); }
+.org-sec code { font-family: var(--mono); font-size: var(--t-xs); word-break: break-all; }
+.join-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line); background: var(--surface);
+  font-size: var(--t-sm);
+}
+.join-banner { flex-direction: column; align-items: stretch; margin: var(--s2); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.join-offer { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }
 
 /* Unconfirmed email, over the app. Same family as .board-notice: a quiet card,
    not an alarm. */
