@@ -5,10 +5,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { request as pwRequest, type APIRequestContext, type Browser } from "@playwright/test";
 import { expect, register, test } from "../fixtures";
-import { addMember, contents, createArtefact, createBoard, createEdge, createNode, createWorkspace, listBoards, listWorkspaces } from "../support/api";
+import { addMember, contents, createArtefact, createBoard, createEdge, createNode, listBoards, listWorkspaces } from "../support/api";
 import { clientFor, connectMcp, type McpClient } from "../support/mcp";
 import { Rail } from "../support/rail";
 import { switchWorker } from "../support/hosts";
+import { createOrganisation } from "../support/organisation";
 import { newUser } from "../support/users";
 
 // Switching an install that already has team spaces. One database, three runs of
@@ -98,7 +99,10 @@ test.describe("switching an install that has team spaces", () => {
       people[label] = { request, email: user.email };
     }
     const owner = people.owner!.request;
-    s.team = await createWorkspace(owner, `Atlas ${term}`);
+    // an org instance has one organisation, made by its first account
+    const made = await createOrganisation(owner, { name: `Atlas ${term}` });
+    expect(made.status(), await made.text()).toBe(201);
+    s.team = await made.json();
     s.home = (await listWorkspaces(owner)).find((w) => w.personal)!;
     await addMember(owner, "workspaces", s.team.id, people.member!.email, "editor");
 
@@ -263,7 +267,9 @@ test.describe("switching an install that has team spaces", () => {
     const owner = people.owner!.request;
     expect((await listWorkspaces(owner)).map((w) => w.id)).toContain(s.team.id);
     expect((await listBoards(owner)).map((b) => b.id)).toContain(s.teamBoard.id);
-    const made = await createWorkspace(owner, "Created after switching back");
-    expect(made.personal).toBe(0);
+    // the organisation exists, so org mode offers no second one
+    const second = await owner.post("/api/workspaces", { data: { name: "Created after switching back" } });
+    expect(second.status()).toBe(409);
+    expect((await second.json()).code).toBe("organisation_exists");
   });
 });

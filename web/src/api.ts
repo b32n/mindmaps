@@ -216,6 +216,17 @@ export interface User {
 /** What kind of instance this is; set by MINDMAPS_MODE on the Worker (docs/MODES.md). */
 export type Mode = "personal" | "org" | "multitenant";
 
+/** What the organisation means for this person on this instance (GET /api/organisation). */
+export interface OrganisationInfo {
+  mode: Mode;
+  state: "disabled" | "setup" | "waiting" | "member" | "outside" | "available";
+  can_create: boolean;
+  organisation: { workspace_id: string; name: string; role: Workspace["role"] } | null;
+  organisation_name: string | null;
+  adoptable: { id: string; name: string }[];
+  gated: boolean;
+}
+
 export const auth = {
   me: () => req<{ user: User | null; googleEnabled: boolean; mode: Mode }>("/auth/me"),
   register: (email: string, password: string, name: string) =>
@@ -303,6 +314,12 @@ export const api = {
 
   createWorkspace: (name: string) =>
     req<Workspace>("/workspaces", { method: "POST", body: JSON.stringify({ name }) }),
+
+  organisation: () => req<OrganisationInfo>("/organisation"),
+
+  /** A name for a new one, or (org mode, existing data) the id of a workspace you own to make it the organisation. */
+  createOrganisation: (body: { name?: string; workspace_id?: string }) =>
+    req<Workspace & { adopted: boolean }>("/organisation", { method: "POST", body: JSON.stringify(body) }),
 
   /** `kind` is the route segment: workspaces, boards or artefacts. */
   members: (kind: "workspaces" | "boards" | "artefacts", id: string) =>

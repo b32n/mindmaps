@@ -6,17 +6,16 @@ import { openWorkspacePeople, switchWorkspace } from "../support/members";
 import { Rail } from "../support/rail";
 import { MAIN_PORT, modeWorkers } from "../support/hosts";
 
-// Every mode except personal keeps team spaces exactly as they were: the
+// Every mode except personal and org keeps team spaces exactly as they were: the
 // switcher, creating a workspace, the consent picker, the `workspace` argument
-// on the tools. Production (multitenant) must not notice the mode UI at all, and
-// org keeps today's shared-workspace behaviour (organisation lifecycle is later
-// work). Unset and empty behave as multitenant.
+// on the tools. Production (multitenant) must not notice the mode UI at all.
+// Unset and empty behave as multitenant. Org has one organisation made by the
+// instance's first account, so it is covered by e2e/tests/org/modes.spec.ts.
 
 const CASES = [
   { name: "unset", baseURL: `http://127.0.0.1:${MAIN_PORT}` },
   { name: "multitenant", baseURL: modeWorkers.multitenant.baseURL },
   { name: "empty", baseURL: modeWorkers.empty.baseURL },
-  { name: "org", baseURL: modeWorkers.org.baseURL },
 ];
 
 const word = () => `zq${randomUUID().replace(/-/g, "").slice(0, 10)}`;

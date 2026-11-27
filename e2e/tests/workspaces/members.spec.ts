@@ -241,7 +241,7 @@ test.describe("removing and leaving", () => {
     const theirs = await openAs(existing);
     await theirs.goto("/app");
     await theirs.locator(".ws-trigger").click();
-    await expect(theirs.getByRole("menuitem")).toHaveText(["Personal", "New workspace"]);
+    await expect(theirs.getByRole("menuitem")).toHaveText(["Personal", "Create organisation", "New workspace"]);
   });
 
   test("a member can leave on their own (API); the workspace stays for everyone else", async ({

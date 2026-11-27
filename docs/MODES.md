@@ -30,16 +30,15 @@ exposes it as `useMode()` (and as `data-mindmaps-mode` on `<html>`), and the MCP
 | Sharing (people, public links) | untouched | as before | as before |
 
 In the org column, "as before" means the behaviour of an instance before modes
-existed: any member can still create workspaces, so an org install can hold
-several. Narrowing org to a single organisation is separate, later work.
+existed, except that creating a shared workspace goes through the single
+organisation (see [Organisations](#organisations)).
 
 **multitenant is exactly what every install did before modes existed.** The
 hosted service is pinned to it (below), so none of this changes there.
 
-**org keeps today's shared-workspace behaviour.** One organisation per instance
-is the intent; first-run setup, create-organisation, single sign-on and the
-organisation lifecycle (rename, close, leave, accepting an invite) are separate,
-later work, and nothing here offers or implies them.
+**org keeps today's shared-workspace behaviour,** with one organisation per
+instance: first-run setup and creating it are described under
+[Organisations](#organisations). Single sign-on is separate, later work.
 
 ### Personal
 
@@ -89,6 +88,91 @@ What "hidden" covers, exactly:
   to switch the instance to org to manage it, instead of pointing at a menu that
   is not there. Ownership transfer, role changes and removing members still work
   through the API.
+
+## Organisations
+
+An organisation is an ordinary shared workspace: owner, admins, editors and
+viewers, invitations that are accepted, rename, soft close. What the mode decides
+is who may *create* one and how many there can be.
+
+| Mode | Creating an organisation |
+|---|---|
+| `personal` | Not possible. `POST /api/organisation` and `POST /api/workspaces` answer 403 `team_spaces_disabled`, and the app's workspace menu offers neither. Sharing a mindmap with a person works as it always has. |
+| `org` | Exactly one per instance, made once by the instance's **first account**. After that, creating another (either route) is refused with 409 `organisation_exists`, whoever asks, and the app does not offer it. |
+| `multitenant` (or unset) | Any signed-in person, as many as they like. The workspace menu has **Create organisation** (name it, then invite people) next to the older **New workspace**; both make the same thing. |
+
+### Org mode, first run
+
+1. Deploy with `MINDMAPS_MODE = "org"` on an empty database.
+2. The first account to sign up is the owner. The app shows **Set up your
+   organisation**: a name, then **Invite your team**. That is `POST
+   /api/organisation {"name": "..."}`; `GET /api/organisation` says where things
+   stand (`state`: `setup`, `waiting`, `member`, `outside`).
+3. Sign-up stays closed to the public, as on every instance: after the first
+   account, a person can only create an account if they were invited to that
+   address (or the operator set `ALLOW_SIGNUPS=true`).
+4. An invited person signs up, sees the invitation, and joins the organisation
+   **only by accepting it**.
+
+"First account" is the earliest active account, in insertion order. Two sign-ups
+at the same instant cannot both be first: on a closed instance the account is
+created by a single conditional `INSERT`, so one succeeds and the other is
+refused (403); with open sign-up both accounts exist, and only the earlier one is
+offered set-up (the other sees `waiting`, and `POST /api/organisation` answers 403
+`not_instance_owner`). Two creations at once by the owner produce one
+organisation: the database allows one active row in `instance_organisation`, and
+the workspace and its marker are inserted in one batch.
+
+### Someone who is not in the organisation
+
+On an org-mode instance, a person who signs up without an invitation (only
+possible if the operator opened sign-up) is **not** in the organisation and
+cannot create one. Their page says **Ask your admin for an invite**, names the
+organisation and the address to invite, lists any invitation that arrives (they
+reload to see it) and offers Sign out. They cannot read the organisation's
+mindmaps, people or members (the API answers as it does for any stranger).
+
+Before the organisation has been set up, a second account sees **The
+organisation isn't set up yet** instead.
+
+An account that was already there when the organisation was created (it predates
+it) is not locked out of what it already has: it keeps its own workspaces and is
+only not in the organisation. Only accounts created after the organisation exists
+get the invite-only page.
+
+### Switching an install with data to org mode
+
+Nothing is deleted, moved or hidden by changing the mode, and nobody is made the
+organisation automatically. Until the organisation is chosen, existing
+workspaces keep working for the people in them, and nobody can create new shared
+workspaces. The first account (the earliest active one) then chooses, explicitly:
+
+- **Use one of its workspaces**: the set-up page lists the shared workspaces that
+  account owns (`adoptable` in `GET /api/organisation`) and `POST /api/organisation
+  {"workspace_id": "..."}` makes one the organisation. Its people, roles and
+  mindmaps stay exactly as they are. Only the owner of that workspace can choose
+  it, and not a personal workspace.
+- **Or create a new one**, as on a fresh instance. The old workspaces stay.
+
+Other shared workspaces are not removed when one is chosen. They remain
+reachable by their members and the owner can close or move them (the lifecycle
+tools); the organisation itself cannot be closed (409 `organisation_cannot_close`).
+Switching back to `multitenant` or `personal` leaves all of it in place.
+
+If the organisation's workspace is ever gone (its owner deleted their account),
+the instance has none again and the next first account can set one up.
+
+### Agents (MCP)
+
+An agent that connects as a member of the organisation on an org-mode instance is
+pointed at it by default: the consent page preselects it, so new mindmaps go
+there. Personal is still in the list. People who are not in the organisation keep
+Personal. No tools changed.
+
+### Still to come
+
+SSO and a verified-domain sign-up policy hang off the organisation; neither is
+here yet.
 
 ## If it is unset, or empty
 
@@ -166,5 +250,8 @@ deploy replaces dashboard variables unless `--keep-vars` is used).
 ## Changing it later
 
 Edit the value (or re-run `npm run install:cloudflare -- --mode org`) and
-deploy. No migration is involved and no data is touched: switching to `personal`
-hides team spaces and switching back shows them again (see above).
+deploy. No data is touched: switching to `personal` hides team spaces and
+switching back shows them again (see above). Creating organisations follows the
+mode, as in [Organisations](#organisations). (Migration 0031 adds one small table
+for the organisation of an org-mode instance; it is additive and an older Worker
+ignores it.)
