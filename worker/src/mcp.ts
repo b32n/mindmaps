@@ -45,6 +45,7 @@ import {
   indexCard, removeCards, rerankScores, semanticReady, similarChunks, type SemanticEnv,
 } from "./semantic";
 import { readMode } from "./mode";
+import { policyFor } from "./policy";
 import type { TokenGrant } from "./oauth";
 
 const SERVER_NAME = "mindmaps";
@@ -601,6 +602,29 @@ const TOOLS = [
   },
 ] as const;
 
+/**
+ * The tool list this instance offers. Everywhere but personal mode it is `TOOLS`
+ * itself. Personal mode has no team spaces to choose between, so the `workspace`
+ * argument is left out and the two descriptions that talk about one say "your
+ * mindmaps" instead. The tools, their names and every other argument are the same.
+ */
+function toolsFor(env: McpEnv): readonly object[] {
+  if (policyFor(env).teamSpaces) return TOOLS;
+  const words = (text: string) =>
+    text
+      .replace("the mindmaps of the workspace this connection works in", "your mindmaps")
+      .replace("omit to search the whole workspace", "omit to search all of them");
+  return TOOLS.map((t) => {
+    const props = (t.inputSchema as { properties?: Record<string, { description?: string }> }).properties;
+    if (!props) return t;
+    const { workspace: _team, ...rest } = props;
+    const properties = Object.fromEntries(
+      Object.entries(rest).map(([k, v]) => [k, v.description ? { ...v, description: words(v.description) } : v]),
+    );
+    return { ...t, description: words(t.description), inputSchema: { ...t.inputSchema, properties } };
+  });
+}
+
 const WRITE_TOOLS = new Set([
   "create_mindmap",
   "create_artefact",
@@ -758,7 +782,7 @@ export async function handleMcp(
         return rpcOk(id, {});
 
       case "tools/list":
-        return rpcOk(id, { tools: TOOLS });
+        return rpcOk(id, { tools: toolsFor(env) });
 
       case "tools/call":
         return await callTool(id, env, grant, params);
@@ -1032,6 +1056,16 @@ type WorkspaceChoice =
  * guessed at.
  */
 async function chooseWorkspace(env: McpEnv, userId: string, grant: TokenGrant, args: any): Promise<WorkspaceChoice> {
+  // Personal mode: there is one place to work, the personal home, whatever the
+  // token was connected to and whatever the argument says (policy.ts). A token
+  // that was connected to a team space keeps its workspace id, so it works there
+  // again if the mode is switched back.
+  if (!policyFor(env).teamSpaces) {
+    await ensurePersonalWorkspace(env.DB, userId);
+    const home = (await workspacesFor(env.DB, userId, false))[0];
+    return { ok: true, workspace: home ?? null };
+  }
+
   const asked = typeof args?.workspace === "string" ? args.workspace.trim() : "";
   if (!asked && !grant.workspaceId) return { ok: true, workspace: null };
 
@@ -1088,6 +1122,8 @@ async function listMindmaps(env: McpEnv, userId: string, args: any, grant: Token
   const chosen = await chooseWorkspace(env, userId, grant, args);
   if (!chosen.ok) return toolText(chosen.error, true);
   const ws = chosen.workspace;
+  // Only where team spaces exist does a mindmap, or this listing, name its workspace.
+  const teamSpaces = policyFor(env).teamSpaces;
   const { results } = await env.DB.prepare(
     `SELECT b.id, b.name, b.status, b.updated_at, b.description, b.labels, b.pinned,
             (SELECT w.name FROM workspaces w WHERE w.id = b.workspace_id) AS workspace_name,
@@ -1109,7 +1145,7 @@ async function listMindmaps(env: McpEnv, userId: string, args: any, grant: Token
   const shared = await sharedArtefacts(env, userId);
   if (!rows.length && !shared)
     return toolText(
-      ws
+      ws && teamSpaces
         ? `No mindmaps in **${ws.name}** yet. create_mindmap makes the first one there.`
         : "No mindmaps yet. create_mindmap makes the first one.",
     );
@@ -1122,7 +1158,7 @@ async function listMindmaps(env: McpEnv, userId: string, args: any, grant: Token
   const lines = rows.map((b) => {
     const labels = labelsOf(b.labels);
     return (
-      `- **${b.name}**${b.pinned ? " ★" : ""} (${b.workspace_name ?? "no workspace"}) — ${b.cards} card${b.cards === 1 ? "" : "s"}` +
+      `- **${b.name}**${b.pinned ? " ★" : ""}${teamSpaces ? ` (${b.workspace_name ?? "no workspace"})` : ""} — ${b.cards} card${b.cards === 1 ? "" : "s"}` +
       (b.notes ? `, ${b.notes} note${b.notes === 1 ? "" : "s"}` : "") +
       othersOf(b.others) +
       `, updated ${new Date(b.updated_at).toISOString().slice(0, 10)}` +
@@ -1133,7 +1169,7 @@ async function listMindmaps(env: McpEnv, userId: string, args: any, grant: Token
   });
   const undescribed = rows.filter((b: any) => !b.description).length;
   return toolText(
-    `${rows.length} mindmap${rows.length === 1 ? "" : "s"}${ws ? ` in **${ws.name}**` : ""}:\n\n${lines.join("\n")}` +
+    `${rows.length} mindmap${rows.length === 1 ? "" : "s"}${ws && teamSpaces ? ` in **${ws.name}**` : ""}:\n\n${lines.join("\n")}` +
       (undescribed
         ? `\n\n_${undescribed} of these have no description. update_mindmap can add one, which is what makes the next choice of where to put something easy._`
         : "") +
@@ -1145,11 +1181,20 @@ async function listMindmaps(env: McpEnv, userId: string, args: any, grant: Token
 /** A line naming the other workspaces, so an agent scoped to one knows how to reach the rest. */
 async function otherWorkspaces(env: McpEnv, userId: string, current: WorkspaceRow | null): Promise<string> {
   if (!current) return "";
-  const others = (await workspacesFor(env.DB, userId)).filter((w) => w.id !== current.id);
+  const others = (await workspacesFor(env.DB, userId, policyFor(env).teamSpaces)).filter((w) => w.id !== current.id);
   return others.length
     ? `\n\n_Other workspaces you can reach: ${others.map((w) => w.name).join(", ")}. Pass \`workspace\` to look in one._`
     : "";
 }
+
+/**
+ * The workspace that neighbours and semantic matches must stay inside, or null
+ * for no limit. Only personal mode limits them (to the personal home, plus what
+ * was shared in): the keyword search already stays inside its workspace, but a
+ * linked card or a fresh passage in a hidden team space would otherwise get in.
+ */
+const onlyIn = (env: McpEnv, workspaceId: string | null): string | null =>
+  policyFor(env).teamSpaces ? null : workspaceId;
 
 /**
  * Artefacts someone handed to this user one at a time, as a "shared with you"
@@ -1555,7 +1600,7 @@ async function search(env: McpEnv, userId: string, args: any, grant: TokenGrant)
 
   // Connections are part of a hit, not a separate lookup: a card is easier to
   // judge when you can see what it hangs off.
-  const near = await neighbourhoods(env.DB, userId, hits.map((h) => h.id), 3);
+  const near = await neighbourhoods(env.DB, userId, hits.map((h) => h.id), 3, onlyIn(env, wsId));
   const stale = await supersededSet(env.DB, hits.map((h) => h.id));
 
   const lines = hits.map((h) => {
@@ -3055,7 +3100,7 @@ export async function rankRecall(
    */
   workspaceId?: string | null,
 ): Promise<RecallResult> {
-  const scope = await recallScope(env.DB, userId, workspaceId ?? null);
+  const scope = { ...(await recallScope(env.DB, userId, workspaceId ?? null)), onlyIn: onlyIn(env, workspaceId ?? null) };
 
   // Cast wide, then rank: `any` mode so a long question still finds things,
   // with `all` a separate list because matching every term is its own evidence.
@@ -3079,7 +3124,7 @@ export async function rankRecall(
   if (!card.size) return { hits: [], found: 0, degraded };
 
   const ids = [...card.keys()];
-  const near = depth > 0 ? await neighbourhoods(env.DB, userId, ids, RECALL_LINKS) : new Map();
+  const near = depth > 0 ? await neighbourhoods(env.DB, userId, ids, RECALL_LINKS, onlyIn(env, workspaceId ?? null)) : new Map();
   const stale = await supersededSet(env.DB, ids);
 
   // Adjacency as evidence: being connected to another match is a vote. It joins
@@ -3336,7 +3381,7 @@ async function semanticHits(
    * Resolved by the caller because it depends on where the request came from:
    * the app knows which workspace the user is looking at, an agent does not.
    */
-  scope?: { namespaces: string[]; grantedNodeIds: string[] },
+  scope?: { namespaces: string[]; grantedNodeIds: string[]; onlyIn?: string | null },
 ): Promise<{ hits: Hit[]; passages: Map<string, string>; degraded?: string }> {
   const none = { hits: [] as Hit[], passages: new Map<string, string>() };
   if (!semanticReady(env)) return { ...none, degraded: "semantic index not configured" };
@@ -3371,10 +3416,12 @@ async function semanticHits(
        FROM nodes n JOIN boards b ON b.id = n.board_id
       WHERE n.id IN (${cardIds.map((_, i) => `?${i + 1}`).join(",")})
         AND ${NODE_READABLE("n", "b", cardIds.length + 1)}
-        AND (?${cardIds.length + 2} IS NULL OR n.board_id = ?${cardIds.length + 2})
+        AND (?${cardIds.length + 2} IS NULL OR n.board_id = ?${cardIds.length + 2})${
+          scope?.onlyIn ? ` AND ${IN_WORKSPACE("b", "n", cardIds.length + 3, cardIds.length + 1)}` : ""
+        }
         AND n.type IN (${INDEXABLE_SQL})`,
   )
-    .bind(...cardIds, userId, boardId)
+    .bind(...cardIds, userId, boardId, ...(scope?.onlyIn ? [scope.onlyIn] : []))
     .all<Omit<Hit, "score">>();
 
   const rows = results ?? [];
