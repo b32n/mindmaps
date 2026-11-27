@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { auth } from "../api";
-import { useAuth } from "../AuthContext";
+import { useAuth, useMode } from "../AuthContext";
 
 /**
  * Mirrors the server's policy in worker/src/auth.ts. Shown live as the user
@@ -33,6 +33,29 @@ function GoogleButton({ next }: { next: string }) {
       </a>
       <div className="or"><span>or</span></div>
     </>
+  );
+}
+
+/** "Continue with SSO": the email typed below names an organisation by its verified domain. Not on a personal install. */
+function SsoEntry({ next, email, onError }: { next: string; email: string; onError: (m: string | null) => void }) {
+  const mode = useMode();
+  const [busy, setBusy] = useState(false);
+  if (!mode || mode === "personal") return null;
+  const go = async () => {
+    onError(null);
+    if (!email.trim()) return onError("Enter your work email below, then choose Continue with SSO.");
+    setBusy(true);
+    try {
+      window.location.assign((await auth.ssoStart(email.trim(), next)).url);
+    } catch (err) {
+      onError((err as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <button type="button" className="btn-google" disabled={busy} onClick={() => void go()}>
+      Continue with SSO
+    </button>
   );
 }
 
@@ -109,6 +132,7 @@ export function LoginPage() {
         )}
 
         <GoogleButton next={next} />
+        <SsoEntry next={next} email={email} onError={setError} />
 
         {error && <div className="auth-error">{error}</div>}
 

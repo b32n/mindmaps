@@ -35,6 +35,10 @@
  */
 
 import { ensurePersonalWorkspace, workspacesFor, type WorkspaceRow } from "./access";
+import { blockedWorkspaces } from "./scope";
+import { defaultConnectWorkspace } from "./organisation";
+import type { ModeEnv } from "./mode";
+import { policyFor } from "./policy";
 import { SESSION_COOKIE, readCookie, userForToken } from "./auth";
 
 const CODE_TTL_MS = 60_000; // codes are used within seconds; a minute is generous
@@ -280,7 +284,7 @@ interface ClientRow {
  * *before* we are willing to send the browser anywhere. Redirecting errors to
  * an unvalidated URI is the classic open-redirect in OAuth implementations.
  */
-export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?: string } & OriginEnv): Promise<Response> {
+export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?: string } & OriginEnv & ModeEnv): Promise<Response> {
   const url = new URL(req.url);
   const q = url.searchParams;
 
@@ -352,7 +356,20 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
   // The workspaces this person can pick from, Personal first. Created if it is
   // somehow missing, so there is always at least the one to default to.
   await ensurePersonalWorkspace(env.DB, user.id);
-  const workspaces = await workspacesFor(env.DB, user.id);
+  // Personal mode has no team spaces to pick from: the consent page does not ask,
+  // and connects straight to the personal home (policy.ts).
+  const { teamSpaces } = policyFor(env);
+  // An organisation that requires SSO is not offered to a session that did not
+  // come through it (scope.ts): the connection would be refused its data anyway,
+  // and saying so now is kinder than a token that cannot do anything there.
+  const locked = new Set(await blockedWorkspaces(env.DB, user.email, user.sso_workspace_id));
+  const everything = await workspacesFor(env.DB, user.id, teamSpaces);
+  const workspaces = everything.filter((w) => !locked.has(w.id));
+  const lockedNames = everything.filter((w) => locked.has(w.id)).map((w) => w.name);
+  // Personal, unless this is an org-mode instance and the person is in its
+  // organisation: then the organisation (see organisation.ts).
+  const homeId = await defaultConnectWorkspace(env, workspaces.map((w) => w.id));
+  const home = workspaces.find((w) => w.id === homeId) ?? workspaces.find((w) => w.personal) ?? workspaces[0];
 
   // POST means the user pressed Approve on the consent screen.
   if (req.method === "POST") {
@@ -360,17 +377,24 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
     // which is Personal; anything the person does not belong to is refused
     // rather than quietly replaced, so a tampered form cannot aim a token at
     // someone else's workspace or at one that does not exist.
-    const chosen = new URLSearchParams(await req.text()).get("workspace") ?? "";
+    const posted = new URLSearchParams(await req.text()).get("workspace") ?? "";
+    const chosen = teamSpaces ? posted : "";
+    if (chosen && locked.has(chosen))
+      return errorPage(
+        "Single sign-on required",
+        "That organisation requires single sign-on. Sign in to mindmaps with SSO, then connect again. Nothing was connected.",
+        403,
+      );
     const workspace = chosen
       ? workspaces.find((w) => w.id === chosen)
-      : (workspaces.find((w) => w.personal) ?? workspaces[0]);
+      : home;
     if (!workspace) return errorPage("Unknown workspace", "That workspace isn't one you belong to. Nothing was connected.");
 
     const code = randomToken();
     await env.DB.prepare(
       `INSERT INTO oauth_codes
-         (code_hash,client_id,user_id,redirect_uri,code_challenge,scope,resource,expires_at,used,created_at,workspace_id)
-       VALUES (?,?,?,?,?,?,?,?,0,?,?)`,
+         (code_hash,client_id,user_id,redirect_uri,code_challenge,scope,resource,expires_at,used,created_at,workspace_id,sso_workspace_id)
+       VALUES (?,?,?,?,?,?,?,?,0,?,?,?)`,
     )
       .bind(
         await sha256Hex(code),
@@ -383,12 +407,15 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
         now() + CODE_TTL_MS,
         now(),
         workspace.id,
+        // What this approval proved, carried onto the tokens: a connection made
+        // through an organisation's SSO can use that organisation.
+        user.sso_workspace_id,
       )
       .run();
     return back({ code });
   }
 
-  return consentPage(client.client_name, user.email, requested, url.search, workspaces);
+  return consentPage(client.client_name, user.email, requested, url.search, teamSpaces ? workspaces : null, home?.id, lockedNames);
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +465,7 @@ async function codeGrant(req: Request, env: { DB: D1Database }, form: URLSearchP
   if (resource && resource.replace(/\/$/, "") !== String(row.resource ?? "").replace(/\/$/, ""))
     return oauthError("invalid_target", "resource does not match the authorization request");
 
-  return await issue(env, row.client_id, row.user_id, row.scope, row.resource, row.workspace_id ?? null);
+  return await issue(env, row.client_id, row.user_id, row.scope, row.resource, row.workspace_id ?? null, row.sso_workspace_id ?? null);
 }
 
 async function refreshGrant(req: Request, env: { DB: D1Database }, form: URLSearchParams) {
@@ -466,7 +493,7 @@ async function refreshGrant(req: Request, env: { DB: D1Database }, form: URLSear
 
   // A refresh carries the workspace over as it is, NULL included: a token from
   // before workspaces were chosen stays one, until its holder connects again.
-  return await issue(env, row.client_id, row.user_id, row.scope, row.resource, row.workspace_id ?? null);
+  return await issue(env, row.client_id, row.user_id, row.scope, row.resource, row.workspace_id ?? null, row.sso_workspace_id ?? null);
 }
 
 async function issue(
@@ -476,6 +503,7 @@ async function issue(
   scope: string,
   resource: string | null,
   workspaceId: string | null,
+  ssoWorkspaceId: string | null,
 ) {
   const access = randomToken();
   const refresh = randomToken();
@@ -483,8 +511,8 @@ async function issue(
 
   await env.DB.prepare(
     `INSERT INTO oauth_tokens
-       (token_hash,refresh_hash,client_id,user_id,scope,resource,expires_at,refresh_expires_at,revoked,created_at,workspace_id)
-     VALUES (?,?,?,?,?,?,?,?,0,?,?)`,
+       (token_hash,refresh_hash,client_id,user_id,scope,resource,expires_at,refresh_expires_at,revoked,created_at,workspace_id,sso_workspace_id)
+     VALUES (?,?,?,?,?,?,?,?,0,?,?,?)`,
   )
     .bind(
       await sha256Hex(access),
@@ -497,6 +525,7 @@ async function issue(
       now() + REFRESH_TTL_MS,
       now(),
       workspaceId,
+      ssoWorkspaceId,
     )
     .run();
 
@@ -550,6 +579,8 @@ export interface TokenGrant {
    * issued before that choice existed, which keep their original behaviour.
    */
   workspaceId: string | null;
+  /** Organisations that require SSO of this person which this connection did not come through (scope.ts). */
+  blocked: string[];
 }
 
 export type TokenCheck =
@@ -571,7 +602,7 @@ export async function checkBearer(req: Request, db: D1Database, env: OriginEnv):
 
   const row = await db
     .prepare(
-      `SELECT t.* FROM oauth_tokens t JOIN users u ON u.id = t.user_id
+      `SELECT t.*, u.email AS user_email FROM oauth_tokens t JOIN users u ON u.id = t.user_id
         WHERE t.token_hash = ? AND t.revoked = 0 AND u.status = 'active'`,
     )
     .bind(await sha256Hex(match[1]))
@@ -590,6 +621,7 @@ export async function checkBearer(req: Request, db: D1Database, env: OriginEnv):
       clientId: row.client_id,
       scopes: String(row.scope ?? "").split(/\s+/).filter(Boolean),
       workspaceId: row.workspace_id ?? null,
+      blocked: await blockedWorkspaces(db, row.user_email, row.sso_workspace_id ?? null),
     },
   };
 }
@@ -651,7 +683,10 @@ function consentPage(
   email: string,
   scopes: string[],
   search: string,
-  workspaces: WorkspaceRow[],
+  /** null: no picker at all (personal mode) */
+  workspaces: WorkspaceRow[] | null,
+  homeId?: string,
+  lockedNames: string[] = [],
 ) {
   const items = scopes
     .map((s) => `<li><span>✓</span><b>${esc(SCOPE_COPY[s] ?? s)}</b></li>`)
@@ -662,7 +697,8 @@ function consentPage(
      <p>It's asking for access to your mindmaps. It will never see your password.</p>
      <div class="who">Signed in as ${esc(email)}</div>
      <ul>${items}</ul>
-     ${workspacePicker(workspaces)}
+     ${workspaces ? workspacePicker(workspaces, homeId) : ""}
+     ${lockedNames.length ? `<p class="hint">${esc(lockedNames.join(", "))} requires single sign-on, so it is not offered here. Sign in to mindmaps with SSO and connect again to use ${lockedNames.length > 1 ? "them" : "it"}.</p>` : ""}
      <form method="POST" action="/oauth/authorize${esc(search)}">
        <div class="row">
          <a class="btn" href="/oauth/deny">Cancel</a>
@@ -676,9 +712,9 @@ function consentPage(
  * Where this connection will work. Several workspaces get a select, Personal
  * chosen; a person with only the one is told which it is rather than asked.
  */
-function workspacePicker(workspaces: WorkspaceRow[]): string {
+function workspacePicker(workspaces: WorkspaceRow[], homeId?: string): string {
   if (workspaces.length < 2) return `<p class="ws">Workspace: <b>${esc(workspaces[0]?.name ?? "Personal")}</b></p>`;
-  const first = workspaces.find((w) => w.personal) ?? workspaces[0]!;
+  const first = workspaces.find((w) => w.id === homeId) ?? workspaces.find((w) => w.personal) ?? workspaces[0]!;
   const options = workspaces
     .map((w) => `<option value="${esc(w.id)}"${w.id === first.id ? " selected" : ""}>${esc(w.name)}</option>`)
     .join("");
@@ -687,8 +723,8 @@ function workspacePicker(workspaces: WorkspaceRow[]): string {
      <p class="hint">New mindmaps go here, and it looks here first. It can still reach your other workspaces when asked.</p>`;
 }
 
-function errorPage(title: string, detail: string) {
-  return page("Error", `<h1>${esc(title)}</h1><p class="warn">${esc(detail)}</p>`, 400);
+function errorPage(title: string, detail: string, status = 400) {
+  return page("Error", `<h1>${esc(title)}</h1><p class="warn">${esc(detail)}</p>`, status);
 }
 
 export const denyPage = () =>

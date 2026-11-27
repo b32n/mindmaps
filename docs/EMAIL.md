@@ -93,7 +93,8 @@ connect agents over MCP, and invite other people.
 
 Cannot: **claim or accept invitations addressed to its email.** An invite for an
 address waits as a pending invite, whether the address already had an account or
-signs up later, and is released the moment the address is verified. This closes
+signs up later. It cannot be accepted until the address is verified; after that it
+is the person's to accept, and joins them to nothing until they do. This closes
 the takeover where someone registers another person's address to inherit the
 workspaces they were invited to. Being invited to an unverified account likewise
 leaves a pending invite rather than adding the account.
@@ -158,7 +159,7 @@ When `MAIL_FROM` or the binding is missing:
   `code: "email_unconfigured"`; the `/forgot-password` page says email is not set
   up and to ask whoever runs the instance;
 - links already issued are refused as invalid;
-- **invites are claimed as before**, with no verification required. Nobody could
+- **invites are accepted as before**, with no verification required. Nobody could
   ever verify, so enforcing it would only stop invited people joining. The takeover
   above is therefore open on an instance without email, exactly as it was before
   this feature. That is the reason to turn email on.

@@ -1,5 +1,6 @@
 import { test, expect } from "../../fixtures";
 import { addMember, createArtefact, createBoard, createLink, membersOf, nodeById, trash } from "../../support/api";
+import { acceptInvite, pendingInvites } from "../../support/lifecycle";
 import { MembersPanel } from "../../support/members";
 import { formulaBar, selectCell } from "../../support/sheet";
 import type { Page } from "@playwright/test";
@@ -133,7 +134,7 @@ test.describe("granting an artefact to a person", () => {
     expect(await (await existing.request.get("/api/artefacts")).json()).toEqual([]);
   });
 
-  test("an invite to an address with no account is claimed at sign-up and opens the artefact", async ({
+  test("an invite to an address with no account waits at sign-up, and accepting it opens the artefact", async ({
     page,
     account,
     playwright,
@@ -147,6 +148,11 @@ test.describe("granting an artefact to a person", () => {
     const fresh = await playwright.request.newContext({ baseURL });
     const signup = await fresh.post("/api/auth/register", { data: { email, password: "Aa1!kP7wQz3mXv", name: "Fresh" } });
     expect(signup.status()).toBe(200);
+    // signing up joins nothing: the invitation is waiting to be accepted
+    expect((await fresh.get(`/api/artefacts/${doc.id}`)).status()).toBe(404);
+    const [waiting] = await pendingInvites(fresh);
+    expect(waiting).toMatchObject({ target_type: "node", target_id: doc.id, role: "viewer" });
+    expect((await acceptInvite(fresh, waiting.token)).status()).toBe(200);
     expect((await fresh.get(`/api/artefacts/${doc.id}`)).status()).toBe(200);
     await fresh.dispose();
   });
@@ -213,7 +219,9 @@ test.describe("a public link", () => {
     await selectCell(theirs, "B2", "10");
     await expect(formulaBar(theirs)).toHaveValue("10");
     expect(writes).toEqual([]);
-    expect(JSON.stringify(await (await page.request.get(`/api/artefacts/${sheet.id}`)).json())).not.toContain("999");
+    // ids are random UUIDs and can contain "999" by chance, so look at everything but them
+    const stored = JSON.stringify(await (await page.request.get(`/api/artefacts/${sheet.id}`)).json());
+    expect(stored.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "")).not.toContain("999");
     await visitor.close();
   });
 

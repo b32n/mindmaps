@@ -10,6 +10,9 @@
 // wrangler.test-closed.toml) can run beside the first. E2E_VARS is a JSON object
 // of extra Worker vars (`wrangler dev --var`), and E2E_IP the address to listen
 // on (default 127.0.0.1); the origin-configured instances use both.
+// E2E_KEEP_STATE=1 keeps the state dir (migrations still run, they are
+// idempotent), so a spec can stop a Worker and start it again with another
+// MINDMAPS_MODE on the same data (e2e/modes/switch.spec.ts).
 //
 // Playwright's `webServer` runs this and waits for HEALTH_URL. Nothing here
 // talks to Cloudflare: local D1/R2 live under STATE_DIR, and the test config has
@@ -32,7 +35,7 @@ if (!existsSync(resolve(root, "web/dist/index.html"))) {
   process.exit(1);
 }
 
-rmSync(resolve(root, stateDir), { recursive: true, force: true });
+if (!process.env.E2E_KEEP_STATE) rmSync(resolve(root, stateDir), { recursive: true, force: true });
 
 const migrate = spawnSync(
   wrangler,

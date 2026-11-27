@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { auth, type Connection, type User } from "./api";
 import { Modal } from "./ui/Modal";
+import { useModePolicy } from "./policy";
 
 /**
  * Account settings.
@@ -21,6 +22,7 @@ export function SettingsDialog({
   user: User | null;
   onClose: () => void;
 }) {
+  const { teamSpaces } = useModePolicy();
   const [connections, setConnections] = useState<Connection[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -159,9 +161,10 @@ export function SettingsDialog({
             <p>
               You can't delete your account yet. You own{" "}
               {blockers.map((w) => `“${w.name}”`).join(", ")}, and other people are in{" "}
-              {blockers.length === 1 ? "it" : "them"}. Transfer ownership to another member
-              (open the workspace menu, then People, then Make owner), or remove the members,
-              then come back.
+              {blockers.length === 1 ? "it" : "them"}.{" "}
+              {teamSpaces
+                ? "Transfer ownership to another member (open the workspace menu, then People, then Make owner), or remove the members, then come back."
+                : "Team spaces are hidden on this instance (personal mode). Switch it to org to open them, transfer ownership to another member or remove the members, then come back."}
             </p>
           </div>
         )}

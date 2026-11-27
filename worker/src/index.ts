@@ -1,8 +1,8 @@
 import { Anthropic, textFromEvents, type Repo } from "./anthropic";
 import {
   SESSION_COOKIE, clearCookie, createSession, destroySession, hashPassword,
-  passwordProblems, readCookie, sessionCookie, userForToken, verifyPassword,
-  type SessionUser,
+  passwordProblems, publicUser, readCookie, sessionCookie, userForToken, verifyPassword,
+  type SessionContext, type SessionUser,
 } from "./auth";
 import { handleMcp, rankRecall, reindexPage, requiredScopeFor, sweepDirty } from "./mcp";
 import {
@@ -10,10 +10,11 @@ import {
   protectedResourceMetadata, registerClient, revoke, token as tokenEndpoint, unauthorized,
 } from "./oauth";
 import { removeCards } from "./semantic";
+import { closeWorkspace, moveBoard, moveBoardVectors, renameWorkspace, reopenWorkspace } from "./lifecycle";
 import { reapTrash, untrashNode, type TrashEnv } from "./r2trash";
 import {
-  BOARD_READABLE, NODE_READABLE, boardRole, canAdmin, canWrite, ensurePersonalWorkspace,
-  nodeRole, workspaceRole, workspacesFor, type Role,
+  BOARD_READABLE, IN_BOARD_WORKSPACE, IN_WORKSPACE, NODE_READABLE, boardRole, canAdmin, canWrite, ensurePersonalWorkspace,
+  closedWorkspacesFor, nodeRole, workspaceRole, workspacesFor, type Role,
 } from "./access";
 import { mindboxOrigin, shareUrl } from "./links";
 import { fileUrl, frameUrl, serveFile, serveMindbox, type MindboxEnv } from "./mindbox";
@@ -22,8 +23,8 @@ import {
   wantsSnippet,
 } from "./files";
 import {
-  canGrant, changeMemberRole, claimInvites, invite, membersOf, removeMember, removeWorkspaceMember, revokeInvite,
-  transferOwnership, type Target,
+  acceptInvite, canGrant, changeMemberRole, declineInvite, invite, membersOf, pendingFor, removeMember,
+  removeWorkspaceMember, revokeInvite, transferOwnership, type Target,
 } from "./members";
 import {
   createShare, noteView, resolveShare, revokeShare, sharesFor, type ShareEnv,
@@ -45,6 +46,14 @@ import {
   INVALID_LINK, RATE_LIMITED, UNCONFIGURED, clientIp, consumeToken, isVerified, markVerified, rateBlocked,
   rateHit, resetPassword, revokeAccess, sendResetEmail, sendVerificationEmail, type Limit,
 } from "./emailauth";
+import { TEAM_SPACES_DISABLED, policyFor } from "./policy";
+import {
+  createOrganisation, createSharedWorkspace, isOrganisationWorkspace, organisationFor, workspaceCreationRefusal,
+} from "./organisation";
+import { SsoRequiredError, blockedWorkspaces, scopeDb, unscoped } from "./scope";
+import { addDomain, removeDomain, verifyDomain } from "./domains";
+import { guard, joinOffers, joinOrganisation, securityOf, setEnforce, setPolicy, ssoSummary } from "./org-policy";
+import { callbackUrl, completeSso, isEnabled, linkIdentity, removeConfig, resolveIdentity, saveConfig, setEnabled, startLogin, startTest } from "./sso";
 import { insertNode, webActor, writeArtefact, writeCard, type CardEdit } from "./versions";
 
 export interface Env {
@@ -67,6 +76,13 @@ export interface Env {
    * refuse every request with a 500. See mode.ts and docs/MODES.md.
    */
   MINDMAPS_MODE?: string;
+  /**
+   * DNS-over-HTTPS endpoint used to verify domains (Cloudflare's JSON API shape).
+   * Default is Cloudflare's; the test suite points it at a mock. See domains.ts.
+   */
+  DOH_ENDPOINT?: string;
+  /** Encrypts organisations' SSO client secrets. Optional: one is generated and kept in D1 when unset. See secrets.ts. */
+  SSO_SECRET_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   /** Google's token and tokeninfo endpoints; only the e2e suite points these elsewhere */
@@ -222,6 +238,11 @@ export default {
 
       const user = await userForToken(env.DB, readCookie(req, SESSION_COOKIE));
 
+      // From here on, everything this request reads goes through a handle that
+      // knows which organisations this session is locked out of (enforce-SSO).
+      // Nearly always none, and then it is the plain handle. See scope.ts.
+      if (user) env = { ...env, DB: scopeDb(env.DB, user.id, await blockedWorkspaces(env.DB, user.email, user.sso_workspace_id)) };
+
       // auth endpoints are the only ones reachable signed-out
       if (seg[1] === "auth") return await authRoute(req, env, seg, user, ctx);
 
@@ -234,6 +255,9 @@ export default {
       if (!user) return json(env, { error: "not signed in" }, 401);
       return await route(req, env, seg, user, ctx);
     } catch (err: any) {
+      // Locked out by the organisation's enforce-SSO: not a failure, an instruction.
+      if (err instanceof SsoRequiredError)
+        return json(env, { error: err.message, code: err.code, workspace_id: err.workspaceId }, 403);
       console.error(err);
       return json(env, { error: String(err?.message ?? err) }, 500);
     }
@@ -380,15 +404,20 @@ async function mcpSurface(
   }
   if (!check.grant.scopes.includes(wanted)) return insufficientScope(req, env, wanted);
 
-  // hand the already-read body onward
-  return await handleMcp(new Request(req, { body: raw }), { ...env, PUBLIC_ORIGIN: issuerOf(req, env) } as typeof env, check.grant);
+  // hand the already-read body onward, on a handle that knows which organisations
+  // this connection is locked out of (scope.ts)
+  return await handleMcp(
+    new Request(req, { body: raw }),
+    { ...env, PUBLIC_ORIGIN: issuerOf(req, env), DB: scopeDb(env.DB, check.grant.userId, check.grant.blocked) } as typeof env,
+    check.grant,
+  );
 }
 
 async function route(
   req: Request,
   env: Env,
   seg: string[],
-  user: SessionUser,
+  user: SessionContext,
   ctx: ExecutionContext,
 ): Promise<Response> {
   const [, a, b, c, d] = seg; // seg[0] === "api"
@@ -437,6 +466,18 @@ async function route(
     });
   }
 
+  // --- an organisation's domains, policy and SSO ------------------------------
+
+  if (a === "workspaces" && b && (c === "security" || c === "domains" || c === "policy" || c === "sso" || c === "join")) {
+    const res = await orgSettingsRoute(req, env, seg, user);
+    if (res) return res;
+  }
+
+  if (a === "join-offers" && !b && m === "GET") {
+    const offers = await joinOffers(env, user);
+    return "ok" in offers ? json(env, { error: offers.error, code: offers.code }, offers.status) : json(env, offers);
+  }
+
   // --- boards --------------------------------------------------------------
 
   if (a === "boards" && !b && m === "GET") {
@@ -444,6 +485,9 @@ async function route(
     // never got a position. Dragging is an explicit statement about where
     // something belongs, so it must not be undone by touching a card, and
     // pinning is a second such statement that outranks it.
+    // Personal mode lists the personal home and what was shared with you, and
+    // leaves the team spaces out (policy.ts); everywhere else, everything readable.
+    const homeOnly = !policyFor(env).teamSpaces;
     const { results } = await env.DB.prepare(
       // `shared_with` counts people given this one mindmap directly. Workspace
       // members are deliberately not counted: everything in a workspace is
@@ -452,10 +496,10 @@ async function route(
       `SELECT b.*,
               (SELECT COUNT(*) FROM board_shares bs WHERE bs.board_id = b.id) AS shared_with
          FROM boards b
-        WHERE b.parent_id IS NULL AND ${BOARD_READABLE("b")}
+        WHERE b.parent_id IS NULL AND ${BOARD_READABLE("b")}${homeOnly ? ` AND ${IN_BOARD_WORKSPACE("b", 2, 1)}` : ""}
         ORDER BY b.pinned DESC, b.position IS NULL, b.position ASC, b.updated_at DESC`,
     )
-      .bind(user.id)
+      .bind(...(homeOnly ? [user.id, user.id] : [user.id]))
       .all();
     return json(env, results.map(hydrateBoard));
   }
@@ -476,7 +520,9 @@ async function route(
     // The workspace the user is looking at, so recall stays one vector query
     // and never mixes work with personal context. Absent means "everywhere",
     // which is what an agent gets.
-    const ws = url.searchParams.get("workspace");
+    // Personal mode has one place to be: the personal home (whose id is the
+    // user's), plus what was shared in. A workspace named here is ignored.
+    const ws = policyFor(env).teamSpaces ? url.searchParams.get("workspace") : user.id;
     const result = await rankRecall(env, user.id, q, scope || null, 1, ws || null);
     return json(env, result);
   }
@@ -567,6 +613,7 @@ async function route(
      */
     let workspaceId = await ensurePersonalWorkspace(env.DB, user.id);
     if (body.workspace_id && body.workspace_id !== workspaceId) {
+      if (!policyFor(env).teamSpaces) return json(env, TEAM_SPACES_DISABLED, 403);
       const role = await workspaceRole(env.DB, user.id, String(body.workspace_id));
       if (!canWrite(role))
         return json(env, { error: "You cannot add mindmaps to that workspace." }, 403);
@@ -711,19 +758,69 @@ async function route(
 
   if (a === "workspaces" && !b && m === "GET") {
     await ensurePersonalWorkspace(env.DB, user.id);
-    return json(env, await workspacesFor(env.DB, user.id));
+    return json(env, await workspacesFor(env.DB, user.id, policyFor(env).teamSpaces));
   }
 
   if (a === "workspaces" && !b && m === "POST") {
+    if (!policyFor(env).teamSpaces) return json(env, TEAM_SPACES_DISABLED, 403);
+    // What mode this instance is in decides whether a shared workspace may be
+    // made this way at all (organisation.ts).
+    const no = await workspaceCreationRefusal(env);
+    if (no) return json(env, { error: no.error, code: no.code }, no.status);
     const body = await req.json<any>().catch(() => ({}));
     const name = String(body?.name ?? "").trim() || "New workspace";
-    const wsId = id();
-    await env.DB.prepare(
-      `INSERT INTO workspaces (id, name, owner_id, personal, created_at) VALUES (?,?,?,0,?)`,
-    )
-      .bind(wsId, name, user.id, now())
-      .run();
+    const wsId = await createSharedWorkspace(env.DB, user.id, name);
     return json(env, { id: wsId, name, owner_id: user.id, personal: 0, role: "owner" }, 201);
+  }
+
+  // The organisation: what this person sees of it, and making it.
+  if (a === "organisation" && !b && m === "GET") {
+    return json(env, await organisationFor(env, user));
+  }
+
+  if (a === "organisation" && !b && m === "POST") {
+    const body = await req.json<any>().catch(() => ({}));
+    const res = await createOrganisation(env, user.id, body ?? {});
+    if (!res.ok) return json(env, { error: res.error, code: res.code }, res.status);
+    return json(env, { id: res.id, name: res.name, owner_id: user.id, personal: 0, role: "owner", adopted: res.adopted }, 201);
+  }
+
+  // The owner's closed workspaces, for reopening. Before the `:id` routes below
+  // so "closed" is not read as an id.
+  if (a === "workspaces" && b === "closed" && !c && m === "GET") {
+    return json(env, policyFor(env).teamSpaces ? await closedWorkspacesFor(env.DB, user.id) : []);
+  }
+
+  // Owners and admins rename; only the owner closes and reopens. Rules and the
+  // reasons for them are in lifecycle.ts.
+  if (a === "workspaces" && b && !c && m === "PATCH") {
+    const body = await req.json<any>().catch(() => ({}));
+    const res = await renameWorkspace(env, user.id, b, body?.name);
+    return res.ok ? json(env, { id: res.id, name: res.name, updated_at: res.updated_at }) : json(env, { error: res.error }, res.status);
+  }
+
+  if (a === "workspaces" && b && c === "close" && !d && m === "POST") {
+    // Closing the organisation would leave an org-mode instance with none, and
+    // creating another is refused: there would be no way back but the database.
+    if (await isOrganisationWorkspace(env, b))
+      return json(env, { error: "This is the organisation of this instance and cannot be closed.", code: "organisation_cannot_close" }, 409);
+    const res = await closeWorkspace(env, user.id, b);
+    return res.ok ? json(env, { ok: true, closed_at: res.closed_at, reopen_until: res.reopen_until }) : json(env, { error: res.error }, res.status);
+  }
+
+  if (a === "workspaces" && b && c === "reopen" && !d && m === "POST") {
+    const res = await reopenWorkspace(env, user.id, b);
+    return res.ok ? json(env, { ok: true }) : json(env, { error: res.error }, res.status);
+  }
+
+  // Move a mindmap, with its sub-mindmaps, to another workspace. Vectors follow
+  // after the response; see moveBoardVectors.
+  if (a === "boards" && b && c === "move" && !d && m === "POST") {
+    const body = await req.json<any>().catch(() => ({}));
+    const res = await moveBoard(env, user.id, b, body?.workspace_id);
+    if (!res.ok) return json(env, { error: res.error }, res.status);
+    ctx.waitUntil(moveBoardVectors(env as Parameters<typeof moveBoardVectors>[0], res.id, res.workspace_id));
+    return json(env, { ok: true, id: res.id, workspace_id: res.workspace_id });
   }
 
   /*
@@ -744,6 +841,12 @@ async function route(
     }
 
     if (m === "POST") {
+      // No new people into a hidden team space. Sharing a mindmap or an artefact
+      // is a different route and is never touched by the mode.
+      if (target === "workspace" && !policyFor(env).teamSpaces) {
+        const space = await env.DB.prepare(`SELECT personal FROM workspaces WHERE id = ?`).bind(b).first<{ personal: number }>();
+        if (space && !space.personal) return json(env, TEAM_SPACES_DISABLED, 403);
+      }
       if (!(await canGrant(env, user.id, target, b)))
         return json(env, { error: "You cannot share that." }, 403);
       const body = await req.json<any>().catch(() => ({}));
@@ -754,7 +857,7 @@ async function route(
       const role = body?.role === "viewer" ? "viewer" : "editor";
       const result = await invite(env, user.id, target, b, String(body?.email ?? ""), role);
       if (!result) return json(env, { error: "That does not look like an email address." }, 400);
-      if (result.denied) return json(env, { error: result.denied.error }, result.denied.status);
+      if (result.denied) return json(env, { error: result.denied.error, ...(result.denied.code ? { code: result.denied.code } : {}) }, result.denied.status);
       return json(env, result, 201);
     }
   }
@@ -787,7 +890,23 @@ async function route(
     return res.ok ? json(env, { ok: true, owner_id: res.ownerId }) : json(env, { error: res.error }, res.status);
   }
 
-  if (a === "invites" && b && m === "DELETE") {
+  // What is waiting for this person to accept or decline, by the address they
+  // signed in with. Nothing here joins anyone: see members.ts.
+  if (a === "invites" && !b && m === "GET") {
+    return json(env, { invites: await pendingFor(env, user.email) });
+  }
+
+  if (a === "invites" && b && (c === "accept" || c === "decline") && !d && m === "POST") {
+    const res =
+      c === "accept"
+        ? await acceptInvite(env, user.id, user.email, b)
+        : await declineInvite(env, user.email, b);
+    return res.ok
+      ? json(env, { ok: true, target_type: res.target_type, target_id: res.target_id, role: res.role })
+      : json(env, { error: res.error, ...(res.code ? { code: res.code } : {}) }, res.status);
+  }
+
+  if (a === "invites" && b && !c && m === "DELETE") {
     const gone = await revokeInvite(env, user.id, b);
     return gone ? json(env, { ok: true }) : json(env, { error: "not found" }, 404);
   }
@@ -823,16 +942,17 @@ async function route(
   // forgotten. `data` carries the counts, so the list describes each one
   // without reading a single R2 object.
   if (a === "artefacts" && !b && m === "GET") {
+    const homeOnly = !policyFor(env).teamSpaces;
     const rows = await env.DB.prepare(
       `SELECT n.id, n.type, n.title, n.data, n.updated_at,
               b.id AS board_id, b.name AS board_name
          FROM nodes n
          JOIN boards b ON b.id = n.board_id
-        WHERE ${NODE_READABLE("n", "b")} AND n.type IN (${ARTEFACT_SQL})
+        WHERE ${NODE_READABLE("n", "b")}${homeOnly ? ` AND ${IN_WORKSPACE("b", "n", 2, 1)}` : ""} AND n.type IN (${ARTEFACT_SQL})
         ORDER BY n.updated_at DESC
         LIMIT 300`,
     )
-      .bind(user.id)
+      .bind(...(homeOnly ? [user.id, user.id] : [user.id]))
       .all<any>();
     return json(
       env,
@@ -1728,13 +1848,93 @@ async function canWriteEdge(env: Env, user: SessionUser, edgeId: string): Promis
   return canWrite(a) && canWrite(b);
 }
 
+// --- an organisation's domains, policy and SSO -------------------------------
+
+/**
+ * `/api/workspaces/:id/{security,domains,policy,sso,join}`. Who may do what is
+ * decided in org-policy.ts (`guard`); what each does is in domains.ts, org-policy.ts and
+ * sso.ts. Returns null for a shape that is not one of these, so routing carries on.
+ */
+async function orgSettingsRoute(req: Request, env: Env, seg: string[], user: SessionContext): Promise<Response | null> {
+  const [, , ws, part, x, y] = seg;
+  const m = req.method;
+  const fail = (r: { status: number; code: string; error: string }) => json(env, { error: r.error, code: r.code }, r.status);
+  const body = async () => ((await req.json<any>().catch(() => ({}))) ?? {}) as Record<string, any>;
+  const origin = issuerOf(req, env);
+
+  if (part === "join" && !x && m === "POST") {
+    const r = await joinOrganisation(env, user, ws!);
+    return r.ok ? json(env, r) : fail(r);
+  }
+
+  const need = part === "sso" ? "owner" : "admin";
+  const g = async () => {
+    const r = await guard(env, user.id, ws!, need);
+    return r.ok ? null : fail(r);
+  };
+
+  if (part === "security" && !x && m === "GET") {
+    return (await g()) ?? json(env, await securityOf(unscoped(env.DB), ws!, callbackUrl(origin)));
+  }
+
+  if (part === "domains") {
+    if (!x && m === "POST") {
+      return (await g()) ?? ((r) => (r.ok ? json(env, r.domain, 201) : fail(r)))(await addDomain(env.DB, ws!, user.id, (await body()).domain));
+    }
+    if (x && y === "verify" && m === "POST") {
+      return (await g()) ?? ((r) => (r.ok ? json(env, { ok: true, domain: r.domain }) : fail(r)))(await verifyDomain(env, ws!, x));
+    }
+    if (x && !y && m === "DELETE") {
+      const denied = await g();
+      if (denied) return denied;
+      return (await removeDomain(env.DB, ws!, x)) ? json(env, { ok: true }) : json(env, { error: "not found", code: "not_found" }, 404);
+    }
+  }
+
+  if (part === "policy" && !x && m === "PUT") {
+    const denied = await g();
+    if (denied) return denied;
+    const r = await setPolicy(env.DB, ws!, user.id, await body());
+    return r.ok ? json(env, { policy: r.policy }) : fail(r);
+  }
+
+  if (part === "sso") {
+    const denied = await g();
+    if (denied) return denied;
+    const summary = async () => ssoSummary(env.DB, ws!, callbackUrl(origin));
+    if (!x && m === "PUT") {
+      const r = await saveConfig(env, ws!, user.id, await body());
+      return r.ok ? json(env, { sso: await summary() }) : fail(r);
+    }
+    if (!x && m === "DELETE") {
+      await removeConfig(env, ws!, user.id);
+      return json(env, { ok: true, sso: await summary() });
+    }
+    if (x === "test" && m === "POST") {
+      const r = await startTest(env, ws!, user, origin);
+      return r.ok ? json(env, { url: r.url }) : fail(r);
+    }
+    if (x === "enable" && m === "POST") {
+      const r = await setEnabled(env, ws!, user.id, (await body()).enabled === true);
+      return r.ok ? json(env, { ok: true, sso: await summary() }) : fail(r);
+    }
+    if (x === "enforce" && m === "POST") {
+      const on = (await body()).enforced === true;
+      if (on && !(await isEnabled(env.DB, ws!))) return fail({ status: 409, code: "sso_not_enabled", error: "Turn SSO on before requiring it." });
+      await setEnforce(env.DB, ws!, user.id, on);
+      return json(env, { ok: true, enforce_sso: on });
+    }
+  }
+  return null;
+}
+
 // --- auth -------------------------------------------------------------------
 
 async function authRoute(
   req: Request,
   env: Env,
   seg: string[],
-  user: SessionUser | null,
+  user: SessionContext | null,
   ctx: ExecutionContext,
 ): Promise<Response> {
   const [, , action] = seg; // ["api","auth",action,...]
@@ -1756,7 +1956,7 @@ async function authRoute(
 
   if (action === "me" && m === "GET") {
     return json(env, {
-      user,
+      user: publicUser(user),
       googleEnabled: !!env.GOOGLE_CLIENT_ID,
       mode: readMode(env),
       // can this instance send mail, and has this user's address been proven
@@ -1782,16 +1982,23 @@ async function authRoute(
     if (existing)
       return json(env, { error: "An account with that email already exists." }, 409);
 
-    if (!(await signupAllowed(env, addr))) return json(env, { error: SIGNUP_CLOSED }, 403);
+    const way = await signupAllowed(env, addr);
+    if (!way) return json(env, { error: SIGNUP_CLOSED }, 403);
 
     const { hash, salt } = await hashPassword(password);
     const uid = id();
-    await env.DB.prepare(
+    // The first account on a closed instance is the owner, so "there is no
+    // account yet" must be decided by the insert itself, not by the read above:
+    // two sign-ups arriving together both saw an empty table. One statement is
+    // atomic, so exactly one of them inserts and the other changes nothing.
+    const made = await env.DB.prepare(
       `INSERT INTO users (id,email,name,password_hash,password_salt,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?)`,
+       SELECT ?1,?2,?3,?4,?5,?6,?6
+        WHERE ?7 = 0 OR NOT EXISTS (SELECT 1 FROM users)`,
     )
-      .bind(uid, addr, String(name ?? "").trim(), hash, salt, now(), now())
+      .bind(uid, addr, String(name ?? "").trim(), hash, salt, now(), way === "first" ? 1 : 0)
       .run();
+    if ((made.meta?.changes ?? 0) < 1) return json(env, { error: SIGNUP_CLOSED }, 403);
 
     // The workspace first: the starter board references it, and `signIn` only
     // gets to creating one after this runs.
@@ -1839,8 +2046,6 @@ async function authRoute(
     const spent = await consumeToken(env.DB, (await body()).token, "verify");
     if (!spent) return json(env, { error: INVALID_LINK, code: "invalid_link" }, 400);
     await markVerified(env.DB, spent.userId, "email");
-    // Invites that were held back while the address was unproven.
-    await claimInvites(env, spent.userId, spent.email);
     return json(env, { ok: true });
   }
 
@@ -1928,6 +2133,78 @@ async function authRoute(
     });
   }
 
+
+  // --- SSO ------------------------------------------------------------------
+  // "Sign in with SSO": an address names an organisation by its verified domain,
+  // and its provider does the rest. See sso.ts and docs/SSO.md.
+
+  if (action === "sso" && seg[3] === "start" && m === "POST") {
+    if (readMode(env) === "personal")
+      return json(env, { error: "This install is personal: SSO is for organisations.", code: "team_spaces_disabled" }, 403);
+    const body = await req.json<any>().catch(() => ({}));
+    const r = await startLogin(env, body?.email, body?.next, issuerOf(req, env));
+    return r.ok ? json(env, { url: r.url }) : json(env, { error: r.error, code: r.code }, r.status);
+  }
+
+  if (action === "sso" && seg[3] === "callback" && m === "GET") {
+    const url = new URL(req.url);
+    const appOrigin = env.APP_ORIGIN ?? url.origin;
+    if (readMode(env) === "personal")
+      return Response.redirect(`${appOrigin}/login?error=${encodeURIComponent("SSO is not available on a personal install.")}`, 302);
+    const fail = (why: string) => Response.redirect(`${appOrigin}/login?error=${encodeURIComponent(why)}`, 302);
+
+    const done = await completeSso(env, url.searchParams, issuerOf(req, env));
+
+    // The owner's "Test" step: it ends in the app, with the result in the address.
+    if (done.purpose === "test") {
+      const back = (q: string) => Response.redirect(`${appOrigin}/app?${q}`, 302);
+      if (!done.ok) return back(`sso_test=failed&reason=${encodeURIComponent(done.error)}`);
+      if (!user || user.id !== done.userId) return back(`sso_test=failed&reason=${encodeURIComponent("Sign in as the person who started the test.")}`);
+      return back("sso_test=ok");
+    }
+    if (!done.ok) return fail(done.error);
+
+    const { claims, workspaceId, issuer } = done;
+    const email = claims.email.trim().toLowerCase();
+    const found = await resolveIdentity(env.DB, workspaceId, issuer, claims);
+    if (found.kind === "conflict") return fail("That account is already linked to a different sign-in at your identity provider.");
+
+    let uid: string;
+    if (found.kind === "user") {
+      uid = found.userId;
+    } else {
+      // The mode's sign-up rules apply as for any other way in. One addition: in
+      // org mode the organisation is the instance, and a person its identity
+      // provider vouches for, on a domain it has proven, may have an account.
+      // Having one joins nothing: that is Join, or an invitation.
+      const way = (await signupAllowed(env, email)) || (readMode(env) === "org" ? "open" : false);
+      if (!way) return fail(SIGNUP_CLOSED);
+      uid = id();
+      const made = await env.DB.prepare(
+        `INSERT INTO users (id,email,name,avatar_url,created_at,updated_at)
+         SELECT ?1,?2,?3,?4,?5,?5
+          WHERE ?6 = 0 OR NOT EXISTS (SELECT 1 FROM users)`,
+      )
+        .bind(uid, email, String(claims.name ?? ""), typeof claims.picture === "string" ? claims.picture : null, now(), way === "first" ? 1 : 0)
+        .run();
+      if ((made.meta?.changes ?? 0) < 1) return fail(SIGNUP_CLOSED);
+      await ensurePersonalWorkspace(env.DB, uid);
+      await createStarterBoard(env, uid, issuerOf(req, env));
+    }
+    await linkIdentity(env.DB, workspaceId, issuer, claims, uid);
+
+    const { token, expiresAt } = await createSession(env.DB, uid, req.headers.get("user-agent") ?? undefined, {
+      provenVia: "sso",
+      ssoWorkspaceId: workspaceId,
+    });
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location: landingUrl(done.redirectTo, appOrigin, url.origin),
+        "set-cookie": sessionCookie(req, token, Math.floor((expiresAt - Date.now()) / 1000)),
+      },
+    });
+  }
 
   // --- Google OAuth ---------------------------------------------------------
   // Authorization-code flow. The `state` row is single-use and short-lived,
@@ -2047,24 +2324,33 @@ async function authRoute(
 
     let uid = existing?.id;
     if (!uid) {
-      if (!(await signupAllowed(env, email))) return fail(SIGNUP_CLOSED);
+      const way = await signupAllowed(env, email);
+      if (!way) return fail(SIGNUP_CLOSED);
       uid = id();
-      await env.DB.prepare(
+      // Same guard as password sign-up: the first account is decided by the insert.
+      const made = await env.DB.prepare(
         `INSERT INTO users (id,email,name,avatar_url,google_sub,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?)`,
+         SELECT ?1,?2,?3,?4,?5,?6,?6
+          WHERE ?7 = 0 OR NOT EXISTS (SELECT 1 FROM users)`,
       )
-        .bind(uid, email, String(info.name ?? ""), info.picture ?? null, sub, now(), now())
+        .bind(uid, email, String(info.name ?? ""), info.picture ?? null, sub, now(), way === "first" ? 1 : 0)
         .run();
+      if ((made.meta?.changes ?? 0) < 1) return fail(SIGNUP_CLOSED);
       if (googleVerified) await markVerified(env.DB, uid, "google");
       // Only inside this branch: `existing` means a returning account, and a
       // second Google sign-in is not a signup.
       await createStarterBoard(env, uid, issuerOf(req, env));
     }
 
+    // Google has just vouched for `email`; that proves the address for this
+    // session only if it is the account's address (matched by `google_sub`, the
+    // account's may differ). Domain auto-join asks for this proof (org-policy.ts).
+    const account = await env.DB.prepare(`SELECT email FROM users WHERE id = ?`).bind(uid).first<{ email: string }>();
     const { token, expiresAt } = await createSession(
       env.DB,
       uid,
       req.headers.get("user-agent") ?? undefined,
+      account?.email.toLowerCase() === email ? { provenVia: "google" } : {},
     );
     return new Response(null, {
       status: 302,
@@ -2114,21 +2400,18 @@ async function signIn(req: Request, env: Env, userId: string): Promise<Response>
     .first<{ id: string; email: string }>();
 
   /*
-   * Everything an account needs to exist properly, done here because every way
-   * in goes through this function — register, password login, and Google.
+   * Everything an account needs to exist properly, done here for the ways in
+   * that go through this function: register and password login.
    *
-   * Invites are claimed on every sign-in rather than only at sign-up: someone
-   * may be invited after they already have an account but before they next log
-   * in, and an invite that fired only at registration would strand them
-   * permanently.
+   * Invitations are deliberately not handled here. Signing in, by any route,
+   * joins nothing: what is waiting for an address is read on demand
+   * (`GET /api/invites`) and a person becomes a member by accepting it. The
+   * Google callback creates its own session and never claimed invites either.
    *
    * Awaited rather than deferred. The response redirects straight to /app, and
    * a workspace that appears a beat later reads as a bug.
    */
-  if (user?.email) {
-    await ensurePersonalWorkspace(env.DB, userId);
-    await claimInvites(env, userId, user.email);
-  }
+  if (user?.email) await ensurePersonalWorkspace(env.DB, userId);
 
   return new Response(JSON.stringify({ user }), {
     status: 200,
@@ -2197,10 +2480,10 @@ const hydrateNode = (n: any) => ({ ...n, data: JSON.parse(n.data || "{}") });
  * and Workers AI quota. So: the first account is the owner, after that sign-up
  * needs a live invite for that address, unless `ALLOW_SIGNUPS=true`.
  */
-async function signupAllowed(env: Env, email: string): Promise<boolean> {
-  if (env.ALLOW_SIGNUPS === "true") return true;
+async function signupAllowed(env: Env, email: string): Promise<"open" | "invite" | "first" | false> {
+  if (env.ALLOW_SIGNUPS === "true") return "open";
   const any = await env.DB.prepare(`SELECT 1 AS x FROM users LIMIT 1`).first();
-  if (!any) return true;
+  if (!any) return "first";
   const invite = await env.DB.prepare(
     `SELECT 1 AS x FROM invites
       WHERE email = ? AND accepted_at IS NULL AND revoked = 0
@@ -2208,7 +2491,7 @@ async function signupAllowed(env: Env, email: string): Promise<boolean> {
   )
     .bind(email.toLowerCase(), now())
     .first();
-  return !!invite;
+  return invite ? "invite" : false;
 }
 const SIGNUP_CLOSED =
   "Sign-up is closed on this mindmaps. Ask its owner to invite you, or set ALLOW_SIGNUPS=true to open it.";

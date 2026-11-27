@@ -138,20 +138,32 @@ export async function sha256(value: string): Promise<string> {
   return toHex(await crypto.subtle.digest("SHA-256", enc.encode(value)));
 }
 
+/**
+ * What a sign-in proved, kept with the session it made (migration 0032):
+ * `provenVia` that the address was proven (by Google, or by an organisation's
+ * SSO), `ssoWorkspaceId` which organisation's SSO it came through. A password
+ * session proves neither.
+ */
+export interface Proof {
+  provenVia?: "google" | "sso";
+  ssoWorkspaceId?: string;
+}
+
 export async function createSession(
   db: D1Database,
   userId: string,
   userAgent?: string,
+  proof: Proof = {},
 ): Promise<{ token: string; expiresAt: number }> {
   const token = randomHex(32);
   const now = Date.now();
   const expiresAt = now + SESSION_DAYS * 86_400_000;
   await db
     .prepare(
-      `INSERT INTO auth_sessions (token_hash,user_id,created_at,expires_at,user_agent)
-       VALUES (?,?,?,?,?)`,
+      `INSERT INTO auth_sessions (token_hash,user_id,created_at,expires_at,user_agent,proven_via,sso_workspace_id)
+       VALUES (?,?,?,?,?,?,?)`,
     )
-    .bind(await sha256(token), userId, now, expiresAt, userAgent ?? null)
+    .bind(await sha256(token), userId, now, expiresAt, userAgent ?? null, proof.provenVia ?? null, proof.ssoWorkspaceId ?? null)
     .run();
   return { token, expiresAt };
 }
@@ -163,19 +175,28 @@ export interface SessionUser {
   avatar_url: string | null;
 }
 
+/** The signed-in person, plus what this session proved. Never sent to the browser as is: see `publicUser`. */
+export interface SessionContext extends SessionUser {
+  proven_via: "google" | "sso" | null;
+  sso_workspace_id: string | null;
+}
+
+export const publicUser = (u: SessionUser | null): SessionUser | null =>
+  u && { id: u.id, email: u.email, name: u.name, avatar_url: u.avatar_url };
+
 export async function userForToken(
   db: D1Database,
   token: string | null,
-): Promise<SessionUser | null> {
+): Promise<SessionContext | null> {
   if (!token) return null;
   const row = await db
     .prepare(
-      `SELECT u.id, u.email, u.name, u.avatar_url
+      `SELECT u.id, u.email, u.name, u.avatar_url, s.proven_via, s.sso_workspace_id
          FROM auth_sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = ? AND s.expires_at > ? AND u.status = 'active'`,
     )
     .bind(await sha256(token), Date.now())
-    .first<SessionUser>();
+    .first<SessionContext>();
   return row ?? null;
 }
 
