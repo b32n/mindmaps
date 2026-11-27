@@ -53,9 +53,15 @@ test("invites are claimed as they always were: with no way to verify, nobody is 
   expect((await addMember(request, "workspaces", ws.id, person.user.email)).added).toBeTruthy();
 
   const later = newUser("later");
-  expect((await addMember(request, "workspaces", ws.id, later.email)).invited).toBeTruthy();
+  const invited = await addMember(request, "workspaces", ws.id, later.email);
+  expect(invited.invited).toBeTruthy();
   const c = await playwright.request.newContext({ baseURL });
   await c.post("/api/auth/register", { data: { email: later.email, password: later.password, name: later.name } });
+  // with no way to verify, the invitation is listed straight away and accepting it works
+  expect((await listWorkspaces(c)).map((w) => w.id)).not.toContain(ws.id);
+  const pending = ((await (await c.get("/api/invites")).json()) as { invites: { token: string }[] }).invites;
+  expect(pending.map((i) => i.token)).toEqual([invited.invited!.token]);
+  expect((await c.post(`/api/invites/${invited.invited!.token}/accept`)).status()).toBe(200);
   expect((await listWorkspaces(c)).map((w) => w.id)).toContain(ws.id);
   await c.dispose();
 });
