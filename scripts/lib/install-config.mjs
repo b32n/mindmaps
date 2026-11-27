@@ -2,6 +2,8 @@
 // wrangler.local.toml. Kept apart from install.mjs (which talks to Cloudflare)
 // so they can be tested without an account. See docs/MODES.md.
 
+import { SEND_EMAIL_BLOCK, mailVars } from "./mail-config.mjs";
+
 /** Every value the Worker accepts for MINDMAPS_MODE (worker/src/mode.ts). */
 export const MODES = ["personal", "org", "multitenant"];
 /** What the interactive prompt offers. multitenant is the hosted-service mode: `--mode multitenant` only. */
@@ -95,7 +97,7 @@ export async function chooseMode({ flag, yes, existing, hosted, ask }) {
  * wrangler.local.toml: the committed wrangler.toml with this install's IDs,
  * optional pieces and [vars] filled in.
  */
-export function localToml(template, { name, dbId, search, domain, mindbox, mode }) {
+export function localToml(template, { name, dbId, search, domain, mindbox, mode, mail, turnstile }) {
   // The committed wrangler.toml carries a default MINDMAPS_MODE (for the Deploy
   // button). This install's choice replaces it: drop it, then write ours, or
   // none when the choice is to leave it unset.
@@ -113,6 +115,14 @@ export function localToml(template, { name, dbId, search, domain, mindbox, mode 
     if (mindbox) vars.push(`MINDBOX_ORIGIN = "https://${mindbox}"`);
   }
   if (mode) vars.push(`MINDMAPS_MODE = "${mode}"`);
+  if (mail) {
+    // Outbound email (docs/EMAIL.md): the send binding, and who mail comes from.
+    toml = toml.replace(/^(compatibility_date = ".*")$/m, `$1\n\n${SEND_EMAIL_BLOCK}`);
+    vars.push(...mailVars(mail));
+  }
+
+  // The Turnstile SITE key (public). The secret is a Worker secret and never in this file.
+  if (turnstile) vars.push(`TURNSTILE_SITE_KEY = "${turnstile}"`);
 
   if (vars.length) {
     // One [vars] table only: a second one is a TOML error.

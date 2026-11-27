@@ -18,6 +18,16 @@ export async function signUpViaForm(page: Page, user: TestUser) {
   await page.getByRole("button", { name: "Create account" }).click();
 }
 
+/**
+ * Sign up through the form on an instance that sends email: the page says to check
+ * the email and nobody is signed in (docs/SIGNUP.md), so sign in as the person would.
+ */
+export async function signUpAndInViaForm(page: Page, user: TestUser) {
+  await signUpViaForm(page, user);
+  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+  await signInViaForm(page, user);
+}
+
 /** The signed-in shell is up: the rail shows the account and the starter map. */
 export async function expectSignedInShell(page: Page, who: string) {
   await expect(page).toHaveURL(/\/app\//);

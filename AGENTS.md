@@ -22,9 +22,10 @@ Goal: deploy this repo to the **user's own** Cloudflare account. Do this:
 7. Offer to add the memory instructions from README.md → *Make it use the memory
    without being asked* to the user's `CLAUDE.md` / `AGENTS.md`.
 
-Ask before: using a custom domain (`--domain`), or enabling open sign-up
-(`ALLOW_SIGNUPS`). Never print or commit `.dev.vars`, `.install.json` or
-`wrangler.local.toml`.
+Ask before: using a custom domain (`--domain`), enabling open sign-up
+(`ALLOW_SIGNUPS`), or creating a Turnstile widget (`--turnstile`; docs/SIGNUP.md).
+Never print or commit `.dev.vars`, `.install.json` or `wrangler.local.toml`, and never
+echo the `TURNSTILE_SECRET_KEY` value: pass it by environment variable only.
 
 ## Working on this repo
 

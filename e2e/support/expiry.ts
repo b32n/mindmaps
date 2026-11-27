@@ -32,6 +32,12 @@ function freePort(): Promise<number> {
 }
 
 export class ExpiryWorker {
+  /** `config` picks the wrangler config; the email specs use wrangler.test-mail.toml. */
+  constructor(
+    private config = "wrangler.test.toml",
+    /** extra Worker vars (`wrangler dev --var`), kept across restarts */
+    private vars: Record<string, string> = {},
+  ) {}
   private proc: ChildProcess | null = null;
   private port = 0;
   get url() {
@@ -49,7 +55,7 @@ export class ExpiryWorker {
       spawnSync("rm", ["-rf", `${root}${stateDir}`]);
       const m = spawnSync(
         wrangler,
-        ["d1", "migrations", "apply", "DB", "--local", "--persist-to", stateDir, "-c", "wrangler.test.toml"],
+        ["d1", "migrations", "apply", "DB", "--local", "--persist-to", stateDir, "-c", this.config],
         { cwd: root, env, encoding: "utf8" },
       );
       if (m.status !== 0) throw new Error(`migrations failed: ${m.stderr}`);
@@ -60,7 +66,8 @@ export class ExpiryWorker {
     for (let attempt = 0; attempt < 3; attempt++) {
       this.proc = spawn(
         wrangler,
-        ["dev", "-c", "wrangler.test.toml", "--persist-to", stateDir, "--ip", "127.0.0.1", "--port", String(this.port),
+        ["dev", "-c", this.config, "--persist-to", stateDir, "--ip", "127.0.0.1", "--port", String(this.port),
+          ...Object.entries(this.vars).flatMap(([k, v]) => ["--var", `${k}:${v}`]),
           "--show-interactive-dev-session=false"],
         { cwd: root, env, stdio: "ignore" },
       );
@@ -100,11 +107,24 @@ export class ExpiryWorker {
     await this.stop();
     const r = spawnSync(
       wrangler,
-      ["d1", "execute", "DB", "--local", "--persist-to", stateDir, "-c", "wrangler.test.toml", "--command", sql],
+      ["d1", "execute", "DB", "--local", "--persist-to", stateDir, "-c", this.config, "--command", sql],
       { cwd: root, env, encoding: "utf8" },
     );
     if (r.status !== 0) throw new Error(`could not run ${sql}: ${r.stderr}`);
     await this.start(false);
+  }
+
+  /** Read rows out of the database with the Worker stopped, then bring it back. */
+  async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
+    await this.stop();
+    const r = spawnSync(
+      wrangler,
+      ["d1", "execute", "DB", "--local", "--persist-to", stateDir, "-c", this.config, "--json", "--command", sql],
+      { cwd: root, env, encoding: "utf8" },
+    );
+    if (r.status !== 0) throw new Error(`could not run ${sql}: ${r.stderr}`);
+    await this.start(false);
+    return JSON.parse(r.stdout.slice(r.stdout.indexOf("[")))[0]?.results ?? [];
   }
 
   /** The same, for a whole SQL file (a migration re-applied over data). */
@@ -112,11 +132,21 @@ export class ExpiryWorker {
     await this.stop();
     const r = spawnSync(
       wrangler,
-      ["d1", "execute", "DB", "--local", "--persist-to", stateDir, "-c", "wrangler.test.toml", "--file", file],
+      ["d1", "execute", "DB", "--local", "--persist-to", stateDir, "-c", this.config, "--file", file],
       { cwd: root, env, encoding: "utf8" },
     );
     if (r.status !== 0) throw new Error(`could not run ${file}: ${r.stderr}`);
     await this.start(false);
+  }
+
+  /**
+   * Run the Worker's cron handler as if the schedule fired at `time`
+   * (wrangler's local `/cdn-cgi/handler/scheduled`). The test configs have no cron
+   * trigger of their own, so this is how the sweeps are exercised.
+   */
+  async scheduled(time: number) {
+    const res = await fetch(`${this.url}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}&time=${time}`);
+    if (!res.ok) throw new Error(`scheduled run failed: ${res.status}`);
   }
 
   /** Backdate trash entries by `days`, with the Worker stopped, then bring it back. */

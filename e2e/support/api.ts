@@ -6,6 +6,7 @@
 // They are the same endpoints the web app calls (web/src/api.ts), on the
 // `request` of a signed-in context, so no test-only path exists in the Worker.
 import { expect, type APIRequestContext } from "@playwright/test";
+import { sessionFor } from "./people";
 
 export interface ApiBoard {
   id: string;
@@ -163,18 +164,47 @@ export async function membersOf(request: APIRequestContext, kind: Shareable, id:
   return ok(await request.get(`/api/${kind}/${id}/members`), `members of ${kind}/${id}`);
 }
 
-/** Invite by email. Returns `{ added }` for an existing account, `{ invited }` for a pending invite. */
-export async function addMember(
+/** The raw invite response: `{ invited }` for a pending invite, `{ added }` when an existing member's role changed. */
+export interface InviteResponse {
+  added?: { userId: string; email: string; role: string };
+  invited?: { token: string; email: string; role: string; existing?: boolean };
+}
+
+/** Invite by email and return exactly what the server said. Nothing is accepted. */
+export async function inviteRaw(
   request: APIRequestContext,
   kind: Shareable,
   id: string,
   email: string,
   role: "editor" | "viewer" = "editor",
 ) {
-  return ok<{
-    added?: { userId: string; email: string; role: string };
-    invited?: { token: string; email: string; role: string };
-  }>(await request.post(`/api/${kind}/${id}/members`, { data: { email, role } }), `invite to ${kind}/${id}`);
+  return ok<InviteResponse>(await request.post(`/api/${kind}/${id}/members`, { data: { email, role } }), `invite to ${kind}/${id}`);
+}
+
+/**
+ * Invite by email, as the starting point for a test about something else.
+ *
+ * An invitee who already has an account (one made through `register`) accepts
+ * a workspace invitation here, so afterwards they are a member and `added`
+ * says so. An address with no account is left pending, as in the app. Use
+ * `inviteRaw` to see or exercise the pending state itself.
+ */
+export async function addMember(
+  request: APIRequestContext,
+  kind: Shareable,
+  id: string,
+  email: string,
+  role: "editor" | "viewer" = "editor",
+): Promise<InviteResponse> {
+  const res = await inviteRaw(request, kind, id, email, role);
+  const invitee = res.invited && sessionFor(email);
+  if (res.invited && invitee) {
+    const acc = await invitee.post(`/api/invites/${res.invited.token}/accept`);
+    expect(acc.status(), `accept: ${await acc.text()}`).toBe(200);
+    const me = await (await invitee.get("/api/auth/me")).json();
+    return { ...res, added: { userId: me.user.id, email: res.invited.email, role: res.invited.role } };
+  }
+  return res;
 }
 
 /** A card/artefact node with the given type, made through the real create route. */

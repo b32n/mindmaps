@@ -9,26 +9,171 @@ variable on its Worker.
 | `org` | A team or company running its own instance. |
 | `multitenant` | The hosted service: many unrelated customers on one instance. Hidden and advanced; self-hosters do not need it. |
 
-## What is enforced today
+## What each mode does
 
-**Nothing yet.** This release only adds the setting and passes it along, so
-changing it has no visible effect and deploying it is safe:
+The Worker reads the setting (`worker/src/mode.ts`), and every decision that
+depends on it is made in one place on each side: `worker/src/policy.ts` and
+`web/src/policy.ts`. `GET /api/auth/me` returns it as `mode`, the web app
+exposes it as `useMode()` (and as `data-mindmaps-mode` on `<html>`), and the MCP
+`initialize` and `server/discover` results carry it in `_meta["mindmaps/mode"]`.
 
-- the Worker reads and validates it (`worker/src/mode.ts`);
-- `GET /api/auth/me` returns it as `mode`, and the web app exposes it as
-  `useMode()` (and as `data-mindmaps-mode` on `<html>`);
-- the MCP `initialize` and `server/discover` results carry it in
-  `_meta["mindmaps/mode"]`. No tool schema changes.
+| | personal | org | multitenant (and unset) |
+|---|---|---|---|
+| Workspace switcher, "New workspace", People for a team space | hidden | as before | as before |
+| `GET /api/workspaces` | your personal home only | as before | as before |
+| `POST /api/workspaces` | 403 `team_spaces_disabled` | as before | as before |
+| A mindmap created into a named workspace | 403 `team_spaces_disabled` | as before | as before |
+| Inviting someone into a team space | 403 `team_spaces_disabled` | as before | as before |
+| Mindmap list, artefact list, recall (app and MCP), `search` | the personal home, plus what was shared with you | as before | as before |
+| MCP consent page | no workspace picker; connects to the personal home | picker when you have more than one workspace | as org |
+| MCP tools | no `workspace` argument; `list_mindmaps` does not name workspaces | as before | as before |
+| Sharing (people, public links) | untouched | as before | as before |
 
-A later release makes the app and MCP server honour it. What is decided for
-that, so you can plan around it:
+In the org column, "as before" means the behaviour of an instance before modes
+existed, except that creating a shared workspace goes through the single
+organisation (see [Organisations](#organisations)).
 
-- **Personal keeps today's sharing.** External viewers and editors (email-code
-  sign-in), other people in the same workspace, and people in other workspaces
-  all keep working. Personal mode will not remove any of them.
-- **Switching an install to personal later hides team spaces; it deletes
-  nothing.** Switch back and they return.
-- **SSO and a sign-in domain policy** ship before the modes are launched.
+**multitenant is exactly what every install did before modes existed.** The
+hosted service is pinned to it (below), so none of this changes there.
+
+**org keeps today's shared-workspace behaviour,** with one organisation per
+instance: first-run setup and creating it are described under
+[Organisations](#organisations). Single sign-on and a sign-in domain policy are
+per organisation: see [SSO.md](SSO.md).
+
+### Personal
+
+Personal is one person's instance. There is no team-space concept in the app, the
+API or MCP. Sharing is not part of that and is untouched:
+
+- someone with no account is invited by email, signs up, and gets the mindmap
+  (as editor or viewer); an artefact can be given to anyone through a public
+  read-only link, no account needed;
+- another person on the same instance gets a mindmap or an artefact by email,
+  whichever workspace either of you is in;
+- a mindmap shared with you shows in your list and opens by its id, wherever it
+  lives.
+
+### Switching an install to personal
+
+Switching an install that already has team spaces to personal **hides them; it
+deletes, moves and migrates nothing.** Every row stays as it is (the workspace,
+its members, its mindmaps and cards, shares, agent connections). Switch back to
+org or multitenant and they are listed again, with everything in them.
+
+What "hidden" covers, exactly:
+
+- **Listed nowhere.** Not in the switcher (which is gone), `GET /api/workspaces`,
+  the mindmap and artefact lists, recall and search in the app, or `list_mindmaps`,
+  `search` and `recall` over MCP. A card in a hidden space never shows up in a
+  result, nor as a linked card ("connects to").
+- **Nothing new in them.** Creating a workspace, creating a mindmap in one by
+  `workspace_id`, inviting a person into one, and an agent choosing one (the
+  `workspace` argument is gone; `create_mindmap` writes to the personal home) are
+  all refused or ignored. An agent connected to a team space before the switch
+  keeps working, in the personal home, and goes back to the team space when the
+  mode is switched back.
+- **A mindmap already shared with someone keeps working for them**, even when it
+  sits in a hidden team space. Sharing is not removed or weakened by hiding: the
+  person it was shared with still has it in their list, opens it by its id, and
+  keeps the role they were given. The owner of that mindmap does not see it in
+  their own list while the space is hidden, but can still open it by its id and
+  can still share it again.
+- **Hiding is not an access boundary.** A direct request by id for something you
+  could already read is answered as it always was, including for the members of a
+  hidden team space. Personal mode removes the *offer*, not the data or the
+  rights; if you need people kept out of a space, remove them from it first.
+- **Account deletion is still guarded.** Owning a team space that other people are
+  in blocks deleting your account in every mode (`GET /api/account/delete-blockers`
+  is unchanged). In personal mode the settings dialog says the space is hidden and
+  to switch the instance to org to manage it, instead of pointing at a menu that
+  is not there. Ownership transfer, role changes and removing members still work
+  through the API.
+
+## Organisations
+
+An organisation is an ordinary shared workspace: owner, admins, editors and
+viewers, invitations that are accepted, rename, soft close. What the mode decides
+is who may *create* one and how many there can be.
+
+| Mode | Creating an organisation |
+|---|---|
+| `personal` | Not possible. `POST /api/organisation` and `POST /api/workspaces` answer 403 `team_spaces_disabled`, and the app's workspace menu offers neither. Sharing a mindmap with a person works as it always has. |
+| `org` | Exactly one per instance, made once by the instance's **first account**. After that, creating another (either route) is refused with 409 `organisation_exists`, whoever asks, and the app does not offer it. |
+| `multitenant` (or unset) | Any signed-in person, as many as they like. The workspace menu has **Create organisation** (name it, then invite people) next to the older **New workspace**; both make the same thing. |
+
+### Org mode, first run
+
+1. Deploy with `MINDMAPS_MODE = "org"` on an empty database.
+2. The first account to sign up is the owner. The app shows **Set up your
+   organisation**: a name, then **Invite your team**. That is `POST
+   /api/organisation {"name": "..."}`; `GET /api/organisation` says where things
+   stand (`state`: `setup`, `waiting`, `member`, `outside`).
+3. Sign-up stays closed to the public, as on every instance: after the first
+   account, a person can only create an account if they were invited to that
+   address (or the operator set `ALLOW_SIGNUPS=true`).
+4. An invited person signs up, sees the invitation, and joins the organisation
+   **only by accepting it**.
+
+"First account" is the earliest active account, in insertion order. Two sign-ups
+at the same instant cannot both be first: on a closed instance the account is
+created by a single conditional `INSERT`, so one succeeds and the other is
+refused (403); with open sign-up both accounts exist, and only the earlier one is
+offered set-up (the other sees `waiting`, and `POST /api/organisation` answers 403
+`not_instance_owner`). Two creations at once by the owner produce one
+organisation: the database allows one active row in `instance_organisation`, and
+the workspace and its marker are inserted in one batch.
+
+### Someone who is not in the organisation
+
+On an org-mode instance, a person who signs up without an invitation (only
+possible if the operator opened sign-up) is **not** in the organisation and
+cannot create one. Their page says **Ask your admin for an invite**, names the
+organisation and the address to invite, lists any invitation that arrives (they
+reload to see it) and offers Sign out. They cannot read the organisation's
+mindmaps, people or members (the API answers as it does for any stranger).
+
+Before the organisation has been set up, a second account sees **The
+organisation isn't set up yet** instead.
+
+An account that was already there when the organisation was created (it predates
+it) is not locked out of what it already has: it keeps its own workspaces and is
+only not in the organisation. Only accounts created after the organisation exists
+get the invite-only page.
+
+### Switching an install with data to org mode
+
+Nothing is deleted, moved or hidden by changing the mode, and nobody is made the
+organisation automatically. Until the organisation is chosen, existing
+workspaces keep working for the people in them, and nobody can create new shared
+workspaces. The first account (the earliest active one) then chooses, explicitly:
+
+- **Use one of its workspaces**: the set-up page lists the shared workspaces that
+  account owns (`adoptable` in `GET /api/organisation`) and `POST /api/organisation
+  {"workspace_id": "..."}` makes one the organisation. Its people, roles and
+  mindmaps stay exactly as they are. Only the owner of that workspace can choose
+  it, and not a personal workspace.
+- **Or create a new one**, as on a fresh instance. The old workspaces stay.
+
+Other shared workspaces are not removed when one is chosen. They remain
+reachable by their members and the owner can close or move them (the lifecycle
+tools); the organisation itself cannot be closed (409 `organisation_cannot_close`).
+Switching back to `multitenant` or `personal` leaves all of it in place.
+
+If the organisation's workspace is ever gone (its owner deleted their account),
+the instance has none again and the next first account can set one up.
+
+### Agents (MCP)
+
+An agent that connects as a member of the organisation on an org-mode instance is
+pointed at it by default: the consent page preselects it, so new mindmaps go
+there. Personal is still in the list. People who are not in the organisation keep
+Personal. No tools changed.
+
+### Still to come
+
+SSO and a verified-domain policy hang off each organisation; see [SSO.md](SSO.md).
+A personal install refuses all of it.
 
 ## If it is unset, or empty
 
@@ -106,5 +251,8 @@ deploy replaces dashboard variables unless `--keep-vars` is used).
 ## Changing it later
 
 Edit the value (or re-run `npm run install:cloudflare -- --mode org`) and
-deploy. No migration is involved and no data is touched. Since nothing is
-enforced yet, switching today changes only what is reported.
+deploy. No data is touched: switching to `personal` hides team spaces and
+switching back shows them again (see above). Creating organisations follows the
+mode, as in [Organisations](#organisations). (Migration 0031 adds one small table
+for the organisation of an org-mode instance; it is additive and an older Worker
+ignores it.)

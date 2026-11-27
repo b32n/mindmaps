@@ -6,6 +6,7 @@ import { AuthProvider, RequireAuth, RedirectIfAuthed } from "./AuthContext";
 import { HomePage } from "./pages/Home";
 import { BrainPage } from "./pages/Brain";
 import { LoginPage, RegisterPage } from "./pages/Auth";
+import { ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from "./pages/EmailAuth";
 import { BoardApp } from "./App";
 import { PrivacyPage, TermsPage } from "./pages/Legal";
 
@@ -42,6 +43,11 @@ createRoot(document.getElementById("root")!).render(
           {/* Public too: you have to be able to read the terms before you sign up. */}
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/terms" element={<TermsPage />} />
+
+          {/* The pages the emailed links open; reachable signed in or out. */}
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route
             path="/login"
             element={
