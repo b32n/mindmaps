@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { CLOSED_PORT, MAIN_PORT as PORT, MODE_CASES, mindboxWorker, modeWorkers, originWorker } from "./e2e/support/hosts";
+import { CLOSED_PORT, DOH_ENDPOINT, DOH_PORT, FAKE_GOOGLE_PORT, FAKE_TURNSTILE_PORT, IDP_PORT, MAIN_PORT as PORT, MODE_CASES, legalHostedWorker, legalOrgWorker, mailWorker, mindboxWorker, modeWorkers, originWorker, turnstileWorker } from "./e2e/support/hosts";
 
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 // The second Worker: same app, sign-up closed (wrangler.test-closed.toml).
@@ -36,6 +36,8 @@ export default defineConfig({
   webServer: [
     {
       command: "node e2e/support/serve.mjs",
+      // Every Worker the SSO specs use is told where the mock DNS resolver is.
+      env: { E2E_VARS: JSON.stringify({ DOH_ENDPOINT }) },
       url: `${BASE_URL}/api/auth/me`,
       // Locally, keep a server you started yourself (`npm run e2e:serve`) for
       // fast reruns. On CI always start a fresh one.
@@ -97,6 +99,61 @@ export default defineConfig({
       stdout: "pipe",
       stderr: "pipe",
     },
+    {
+      // The OIDC identity provider and DNS-over-HTTPS resolver the SSO specs
+      // talk to (e2e/support/mock-services.mjs). Nothing leaves the machine.
+      command: "node e2e/support/mock-services.mjs",
+      env: { E2E_IDP_PORT: String(IDP_PORT), E2E_DOH_PORT: String(DOH_PORT) },
+      port: IDP_PORT,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+    // Outbound email on (captured, never sent), with a fake Google beside it.
+    {
+      command: "node e2e/support/serve.mjs",
+      env: {
+        E2E_PORT: String(mailWorker.port),
+        E2E_STATE_DIR: ".e2e-state-mail",
+        E2E_CONFIG: "wrangler.test-mail.toml",
+        E2E_VARS: JSON.stringify(mailWorker.vars),
+      },
+      url: `${mailWorker.baseURL}/api/auth/me`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+    {
+      command: "node e2e/support/fake-google.mjs",
+      env: { E2E_FAKE_GOOGLE_PORT: String(FAKE_GOOGLE_PORT) },
+      port: FAKE_GOOGLE_PORT,
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+    // Mail captured and the sign-up check on, with a local stand-in for Siteverify beside it.
+    {
+      command: "node e2e/support/serve.mjs",
+      env: {
+        E2E_PORT: String(turnstileWorker.port),
+        E2E_STATE_DIR: ".e2e-state-turnstile",
+        E2E_CONFIG: "wrangler.test-turnstile.toml",
+        E2E_VARS: JSON.stringify(turnstileWorker.vars),
+      },
+      url: `${turnstileWorker.baseURL}/api/auth/me`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+    {
+      command: "node e2e/support/fake-turnstile.mjs",
+      env: { E2E_FAKE_TURNSTILE_PORT: String(FAKE_TURNSTILE_PORT) },
+      port: FAKE_TURNSTILE_PORT,
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
     // One Worker per MINDMAPS_MODE setting (see e2e/support/hosts.ts). The
     // invalid one answers 500 to everything, so readiness is the port, not a URL.
     ...MODE_CASES.map((name) => ({
@@ -104,9 +161,26 @@ export default defineConfig({
       env: {
         E2E_PORT: String(modeWorkers[name].port),
         E2E_STATE_DIR: `.e2e-state-mode-${name}`,
-        E2E_VARS: JSON.stringify({ MINDMAPS_MODE: modeWorkers[name].value }),
+        E2E_VARS: JSON.stringify({ MINDMAPS_MODE: modeWorkers[name].value, DOH_ENDPOINT }),
       },
       port: modeWorkers[name].port,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe" as const,
+      stderr: "pipe" as const,
+    })),
+    // Workers with the operator's own settings, for /privacy, /terms and security.txt.
+    ...[
+      { name: "legal-org", worker: legalOrgWorker },
+      { name: "legal-hosted", worker: legalHostedWorker },
+    ].map(({ name, worker }) => ({
+      command: "node e2e/support/serve.mjs",
+      env: {
+        E2E_PORT: String(worker.port),
+        E2E_STATE_DIR: `.e2e-state-${name}`,
+        E2E_VARS: JSON.stringify(worker.vars),
+      },
+      port: worker.port,
       reuseExistingServer: false,
       timeout: 120_000,
       stdout: "pipe" as const,
@@ -158,6 +232,21 @@ export default defineConfig({
       testDir: "./e2e/modes",
       testMatch: /.*\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
+    },
+    // Email verification, password reset and sign-in limits, against the email
+    // Worker (the "email not configured" cases run on the main one).
+    {
+      name: "email",
+      testDir: "./e2e/email",
+      testMatch: /.*\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: mailWorker.baseURL },
+    },
+    // The sign-up check (Cloudflare Turnstile), against the Worker that has it on.
+    {
+      name: "turnstile",
+      testDir: "./e2e/turnstile",
+      testMatch: /.*\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: turnstileWorker.baseURL },
     },
     // The installer's script and helpers; no browser, no Worker.
     { name: "installer", testDir: "./e2e/installer", testMatch: /.*\.spec\.ts/ },

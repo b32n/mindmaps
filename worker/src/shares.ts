@@ -12,7 +12,7 @@
  * its neighbours, not the owner's name. A share is a window onto one thing.
  */
 
-import { canWrite, nodeRole } from "./access";
+import { NOT_CLOSED, canWrite, nodeRole } from "./access";
 import { isArtefact, type ArtefactKind } from "./artefacts";
 
 export interface ShareEnv {
@@ -157,7 +157,8 @@ export async function resolveShare(
     `SELECT s.target_id, s.expires_at, s.revoked, n.type, n.title
        FROM shares s
        JOIN nodes n ON n.id = s.target_id
-      WHERE s.token = ? AND s.target_type = 'node'`,
+       JOIN boards b ON b.id = n.board_id
+      WHERE s.token = ? AND s.target_type = 'node' AND ${NOT_CLOSED("b")}`,
   )
     .bind(token)
     .first<{
@@ -168,6 +169,9 @@ export async function resolveShare(
       title: string;
     }>();
 
+  // A closed workspace's artefacts do not resolve (and do again once it is
+  // reopened): the link is kept, not revoked.
+  //
   // A missing join means the artefact was deleted, which unshares it — the
   // trash keeps the row out of `nodes`, so a shared thing you delete stops
   // resolving immediately rather than a week later.

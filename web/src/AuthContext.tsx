@@ -5,6 +5,14 @@ import { auth, type Mode, type User } from "./api";
 interface AuthState {
   user: User | null;
   googleEnabled: boolean;
+  /** this instance can send email, so verification and password reset exist */
+  emailEnabled: boolean;
+  /** the key of the sign-up check, or null when this instance has none */
+  turnstileSiteKey: string | null;
+  /** the signed-in address is confirmed (true when signed out: nothing to nag about) */
+  emailVerified: boolean;
+  /** ask the server again who we are, e.g. after confirming the address */
+  refresh: () => Promise<void>;
   /** the instance's deployment mode; null until /auth/me lands */
   mode: Mode | null;
   /** null until the first /auth/me lands — distinct from "signed out" */
@@ -18,20 +26,41 @@ const Ctx = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [emailEnabled, setEmailEnabled] = useState(false);
+  const [emailVerified, setEmailVerified] = useState(true);
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const refresh = useCallback(
+    () =>
+      auth
+        .me()
+        .then((r) => {
+          setUser(r.user);
+          setGoogleEnabled(r.googleEnabled);
+          setMode(r.mode);
+          setEmailEnabled(!!r.emailEnabled);
+          setEmailVerified(r.emailVerified !== false);
+          setTurnstileSiteKey(r.turnstileSiteKey || null);
+        })
+        .catch(() => setUser(null))
+        .finally(() => setLoading(false)),
+    [],
+  );
+
   useEffect(() => {
-    auth
-      .me()
-      .then((r) => {
-        setUser(r.user);
-        setGoogleEnabled(r.googleEnabled);
-        setMode(r.mode);
-      })
-      .catch(() => setUser(null))
-      .finally(() => setLoading(false));
-  }, []);
+    void refresh();
+  }, [refresh]);
+
+  // Signing in or up hands us the user; whether their address is confirmed is a separate question for the server.
+  const signIn = useCallback(
+    (u: User) => {
+      setUser(u);
+      void refresh();
+    },
+    [refresh],
+  );
 
   // Available to CSS and to anything outside React; nothing styles on it yet.
   useEffect(() => {
@@ -45,7 +74,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <Ctx.Provider value={{ user, googleEnabled, mode, loading, signIn: setUser, signOut }}>
+    <Ctx.Provider
+      value={{ user, googleEnabled, emailEnabled, turnstileSiteKey, emailVerified, refresh, mode, loading, signIn, signOut }}
+    >
       {children}
     </Ctx.Provider>
   );

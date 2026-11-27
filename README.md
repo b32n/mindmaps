@@ -187,7 +187,7 @@ would rather script them (they use the browser session cookie).
   row (email, name, avatar, password hash, Google id), so the same address can sign up
   again. The row itself stays, marked `status = 'deleted'` with a `deleted_at`, because
   other people's data refers to it. A workspace you own that has other people in it
-  blocks the deletion (409): remove them first.
+  blocks the deletion (409): transfer it, remove them, or close it first.
 
 ### Tools
 

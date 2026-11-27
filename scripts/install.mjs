@@ -18,6 +18,18 @@
 //   --mode <mode>          personal | org (asked if omitted; --yes picks personal on a first
 //                          install, and a re-run keeps the mode it has). multitenant is the
 //                          hosted-service mode: accepted here, never offered. See docs/MODES.md
+//   --mail-domain <host>   send email (confirm address, reset password) from this domain, which must
+//                          be on your Cloudflare account. Default: the --domain. See docs/EMAIL.md
+//   --mail-from <address>  the sender address (default: mindmaps@<mail domain>)
+//   --no-email             do not set up email (and remove it from an install that has it)
+//   --mail-skip-check      write the email config without confirming the domain is onboarded
+//                          (for a domain you onboarded in the dashboard)
+//   --turnstile            protect sign-up with Cloudflare Turnstile: makes a widget for your --domain in
+//                          your account (the default for the hosted service's multitenant mode; asked
+//                          for personal and org, where --yes means no). See docs/SIGNUP.md
+//   --turnstile-site-key <key>  use a widget you made in the dashboard; its secret is read from the
+//                          TURNSTILE_SECRET_KEY environment variable (never from the command line)
+//   --no-turnstile         no Turnstile (and removed from an install that has it)
 //   --no-search            skip the meaning-based search index
 //   --dry-run              work out the choices and print the config; touch nothing, sign in nowhere
 //   --json                 print one JSON object at the end (url, mcp, next steps)
@@ -29,6 +41,10 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
+import { chooseMail, mailInToml, mailNextSteps } from "./lib/mail-config.mjs";
+import { setupSendingDomain } from "./lib/mail-cloudflare.mjs";
+import { SECRET_NAME as TURNSTILE_SECRET, chooseTurnstile, turnstileInToml, turnstileNextSteps } from "./lib/turnstile-config.mjs";
+import { setupTurnstileWidget } from "./lib/turnstile-cloudflare.mjs";
 import { HOSTED_HOST, MODES, assertHostedMode, chooseMode, isHostedHost, localToml, modeInToml, parseMode, tomlIsHosted } from "./lib/install-config.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -97,6 +113,7 @@ if (!DRY && !existsSync(WR)) die("Run `npm install` first, then re-run this.");
 say("mindmaps → your Cloudflare account");
 
 // --- 1. sign in -------------------------------------------------------------
+let accountIds = [];
 if (!DRY) {
   step("Signing in to Cloudflare");
   let who = wrangler(["whoami"], { config: false });
@@ -105,7 +122,7 @@ if (!DRY) {
     if (!wrangler(["login"], { inherit: true, config: false }).ok) die("Cloudflare sign-in didn't finish. Run it again.");
     who = wrangler(["whoami"], { config: false });
   }
-  const accountIds = [...new Set([...who.out.matchAll(/\b([0-9a-f]{32})\b/g)].map((m) => m[1]))];
+  accountIds = [...new Set([...who.out.matchAll(/\b([0-9a-f]{32})\b/g)].map((m) => m[1]))];
   if (accountIds.length > 1 && !process.env.CLOUDFLARE_ACCOUNT_ID)
     die(
       `This login has several Cloudflare accounts:\n  ${accountIds.join("\n  ")}\nPick one: CLOUDFLARE_ACCOUNT_ID=<id> npm run install:cloudflare`,
@@ -150,11 +167,53 @@ if (chosen.source === "existing")
       : "  this install has no MINDMAPS_MODE set, so it runs as multitenant, as before (set one with --mode personal|org)",
   );
 
+let chosenMail;
+try {
+  chosenMail = await chooseMail({
+    from: flag("mail-from") ? (opt("mail-from") ?? "") : undefined,
+    domain: flag("mail-domain") ? (opt("mail-domain") ?? "") : undefined,
+    noEmail: flag("no-email"),
+    appDomain: domain,
+    existing: existingToml ? mailInToml(existingToml) : null,
+    yes: YES,
+    ask,
+  });
+} catch (e) {
+  die(e.message);
+}
+let mail = chosenMail.mail;
+if (mail) say(`  email: ${mail.from} (${chosenMail.source})`);
+else if (chosenMail.source === "no-domain")
+  say("  email: skipped. It needs a domain of your own; add one later with --mail-domain <domain> (docs/EMAIL.md)");
+else if (chosenMail.source === "flag-off") say("  email: off (--no-email)");
+
+let chosenTs;
+try {
+  if (flag("turnstile") && flag("no-turnstile")) throw new Error("--turnstile cannot be combined with --no-turnstile.");
+  chosenTs = await chooseTurnstile({
+    flag: flag("no-turnstile") ? "off" : flag("turnstile") ? "on" : undefined,
+    siteKey: flag("turnstile-site-key") ? (opt("turnstile-site-key") ?? "") : undefined,
+    secretInEnv: !!process.env[TURNSTILE_SECRET]?.trim(),
+    domain,
+    mode,
+    existing: existingToml ? turnstileInToml(existingToml) : null,
+    yes: YES,
+    ask,
+  });
+} catch (e) {
+  die(e.message);
+}
+let turnstile = chosenTs.turnstile;
+if (turnstile) say(`  turnstile: on (${chosenTs.source})`);
+else if (chosenTs.source === "no-domain") say("  turnstile: skipped. It needs a hostname; add it later with --turnstile --domain <host> (docs/SIGNUP.md)");
+else if (chosenTs.source === "flag-off") say("  turnstile: off (--no-turnstile)");
+
 if (DRY) {
   const config = localToml(readFileSync(join(ROOT, "wrangler.toml"), "utf8"), {
-    name, dbId: "<database-id>", search: !flag("no-search"), domain, mindbox, mode,
+    name, dbId: "<database-id>", search: !flag("no-search"), domain, mindbox, mode, mail,
+    turnstile: turnstile ? turnstile.siteKey ?? "<turnstile-site-key>" : undefined,
   });
-  console.log(JSON.stringify({ dryRun: true, name, domain: domain ?? null, mindbox: mindbox ?? null, mode: mode ?? null, source: chosen.source, config }));
+  console.log(JSON.stringify({ dryRun: true, name, domain: domain ?? null, mindbox: mindbox ?? null, mode: mode ?? null, source: chosen.source, mail: mail ?? null, mailSource: chosenMail.source, turnstile: turnstile ?? null, turnstileSource: chosenTs.source, config }));
   process.exit(0);
 }
 
@@ -197,9 +256,73 @@ if (search) {
   }
 }
 
+/** The API token for REST calls: CLOUDFLARE_API_TOKEN, else the one `wrangler login` holds. Never printed. */
+function apiToken() {
+  let token = process.env.CLOUDFLARE_API_TOKEN;
+  if (!token) {
+    const t = wrangler(["auth", "token"], { config: false });
+    const candidate = t.out.trim();
+    if (t.ok && /^[\w-]{20,}$/.test(candidate)) token = candidate;
+  }
+  return token;
+}
+
+// Email (optional). Onboard the sending domain through the API where the token
+// allows it. The config only turns email on once the domain is known to be ready:
+// with verification on and no mail arriving, invited people could not join.
+let mailReport = { enabled: false, next: [] };
+if (mail) {
+  step(`Setting up email for ${mail.domain}`);
+  const reuse = chosenMail.source === "existing" && flag("mail-skip-check");
+  const token = apiToken();
+  const r = flag("mail-skip-check") || reuse ? { status: "skipped", steps: [], detail: "" } : await setupSendingDomain({ domain: mail.domain, token });
+  for (const s of r.steps) say(`  ${s}`);
+  const next = mailNextSteps(mail.domain, mail.from);
+  if (r.status === "ready" || r.status === "skipped") {
+    say(r.status === "ready" ? "  email ready (DNS records can take a few minutes to verify)" : "  email config written without checking (--mail-skip-check)");
+    mailReport = { enabled: true, status: r.status, domain: mail.domain, from: mail.from, next: [] };
+  } else if (chosenMail.source === "existing") {
+    // An upgrade must not switch off email that was already working just because this run cannot re-check it.
+    say(`  email kept as it was (could not re-check: ${r.detail})`);
+    mailReport = { enabled: true, status: "kept", domain: mail.domain, from: mail.from, next: [] };
+  } else {
+    // A first try that could not finish leaves email off.
+    say(`  email not switched on: ${r.detail}`);
+    for (const n of next) say(`    - ${n}`);
+    mailReport = { enabled: false, status: r.status, domain: mail.domain, from: mail.from, detail: r.detail, next };
+    mail = null;
+  }
+}
+
+// Turnstile (optional). The site key goes into the config; the secret is held in
+// memory until the Worker exists and is then handed to `wrangler secret put`.
+// Never printed, logged or written to a file.
+let turnstileSecret = process.env[TURNSTILE_SECRET]?.trim() || null;
+let tsReport = { enabled: false, next: [] };
+if (turnstile && chosenTs.source === "existing") tsReport = { enabled: true, status: "kept", siteKey: turnstile.siteKey, next: [] };
+else if (turnstile && turnstile.siteKey) tsReport = { enabled: true, status: "site-key", siteKey: turnstile.siteKey, next: [] };
+else if (turnstile) {
+  step(`Setting up Turnstile for ${turnstile.host}`);
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || (accountIds.length === 1 ? accountIds[0] : undefined);
+  const r = await setupTurnstileWidget({ accountId, host: turnstile.host, token: apiToken() });
+  for (const s of r.steps) say(`  ${s}`);
+  if (r.siteKey && r.secret) {
+    turnstile = { ...turnstile, siteKey: r.siteKey };
+    turnstileSecret = r.secret;
+    tsReport = { enabled: true, status: r.status, siteKey: r.siteKey, next: [] };
+  } else {
+    // A first try that could not finish leaves Turnstile off, like email.
+    const next = turnstileNextSteps(turnstile.host);
+    say(`  turnstile not switched on: ${r.detail}`);
+    for (const n of next) say(`    - ${n}`);
+    tsReport = { enabled: false, status: r.status, detail: r.detail, next };
+    turnstile = null;
+  }
+}
+
 // --- 4. config --------------------------------------------------------------
 step("Writing wrangler.local.toml (your IDs, never committed)");
-const toml = localToml(readFileSync(join(ROOT, "wrangler.toml"), "utf8"), { name, dbId, search, domain, mindbox, mode });
+const toml = localToml(readFileSync(join(ROOT, "wrangler.toml"), "utf8"), { name, dbId, search, domain, mindbox, mode, mail, turnstile: turnstile?.siteKey });
 writeFileSync(LOCAL, toml);
 
 // --- 5. build, migrate, deploy ---------------------------------------------
@@ -229,12 +352,33 @@ if (mindbox) {
   if (put.status !== 0) say("  couldn't set MINDBOX_SECRET; one will be generated automatically");
 }
 
+// The Turnstile secret, now that the Worker exists. Without it the check stays off
+// (the Worker needs the key AND the secret), so a failure here is safe, not open.
+if (turnstile && chosenTs.source !== "existing" && turnstileSecret) {
+  step("Storing the Turnstile secret");
+  const put = spawnSync(WR, ["--config", LOCAL, "secret", "put", TURNSTILE_SECRET], {
+    cwd: ROOT,
+    input: turnstileSecret,
+    encoding: "utf8",
+  });
+  turnstileSecret = null;
+  if (put.status === 0) say("  stored");
+  else {
+    // Say nothing of wrangler's output: it is not ours to repeat, and a secret must never be in a log.
+    const next = [`Set the secret yourself: npx wrangler secret put ${TURNSTILE_SECRET} (Dashboard → Turnstile → your widget → rotate secret, for a value).`];
+    say(`  couldn't store the secret, so the check is off until you do. ${next[0]}`);
+    tsReport = { ...tsReport, enabled: false, status: "secret-failed", next };
+  }
+}
+
 // --- 6. done ----------------------------------------------------------------
 const mcp = url ? `${url}/mcp` : "<your-url>/mcp";
-writeFileSync(join(ROOT, ".install.json"), JSON.stringify({ name, url, domain, mindbox, search, mode, dbId }, null, 2));
+writeFileSync(join(ROOT, ".install.json"), JSON.stringify({ name, url, domain, mindbox, search, mode, mail: mail ?? undefined, turnstile: turnstile ? { siteKey: turnstile.siteKey } : undefined, dbId }, null, 2));
 
 if (JSON_OUT) {
-  console.log(JSON.stringify({ ok: true, url, mcp, search, mode: mode ?? "multitenant", htmlArtefacts: true, next: [
+  console.log(JSON.stringify({ ok: true, url, mcp, search, mode: mode ?? "multitenant", htmlArtefacts: true, email: mailReport, turnstile: tsReport, next: [
+    ...mailReport.next,
+    ...tsReport.next,
     `Open ${url} and create your account (the first account is yours).`,
     `claude mcp add --transport http mindmaps ${mcp}`,
   ] }));
@@ -253,6 +397,9 @@ Next
      (Cursor and others: see README.md → Connect an agent.)
   3. Your data lives in YOUR Cloudflare account. Nothing is sent to anyone else.
 
+${mail ? `  Email         sent from ${mail.from}` : "  Email         off (docs/EMAIL.md says how to turn it on)"}
+  Turnstile     ${tsReport.enabled ? "on for sign-up" : "off (docs/SIGNUP.md says how to turn it on)"}
+${mailReport.next.length ? "\nEmail is not on yet. To finish it:\n" + mailReport.next.map((n) => `  - ${n}`).join("\n") + "\n" : ""}${tsReport.next.length ? "\nTurnstile is not on yet. To finish it:\n" + tsReport.next.map((n) => `  - ${n}`).join("\n") + "\n" : ""}
 Update later:  git pull && npm install && npm run install:cloudflare
 `);
 }

@@ -6,7 +6,9 @@ import { AuthProvider, RequireAuth, RedirectIfAuthed } from "./AuthContext";
 import { HomePage } from "./pages/Home";
 import { BrainPage } from "./pages/Brain";
 import { LoginPage, RegisterPage } from "./pages/Auth";
+import { ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from "./pages/EmailAuth";
 import { BoardApp } from "./App";
+import { PrivacyPage, TermsPage } from "./pages/Legal";
 
 /**
  * The three artefact engines, each loaded on demand.
@@ -38,6 +40,14 @@ createRoot(document.getElementById("root")!).render(
           {/* Public, and public on purpose: it is the page that explains what
               the thing is, so it has to be readable before you sign up. */}
           <Route path="/brain" element={<BrainPage />} />
+          {/* Public too: you have to be able to read the terms before you sign up. */}
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+
+          {/* The pages the emailed links open; reachable signed in or out. */}
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route
             path="/login"
             element={

@@ -6,11 +6,12 @@
  * server enforces who may hand out access; this only has to be honest about
  * what each role means.
  *
- * Deliberately plain about the two invite outcomes. Inviting someone who
- * already has an account adds them straight away; inviting someone who does not
- * leaves a pending row until they sign up with that address. Those are
- * different enough that a shared "invited!" message would mislead: one is done,
- * the other is waiting on someone else.
+ * Deliberately plain about the invite outcomes. Inviting someone to a
+ * workspace never adds them: they get an invitation and become a member when
+ * they accept it. A mindmap or artefact shared with an existing account is
+ * theirs straight away. For someone with no account the invitation waits until
+ * they sign up with that address, and then for them to accept. Those are
+ * different enough that a shared "invited!" message would mislead.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -90,7 +91,9 @@ export function MembersPanel({
       setNote(
         r.added
           ? `${r.added.email} now has access.`
-          : `Invited ${r.invited?.email}. They will get access when they sign up with that address.`,
+          : r.invited?.existing
+            ? `Invited ${r.invited.email}. They become a member when they accept.`
+            : `Invited ${r.invited?.email}. They can accept once they sign up with that address.`,
       );
       load();
     } catch (e) {
@@ -251,7 +254,9 @@ export function MembersPanel({
           <li key={p.token} className="members-row pending">
             <span className="members-who">
               {p.email}
-              <span className="members-email-quiet">waiting for them to sign up</span>
+              <span className="members-email-quiet">
+                {p.has_account ? "waiting for them to accept" : "waiting for them to sign up"}
+              </span>
             </span>
             <span className="members-what">{p.role === "editor" ? "Can edit" : "Can view"}</span>
             <button className="btn btn-small btn-quiet" onClick={() => void revoke(p.token)}>
@@ -263,8 +268,7 @@ export function MembersPanel({
 
       {members !== null && members.length === 0 && pending.length === 0 && (
         <p className="members-note">
-          Only you can see this {NOUN[kind]}. Anyone you invite gets access the next time
-          they sign in.
+          Only you can see this {NOUN[kind]}. Invite someone by email to share it.
         </p>
       )}
     </div>

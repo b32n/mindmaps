@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { auth } from "../api";
-import { useAuth } from "../AuthContext";
+import { useAuth, useMode } from "../AuthContext";
+import { LegalLinks } from "./Legal";
+import { Turnstile, type TurnstileHandle } from "../Turnstile";
 
 /**
  * Mirrors the server's policy in worker/src/auth.ts. Shown live as the user
  * types so the rules are visible up front rather than discovered one at a time
  * through rejections. The server remains the authority.
  */
-const RULES: { label: string; ok: (p: string) => boolean }[] = [
+export const RULES: { label: string; ok: (p: string) => boolean }[] = [
   { label: "12 characters or more", ok: (p) => p.length >= 12 },
   { label: "a lowercase letter", ok: (p) => /[a-z]/.test(p) },
   { label: "an uppercase letter", ok: (p) => /[A-Z]/.test(p) },
@@ -33,6 +35,29 @@ function GoogleButton({ next }: { next: string }) {
       </a>
       <div className="or"><span>or</span></div>
     </>
+  );
+}
+
+/** "Continue with SSO": the email typed below names an organisation by its verified domain. Not on a personal install. */
+function SsoEntry({ next, email, onError }: { next: string; email: string; onError: (m: string | null) => void }) {
+  const mode = useMode();
+  const [busy, setBusy] = useState(false);
+  if (!mode || mode === "personal") return null;
+  const go = async () => {
+    onError(null);
+    if (!email.trim()) return onError("Enter your work email below, then choose Continue with SSO.");
+    setBusy(true);
+    try {
+      window.location.assign((await auth.ssoStart(email.trim(), next)).url);
+    } catch (err) {
+      onError((err as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <button type="button" className="btn-google" disabled={busy} onClick={() => void go()}>
+      Continue with SSO
+    </button>
   );
 }
 
@@ -63,7 +88,7 @@ function useNextTarget(): { next: string; external: boolean } {
 }
 
 export function LoginPage() {
-  const { signIn } = useAuth();
+  const { signIn, emailEnabled } = useAuth();
   const nav = useNavigate();
   const [params] = useSearchParams();
   const { next, external } = useNextTarget();
@@ -101,11 +126,15 @@ export function LoginPage() {
         {params.get("notice") === "deleted" && (
           <p className="auth-alt">Your account and everything in it have been deleted.</p>
         )}
+        {params.get("notice") === "reset" && (
+          <p className="auth-alt" role="status">Your password was changed. Sign in with the new one.</p>
+        )}
         {connecting && (
           <p className="auth-alt">Sign in to connect <strong>{connecting}</strong> to your mindmaps.</p>
         )}
 
         <GoogleButton next={next} />
+        <SsoEntry next={next} email={email} onError={setError} />
 
         {error && <div className="auth-error">{error}</div>}
 
@@ -133,16 +162,22 @@ export function LoginPage() {
         <button className="auth-submit" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
+        {emailEnabled && (
+          <p className="auth-alt">
+            <Link to="/forgot-password">Forgot your password?</Link>
+          </p>
+        )}
         <p className="auth-alt">
           No account? <Link to="/register">Create one</Link>
         </p>
+        <LegalLinks />
       </form>
     </div>
   );
 }
 
 export function RegisterPage() {
-  const { signIn } = useAuth();
+  const { signIn, turnstileSiteKey } = useAuth();
   const nav = useNavigate();
 
   const [name, setName] = useState("");
@@ -151,6 +186,9 @@ export function RegisterPage() {
   const [touched, setTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const [checked, setChecked] = useState(false);
+  const challenge = useRef<TurnstileHandle>(null);
 
   const failing = RULES.filter((r) => !r.ok(password));
   const strong = failing.length === 0;
@@ -164,14 +202,38 @@ export function RegisterPage() {
     setBusy(true);
     setError(null);
     try {
-      const { user } = await auth.register(email, password, name);
-      signIn(user);
-      nav("/app", { replace: true });
+      const out = await auth.register(email, password, name, token ?? undefined);
+      if ("user" in out) {
+        signIn(out.user);
+        nav("/app", { replace: true });
+      } else {
+        // The same answer whether or not the address already had an account.
+        setChecked(true);
+        setBusy(false);
+      }
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
+      challenge.current?.reset(); // a token works once
     }
   }
+
+  if (checked)
+    return (
+      <div className="auth-page">
+        <div className="auth-card">
+          <Link to="/" className="auth-brand">mindmaps</Link>
+          <h1>Check your email</h1>
+          <p className="auth-alt" role="status">
+            We've sent a message to <strong>{email.trim().toLowerCase()}</strong>. Open the link in it to confirm the
+            address. If you already had an account, the message says so and shows how to sign in.
+          </p>
+          <p className="auth-alt">
+            <Link to="/login">Sign in</Link>
+          </p>
+        </div>
+      </div>
+    );
 
   return (
     <div className="auth-page">
@@ -222,11 +284,17 @@ export function RegisterPage() {
           </ul>
         )}
 
-        <button className="auth-submit" disabled={busy || !strong}>
+        {turnstileSiteKey && <Turnstile ref={challenge} siteKey={turnstileSiteKey} action="register" onToken={setToken} />}
+
+        <button className="auth-submit" disabled={busy || !strong || (!!turnstileSiteKey && !token)}>
           {busy ? "Creating…" : "Create account"}
         </button>
         <p className="auth-alt">
           Already have an account? <Link to="/login">Sign in</Link>
+        </p>
+        <p className="auth-alt legal-agree">
+          By creating an account you agree to the <Link to="/terms">Terms</Link> and the{" "}
+          <Link to="/privacy">Privacy policy</Link>.
         </p>
       </form>
     </div>

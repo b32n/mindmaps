@@ -86,6 +86,8 @@ export function LandingFooter() {
         <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noreferrer noopener">
           MCP
         </a>
+        <Link to="/privacy">Privacy</Link>
+        <Link to="/terms">Terms</Link>
         <Link to="/register">Get started</Link>
       </nav>
     </footer>

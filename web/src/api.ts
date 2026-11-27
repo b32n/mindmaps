@@ -38,6 +38,69 @@ export interface Workspace {
   owner_id: string;
   personal: number;
   role: "owner" | "admin" | "editor" | "viewer";
+  updated_at?: number | null;
+  /** This session is locked out of it by the organisation's enforce-SSO. */
+  sso_required?: boolean;
+}
+
+/** An organisation's verified domain, as the settings show it. */
+export interface OrgDomain {
+  id: string;
+  domain: string;
+  status: "pending" | "verified" | "removed";
+  record: { type: "TXT"; name: string; value: string } | null;
+  verified_at: number | null;
+  created_at: number;
+}
+
+export interface OrgPolicy {
+  auto_join: boolean;
+  default_role: "viewer" | "editor";
+  restrict_invites: boolean;
+  enforce_sso: boolean;
+}
+
+export interface OrgSso {
+  status: "none" | "draft" | "tested" | "enabled";
+  issuer: string | null;
+  client_id: string | null;
+  has_secret: boolean;
+  tested_at: number | null;
+  redirect_uri: string;
+}
+
+export interface OrgSecurity {
+  workspace_id: string;
+  domains: OrgDomain[];
+  policy: OrgPolicy;
+  sso: OrgSso;
+}
+
+/** An organisation whose verified domain covers this person's address and that they may join. */
+export interface JoinOffer {
+  workspace_id: string;
+  name: string;
+  role: "viewer" | "editor";
+}
+
+/** A workspace its owner closed. It can be reopened until `reopen_until`. */
+export interface ClosedWorkspace {
+  id: string;
+  name: string;
+  closed_at: number;
+  reopen_until: number;
+  reopenable: boolean;
+}
+
+/** An invitation waiting for the signed-in person to accept or decline it. */
+export interface MyInvite {
+  token: string;
+  target_type: "workspace" | "board" | "node";
+  target_id: string;
+  target_name: string;
+  role: "viewer" | "editor";
+  invited_by: { email: string; name: string | null };
+  created_at: number;
 }
 
 export interface Member {
@@ -52,6 +115,8 @@ export interface PendingInvite {
   token: string;
   email: string;
   role: "viewer" | "editor";
+  /** Whether the address already has an account, so the invite is waiting on an answer rather than a sign-up. */
+  has_account?: number;
 }
 
 /** A share link, as its owner sees it. */
@@ -193,12 +258,52 @@ export interface User {
 /** What kind of instance this is; set by MINDMAPS_MODE on the Worker (docs/MODES.md). */
 export type Mode = "personal" | "org" | "multitenant";
 
+/** Who runs this instance, for /privacy and /terms. Both are whatever the operator set, or null. */
+export interface LegalInfo {
+  mode: Mode;
+  operator: { name: string | null; contact: string | null };
+}
+
+export const legal = {
+  info: () => req<LegalInfo>("/legal"),
+};
+
+
+/** What the organisation means for this person on this instance (GET /api/organisation). */
+export interface OrganisationInfo {
+  mode: Mode;
+  state: "disabled" | "setup" | "waiting" | "member" | "outside" | "available";
+  can_create: boolean;
+  organisation: { workspace_id: string; name: string; role: Workspace["role"] } | null;
+  organisation_name: string | null;
+  adoptable: { id: string; name: string }[];
+  gated: boolean;
+}
+
 export const auth = {
-  me: () => req<{ user: User | null; googleEnabled: boolean; mode: Mode }>("/auth/me"),
-  register: (email: string, password: string, name: string) =>
-    req<{ user: User }>("/auth/register", {
+  /** "Sign in with SSO": the address names an organisation; the answer is where its provider is. */
+  ssoStart: (email: string, next?: string) =>
+    req<{ url: string }>("/auth/sso/start", { method: "POST", body: JSON.stringify({ email, next }) }),
+  me: () =>
+    req<{
+      user: User | null;
+      googleEnabled: boolean;
+      mode: Mode;
+      /** can this instance send email; verification and reset need it */
+      emailEnabled: boolean;
+      /** whether the signed-in address has been confirmed; null signed out */
+      emailVerified: boolean | null;
+      /** the public key of the sign-up check (Cloudflare Turnstile), or null when the instance has none */
+      turnstileSiteKey: string | null;
+    }>("/auth/me"),
+  /**
+   * With email on, the answer is `{ confirm: "email" }` for every address, new or
+   * taken, and nobody is signed in; without email the account is signed in at once.
+   */
+  register: (email: string, password: string, name: string, turnstileToken?: string) =>
+    req<{ user: User } | { ok: true; confirm: "email" }>("/auth/register", {
       method: "POST",
-      body: JSON.stringify({ email, password, name }),
+      body: JSON.stringify({ email, password, name, turnstileToken }),
     }),
   login: (email: string, password: string) =>
     req<{ user: User }>("/auth/login", {
@@ -206,6 +311,17 @@ export const auth = {
       body: JSON.stringify({ email, password }),
     }),
   logout: () => req<{ ok: true }>("/auth/logout", { method: "POST" }),
+  verifyEmail: (token: string) =>
+    req<{ ok: true }>("/auth/verify-email", { method: "POST", body: JSON.stringify({ token }) }),
+  resendVerification: (turnstileToken?: string) =>
+    req<{ ok: true; alreadyVerified?: boolean }>("/auth/resend-verification", {
+      method: "POST",
+      body: JSON.stringify({ turnstileToken }),
+    }),
+  forgotPassword: (email: string, turnstileToken?: string) =>
+    req<{ ok: true }>("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email, turnstileToken }) }),
+  resetPassword: (token: string, password: string) =>
+    req<{ ok: true }>("/auth/reset-password", { method: "POST", body: JSON.stringify({ token, password }) }),
 
   /** Harnesses connected over MCP, grouped by client. */
   connections: () => req<Connection[]>("/auth/connections"),
@@ -281,6 +397,33 @@ export const api = {
   createWorkspace: (name: string) =>
     req<Workspace>("/workspaces", { method: "POST", body: JSON.stringify({ name }) }),
 
+  organisation: () => req<OrganisationInfo>("/organisation"),
+
+  // Domains, policy and SSO of an organisation (owner/admin; SSO owner only).
+  security: (ws: string) => req<OrgSecurity>(`/workspaces/${ws}/security`),
+  addDomain: (ws: string, domain: string) =>
+    req<OrgDomain>(`/workspaces/${ws}/domains`, { method: "POST", body: JSON.stringify({ domain }) }),
+  verifyDomain: (ws: string, id: string) =>
+    req<{ ok: true; domain: OrgDomain }>(`/workspaces/${ws}/domains/${id}/verify`, { method: "POST" }),
+  removeDomain: (ws: string, id: string) => req<{ ok: true }>(`/workspaces/${ws}/domains/${id}`, { method: "DELETE" }),
+  setPolicy: (ws: string, patch: Partial<Omit<OrgPolicy, "enforce_sso">>) =>
+    req<{ policy: OrgPolicy }>(`/workspaces/${ws}/policy`, { method: "PUT", body: JSON.stringify(patch) }),
+  saveSso: (ws: string, body: { issuer: string; client_id: string; client_secret?: string }) =>
+    req<{ sso: OrgSso }>(`/workspaces/${ws}/sso`, { method: "PUT", body: JSON.stringify(body) }),
+  removeSso: (ws: string) => req<{ ok: true; sso: OrgSso }>(`/workspaces/${ws}/sso`, { method: "DELETE" }),
+  testSso: (ws: string) => req<{ url: string }>(`/workspaces/${ws}/sso/test`, { method: "POST" }),
+  enableSso: (ws: string, enabled: boolean) =>
+    req<{ ok: true; sso: OrgSso }>(`/workspaces/${ws}/sso/enable`, { method: "POST", body: JSON.stringify({ enabled }) }),
+  enforceSso: (ws: string, enforced: boolean) =>
+    req<{ ok: true; enforce_sso: boolean }>(`/workspaces/${ws}/sso/enforce`, { method: "POST", body: JSON.stringify({ enforced }) }),
+  joinOffers: () => req<{ offers: JoinOffer[]; unproven: boolean }>("/join-offers"),
+  joinOrganisation: (ws: string) =>
+    req<{ ok: true; workspace_id: string; role: string }>(`/workspaces/${ws}/join`, { method: "POST" }),
+
+  /** A name for a new one, or (org mode, existing data) the id of a workspace you own to make it the organisation. */
+  createOrganisation: (body: { name?: string; workspace_id?: string }) =>
+    req<Workspace & { adopted: boolean }>("/organisation", { method: "POST", body: JSON.stringify(body) }),
+
   /** `kind` is the route segment: workspaces, boards or artefacts. */
   members: (kind: "workspaces" | "boards" | "artefacts", id: string) =>
     req<{
@@ -296,7 +439,7 @@ export const api = {
     email: string,
     role: "viewer" | "editor",
   ) =>
-    req<{ added?: { email: string }; invited?: { email: string } }>(`/${kind}/${id}/members`, {
+    req<{ added?: { email: string }; invited?: { email: string; existing?: boolean } }>(`/${kind}/${id}/members`, {
       method: "POST",
       body: JSON.stringify({ email, role }),
     }),
@@ -313,6 +456,34 @@ export const api = {
     req<{ ok: true; owner_id: string }>(`/workspaces/${id}/transfer`, {
       method: "POST",
       body: JSON.stringify({ user_id: userId }),
+    }),
+
+  renameWorkspace: (id: string, name: string) =>
+    req<{ id: string; name: string; updated_at: number }>(`/workspaces/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+
+  /** Owner only. Soft: the workspace can be reopened for 30 days. */
+  closeWorkspace: (id: string) =>
+    req<{ ok: true; closed_at: number; reopen_until: number }>(`/workspaces/${id}/close`, { method: "POST" }),
+
+  reopenWorkspace: (id: string) => req<{ ok: true }>(`/workspaces/${id}/reopen`, { method: "POST" }),
+
+  /** The workspaces this person closed. */
+  closedWorkspaces: () => req<ClosedWorkspace[]>("/workspaces/closed"),
+
+  /** Invitations waiting for this person. */
+  invites: () => req<{ invites: MyInvite[] }>("/invites").then((r) => r.invites),
+  acceptInvite: (token: string) =>
+    req<{ ok: true; target_type: MyInvite["target_type"]; target_id: string }>(`/invites/${token}/accept`, { method: "POST" }),
+  declineInvite: (token: string) => req<{ ok: true }>(`/invites/${token}/decline`, { method: "POST" }),
+
+  /** Move a top-level mindmap, with its sub-mindmaps, to another workspace. */
+  moveBoard: (id: string, workspaceId: string) =>
+    req<{ ok: true; id: string; workspace_id: string }>(`/boards/${id}/move`, {
+      method: "POST",
+      body: JSON.stringify({ workspace_id: workspaceId }),
     }),
 
   revokeInvite: (token: string) => req<{ ok: true }>(`/invites/${token}`, { method: "DELETE" }),
