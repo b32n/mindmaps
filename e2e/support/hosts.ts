@@ -85,3 +85,21 @@ export const switchWorker = {
   baseURL: `http://127.0.0.1:${SWITCH_PORT}`,
   stateDir: ".e2e-state-mode-switch",
 };
+
+/**
+ * The email Worker (wrangler.test-mail.toml): outbound mail on, captured rather
+ * than sent, and Google sign-in pointed at a fake Google on the next port. They
+ * sit after the mode Workers, one port clear of them (the slot right after the mode
+ * Workers is the one the mode switch Worker takes); `E2E_MAIL_PORT` and `E2E_FAKE_GOOGLE_PORT` move them.
+ */
+export const MAIL_PORT = port("E2E_MAIL_PORT", MODE_PORT_BASE + MODE_CASES.length + 1);
+export const FAKE_GOOGLE_PORT = port("E2E_FAKE_GOOGLE_PORT", MAIL_PORT + 1);
+
+export const mailWorker = {
+  port: MAIL_PORT,
+  baseURL: `http://127.0.0.1:${MAIL_PORT}`,
+  vars: {
+    GOOGLE_TOKEN_URL: `http://127.0.0.1:${FAKE_GOOGLE_PORT}/token`,
+    GOOGLE_TOKENINFO_URL: `http://127.0.0.1:${FAKE_GOOGLE_PORT}/tokeninfo`,
+  },
+};

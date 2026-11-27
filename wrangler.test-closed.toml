@@ -28,3 +28,7 @@ bucket_name = "mindmaps-e2e-closed"
 [[r2_buckets]]
 binding = "ARTEFACTS"
 bucket_name = "mindmaps-e2e-closed"
+
+[vars]
+# Per-client rate limits read this header, which the suite sends only where it tests them (docs/EMAIL.md).
+CLIENT_IP_HEADER = "x-e2e-client-ip"

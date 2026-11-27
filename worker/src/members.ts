@@ -6,12 +6,12 @@
  * it is addressed to accepts it (`acceptInvite`). Nothing joins anyone on its
  * own: not signing up, not signing in by any route, not being invited.
  *
- * That is deliberate, and it is a narrowing rather than a fix. The address
- * someone signs up with is still not verified, so a stranger who registers an
- * address that was invited can see the invitation and accept it. What changed is
- * that it takes an explicit act on their side, that an account which already
- * exists cannot be added without its owner saying yes, and that the invitation
- * can be declined. Verifying addresses is a separate change.
+ * The address someone signs up with is the one invitations are matched to, so
+ * on an instance that can send email an invitation is only listed to, and only
+ * accepted by, an account whose address is verified (`mayClaimInvites`). Beyond
+ * that it takes an explicit act on their side, an account which already exists
+ * cannot be added without its owner saying yes, and the invitation can be
+ * declined.
  *
  * The one thing that still adds a person directly is sharing a single mindmap or
  * artefact with an existing account: it grants one thing, and not the
@@ -23,11 +23,12 @@
  * invitation to a lookalike address.
  */
 
+import { mayClaimInvites, type EmailAuthEnv } from "./emailauth";
 import { INVITE_RESTRICTED_MESSAGE, inviteRefused, workspaceOfTarget } from "./org-policy";
 import { assertNotBlocked } from "./scope";
 import { MEMBER_ROLE, NOT_CLOSED, canAdmin, canWrite, boardRole, isOwner, nodeRole, workspaceRole, type Role } from "./access";
 
-export interface MemberEnv {
+export interface MemberEnv extends EmailAuthEnv {
   DB: D1Database;
 }
 
@@ -148,8 +149,14 @@ export async function invite(
     }
     const no = await restricted();
     if (no) return no;
-    await addMember(env, target, targetId, existing.id, role, inviterId);
-    return { added: { userId: existing.id, email: existing.email, role } };
+    // An account whose address was never proven may belong to someone who only
+    // typed it in. Adding it would hand them access meant for the real owner,
+    // so the share waits as an invitation, as it would for an address with no
+    // account, and can be accepted once the address is verified (mayClaimInvites).
+    if (await mayClaimInvites(env, existing.id)) {
+      await addMember(env, target, targetId, existing.id, role, inviterId);
+      return { added: { userId: existing.id, email: existing.email, role } };
+    }
   }
 
   const no = await restricted();
@@ -398,6 +405,11 @@ export async function acceptInvite(
   const found = await mine(env, rawEmail, token);
   if ("fail" in found) return found.fail;
   const { row } = found;
+
+  // Invitations are addressed to an email, so they are only handed to an account
+  // that has proven it owns the address (when the instance can send mail).
+  if (!(await mayClaimInvites(env, userId)))
+    return { ok: false, status: 403, error: "Confirm your email address first.", code: "email_unverified" };
 
   if (await unavailable(env.DB, row)) return { ok: false, status: 404, error: "not found" };
 

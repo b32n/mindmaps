@@ -32,4 +32,6 @@ binding = "ARTEFACTS"
 bucket_name = "mindmaps-e2e-origins"
 
 [vars]
+# Per-client rate limits read this header, which the suite sends only where it tests them (docs/EMAIL.md).
+CLIENT_IP_HEADER = "x-e2e-client-ip"
 ALLOW_SIGNUPS = "true"

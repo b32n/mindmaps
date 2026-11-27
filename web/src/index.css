@@ -1996,3 +1996,23 @@ a.card-open { display: block; box-sizing: border-box; text-align: center; text-d
 }
 .join-banner { flex-direction: column; align-items: stretch; margin: var(--s2); border: 1px solid var(--line); border-radius: var(--r-sm); }
 .join-offer { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }
+
+/* Unconfirmed email, over the app. Same family as .board-notice: a quiet card,
+   not an alarm. */
+.verify-banner {
+  position: fixed; top: var(--s3); left: 50%; transform: translateX(-50%);
+  z-index: 60; max-width: min(640px, calc(100% - 2 * var(--s4)));
+  display: flex; align-items: center; gap: var(--s3);
+  padding: 9px var(--s3);
+  border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--e2);
+  font-size: var(--t-sm); line-height: 1.45; color: var(--ink);
+}
+.verify-banner-btn {
+  flex: 0 0 auto; font: inherit; font-size: var(--t-sm); font-weight: 500;
+  padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--accent); cursor: pointer;
+}
+.verify-banner-btn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent-line); }
+.verify-banner-btn:disabled { opacity: 0.45; cursor: default; }
+a.auth-link-button { text-align: center; text-decoration: none; }

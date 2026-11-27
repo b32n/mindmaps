@@ -32,7 +32,7 @@ const enc = new TextEncoder();
 const toHex = (buf: ArrayBuffer) =>
   [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
-const randomHex = (bytes: number) =>
+export const randomHex = (bytes: number) =>
   toHex(crypto.getRandomValues(new Uint8Array(bytes)).buffer);
 
 // --- passwords --------------------------------------------------------------
@@ -134,7 +134,7 @@ export function passwordProblems(password: string): string[] {
 // --- sessions ---------------------------------------------------------------
 
 /** Only the hash is stored, so a database leak doesn't yield live sessions. */
-async function sha256(value: string): Promise<string> {
+export async function sha256(value: string): Promise<string> {
   return toHex(await crypto.subtle.digest("SHA-256", enc.encode(value)));
 }
 

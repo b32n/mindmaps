@@ -414,6 +414,7 @@ export async function closeAccount(db: D1Database, userId: string): Promise<void
     // worth keeping.
     one(`UPDATE oauth_tokens SET revoked = 1 WHERE user_id = ?`, userId),
     one(`DELETE FROM oauth_codes WHERE user_id = ?`, userId),
+    one(`UPDATE email_tokens SET status = 'revoked', updated_at = ?1 WHERE user_id = ?2 AND status = 'active'`, at, userId),
     // Every way in that a link or a grant gives: links on their artefacts and
     // mindmaps, grants of either to anyone, and whatever was shared *to* them.
     one(

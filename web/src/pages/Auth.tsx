@@ -8,7 +8,7 @@ import { useAuth, useMode } from "../AuthContext";
  * types so the rules are visible up front rather than discovered one at a time
  * through rejections. The server remains the authority.
  */
-const RULES: { label: string; ok: (p: string) => boolean }[] = [
+export const RULES: { label: string; ok: (p: string) => boolean }[] = [
   { label: "12 characters or more", ok: (p) => p.length >= 12 },
   { label: "a lowercase letter", ok: (p) => /[a-z]/.test(p) },
   { label: "an uppercase letter", ok: (p) => /[A-Z]/.test(p) },
@@ -86,7 +86,7 @@ function useNextTarget(): { next: string; external: boolean } {
 }
 
 export function LoginPage() {
-  const { signIn } = useAuth();
+  const { signIn, emailEnabled } = useAuth();
   const nav = useNavigate();
   const [params] = useSearchParams();
   const { next, external } = useNextTarget();
@@ -124,6 +124,9 @@ export function LoginPage() {
         {params.get("notice") === "deleted" && (
           <p className="auth-alt">Your account and everything in it have been deleted.</p>
         )}
+        {params.get("notice") === "reset" && (
+          <p className="auth-alt" role="status">Your password was changed. Sign in with the new one.</p>
+        )}
         {connecting && (
           <p className="auth-alt">Sign in to connect <strong>{connecting}</strong> to your mindmaps.</p>
         )}
@@ -157,6 +160,11 @@ export function LoginPage() {
         <button className="auth-submit" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
+        {emailEnabled && (
+          <p className="auth-alt">
+            <Link to="/forgot-password">Forgot your password?</Link>
+          </p>
+        )}
         <p className="auth-alt">
           No account? <Link to="/register">Create one</Link>
         </p>

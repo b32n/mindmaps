@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, type Board as BoardT, type MyInvite, type OrganisationInfo, type Workspace } from "./api";
 import { useAuth, useMode } from "./AuthContext";
+import { VerifyBanner } from "./pages/EmailAuth";
 import { OrganisationSetup, OrganisationWaiting } from "./OrganisationGate";
 import { Board } from "./Board";
 import { Modal } from "./ui/Modal";
@@ -308,6 +309,7 @@ export function BoardApp() {
 
   return (
     <div className="app">
+      <VerifyBanner />
       <Recall />
       <nav className="rail">
         {/* the brand IS the section label here — a separate "Mindmaps" heading

@@ -273,7 +273,16 @@ export const auth = {
   /** "Sign in with SSO": the address names an organisation; the answer is where its provider is. */
   ssoStart: (email: string, next?: string) =>
     req<{ url: string }>("/auth/sso/start", { method: "POST", body: JSON.stringify({ email, next }) }),
-  me: () => req<{ user: User | null; googleEnabled: boolean; mode: Mode }>("/auth/me"),
+  me: () =>
+    req<{
+      user: User | null;
+      googleEnabled: boolean;
+      mode: Mode;
+      /** can this instance send email; verification and reset need it */
+      emailEnabled: boolean;
+      /** whether the signed-in address has been confirmed; null signed out */
+      emailVerified: boolean | null;
+    }>("/auth/me"),
   register: (email: string, password: string, name: string) =>
     req<{ user: User }>("/auth/register", {
       method: "POST",
@@ -285,6 +294,14 @@ export const auth = {
       body: JSON.stringify({ email, password }),
     }),
   logout: () => req<{ ok: true }>("/auth/logout", { method: "POST" }),
+  verifyEmail: (token: string) =>
+    req<{ ok: true }>("/auth/verify-email", { method: "POST", body: JSON.stringify({ token }) }),
+  resendVerification: () =>
+    req<{ ok: true; alreadyVerified?: boolean }>("/auth/resend-verification", { method: "POST" }),
+  forgotPassword: (email: string) =>
+    req<{ ok: true }>("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
+  resetPassword: (token: string, password: string) =>
+    req<{ ok: true }>("/auth/reset-password", { method: "POST", body: JSON.stringify({ token, password }) }),
 
   /** Harnesses connected over MCP, grouped by client. */
   connections: () => req<Connection[]>("/auth/connections"),
