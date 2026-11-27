@@ -8,7 +8,7 @@
  * than a demo.
  */
 
-import { NODE_READABLE } from "./access";
+import { IN_WORKSPACE, NODE_READABLE } from "./access";
 import { INDEXABLE_SQL } from "./artefacts";
 
 export interface Neighbour {
@@ -118,6 +118,8 @@ export async function neighbourhoods(
   userId: string,
   rootIds: string[],
   perRoot: number,
+  /** Stay inside this workspace (plus what was shared in), as `IN_WORKSPACE` does. Null: no limit. */
+  onlyIn: string | null = null,
 ): Promise<Map<string, Neighbour[]>> {
   const out = new Map<string, Neighbour[]>();
   if (!rootIds.length) return out;
@@ -138,10 +140,12 @@ export async function neighbourhoods(
          ) r
          JOIN nodes  n ON n.id = r.other
          JOIN boards b ON b.id = n.board_id
-        WHERE ${NODE_READABLE("n", "b", rootIds.length * 2 + 1)} AND n.type IN (${INDEXABLE_SQL})
+        WHERE ${NODE_READABLE("n", "b", rootIds.length * 2 + 1)}${
+          onlyIn ? ` AND ${IN_WORKSPACE("b", "n", rootIds.length * 2 + 2, rootIds.length * 2 + 1)}` : ""
+        } AND n.type IN (${INDEXABLE_SQL})
         ORDER BY n.updated_at DESC`,
     )
-    .bind(...rootIds, ...rootIds, userId)
+    .bind(...rootIds, ...rootIds, userId, ...(onlyIn ? [onlyIn] : []))
     .all<Neighbour & { root: string }>();
 
   for (const row of results ?? []) {

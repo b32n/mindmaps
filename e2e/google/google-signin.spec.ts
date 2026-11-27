@@ -1,14 +1,15 @@
 import { test, expect, register } from "../fixtures";
-import { googleWorker } from "../support/hosts";
+import { mailWorker } from "../support/hosts";
 import { expectSignedInShell } from "../support/auth";
 import { newUser } from "../support/users";
 
-// Runs against the Worker whose Google endpoints are faked
-// (wrangler.test-google.toml, e2e/support/google-entry.ts).
+// Runs against the email Worker, whose Google endpoints are faked
+// (e2e/support/fake-google.mjs).
 
-test.use({ baseURL: googleWorker.baseURL });
+test.use({ baseURL: mailWorker.baseURL });
 
-const b64url = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const b64url = (o: object) =>
+  Buffer.from(JSON.stringify({ aud: "e2e-google-client", email_verified: "true", ...o })).toString("base64url");
 
 /** Walk the real start -> callback flow; `code` carries the Google identity. */
 async function googleSignIn(page: import("@playwright/test").Page, who: { sub: string; email: string; name: string }) {
@@ -32,7 +33,7 @@ test.describe("Google sign-in", () => {
 
     // same content as a password account's starter board
     const pw = newUser("pw");
-    const other = await page.context().browser()!.newContext({ baseURL: googleWorker.baseURL });
+    const other = await page.context().browser()!.newContext({ baseURL: mailWorker.baseURL });
     try {
       await register(other.request, pw);
       const mine = await boards(page);

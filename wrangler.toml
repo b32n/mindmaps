@@ -80,6 +80,10 @@ crons = ["* * * * *"]
 # Worker answer every request with a 500 naming this variable. Keep it under this
 # single vars table.
 #
+# Optional, under the same vars table (INSTALL.md → Legal pages and security
+# contact): OPERATOR_NAME and OPERATOR_CONTACT (who runs this instance, shown on
+# /privacy and /terms) and SECURITY_CONTACT (Contact in /.well-known/security.txt).
+#
 # Secrets (`npx wrangler secret put NAME`, never committed):
 #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   optional Google sign-in
 #   MINDBOX_SECRET   optional; signs HTML-artefact URLs. Generated and kept in D1

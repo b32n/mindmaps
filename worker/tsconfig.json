@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*.ts", "../e2e/support/google-entry.ts", "../worker-configuration.d.ts"]
+  "include": ["src/**/*.ts", "../worker-configuration.d.ts"]
 }

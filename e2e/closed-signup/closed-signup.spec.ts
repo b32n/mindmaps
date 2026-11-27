@@ -82,6 +82,10 @@ test.describe("an invitation opens the door for that address only", () => {
 
     await signUpViaForm(page, guest);
     await expectSignedInShell(page, guest.name);
+    // the invitation opened the door; the mindmap itself is theirs once they accept it
+    await expect(page.getByRole("button", { name: `For ${guest.name}` })).toHaveCount(0);
+    await page.locator(".ws-trigger").click();
+    await page.locator(".ws-invite").filter({ hasText: `For ${guest.name}` }).getByRole("button", { name: "Accept" }).click();
     await expect(page.getByRole("button", { name: `For ${guest.name}` })).toBeVisible();
     await host.dispose();
   });

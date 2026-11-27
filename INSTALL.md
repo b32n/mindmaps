@@ -37,9 +37,10 @@ to multitenant.
 
 The installer asks whether this install is for **personal** use (you, plus the
 people you invite) or an **org** (a team or company). It is stored as
-`MINDMAPS_MODE` and can be changed later. For now it only records the choice;
-see [docs/MODES.md](./docs/MODES.md) for what each mode means, how to set or
-change it, and what is not enforced yet.
+`MINDMAPS_MODE` and can be changed later. Personal has no team spaces (it hides
+them; nothing is deleted, and switching back shows them again); sharing works in
+every mode. See [docs/MODES.md](./docs/MODES.md) for what each mode does and how
+to set or change it.
 
 - **Deploy button** installs are `personal`: that is the default committed in
   `wrangler.toml`.
@@ -64,6 +65,55 @@ to everyone:
 ```bash
 npx wrangler secret put ALLOW_SIGNUPS      # enter: true
 ```
+
+## Legal pages and security contact
+
+Your instance serves a privacy policy at `/privacy`, terms at `/terms` and a
+security contact at `/.well-known/security.txt`. On a `personal` or `org`
+instance the pages say that **you** run it and control the data, and that the
+text is a template to review and replace; they decide nothing legal for you.
+All three variables are optional, and nothing is invented when they are unset.
+Set them in `wrangler.local.toml` under `[vars]`, or with `npx wrangler secret put`:
+
+| Variable | What it does |
+| --- | --- |
+| `OPERATOR_NAME` | Who runs this instance, as shown on `/privacy` and `/terms`. |
+| `OPERATOR_CONTACT` | How to reach them: an email address or an `https://` URL. |
+| `SECURITY_CONTACT` | The `Contact` in `security.txt`: an `https://` URL, `mailto:` address or a bare email. Unset, it points at the Mindmaps project's private vulnerability form, so reports about *your* deployment would go to the wrong people; set it. |
+
+`Expires` in `security.txt` is computed on every request (about a year out), so
+it never lapses.
+
+## Email
+
+With a domain of your own the installer also sets up outbound email (confirm an
+address, reset a password) through Cloudflare Email Sending: it onboards the
+domain, adds the DNS records and writes the sender to your config. Flags:
+`--mail-domain`, `--mail-from`, `--no-email`. Without it the app works as before.
+See [docs/EMAIL.md](docs/EMAIL.md) for what it does, what to do when a step
+cannot be automated, and what an unconfirmed address can and cannot do.
+
+## Sign-up protection
+
+Where email is on, sign-up answers the same for a new address and a taken one, so it
+cannot be used to find out who has an account (the owner of a taken address is emailed
+instead). Optionally the installer also protects sign-up with Cloudflare Turnstile: it
+is on by default for the hosted service's `multitenant` mode and asked for `personal`
+and `org`. Flags: `--turnstile` (make a widget for your `--domain`),
+`--turnstile-site-key <key>` with the secret in the `TURNSTILE_SECRET_KEY` environment
+variable (for a widget you made in the dashboard), `--no-turnstile`. The secret goes to
+`wrangler secret put` and is never printed. See [docs/SIGNUP.md](docs/SIGNUP.md) for
+what each does, the API token it needs and what to do by hand.
+
+## Single sign-on and verified domains (optional)
+
+For org and multitenant installs: the owner of an organisation can verify its
+email domains, set a join policy and connect an OIDC provider from the workspace
+dialog. Nothing needs installing. One optional secret, `SSO_SECRET_KEY`
+(`npx wrangler secret put SSO_SECRET_KEY`), encrypts the stored client secrets;
+without it a key is generated and kept in the database. Domain verification uses
+Cloudflare's DNS-over-HTTPS and needs no setup. See [docs/SSO.md](docs/SSO.md).
+A personal install refuses all of it.
 
 ## Your own domain
 

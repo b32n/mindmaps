@@ -43,6 +43,7 @@
  */
 
 import { MEMBER_ROLE } from "./access";
+import { notBlocked } from "./scope";
 import { verifyPassword } from "./auth";
 import { artefactKey, isArtefact } from "./artefacts";
 import { filesOf, type FileEnv } from "./files";
@@ -124,6 +125,15 @@ export function exportAccount(env: AccountEnv, who: Who): { body: ReadableStream
   return { body: readable, done };
 }
 
+/**
+ * What an export may include: the same sets as above, minus any organisation this
+ * session is locked out of by enforce-SSO (scope.ts). The deletion below uses the
+ * unfiltered sets on purpose: closing an account must reach everything it owned.
+ */
+const EXPORT_WS = `(SELECT id FROM workspaces WHERE ${notBlocked("id")} owner_id = ?1)`;
+const EXPORT_BOARDS = `(SELECT id FROM boards WHERE workspace_id IN ${EXPORT_WS})`;
+const EXPORT_NODES = `(SELECT id FROM nodes WHERE board_id IN ${EXPORT_BOARDS})`;
+
 async function build(env: AccountEnv, who: Who, zip: ZipWriter): Promise<void> {
   const db = env.DB;
   const me = who.id;
@@ -132,20 +142,20 @@ async function build(env: AccountEnv, who: Who, zip: ZipWriter): Promise<void> {
   const workspaces = await all(
     `SELECT w.id, w.name, w.personal, w.created_at,
             (SELECT COUNT(*) FROM workspace_members m WHERE m.workspace_id = w.id) AS members
-       FROM workspaces w WHERE w.owner_id = ?1 ORDER BY w.personal DESC, w.created_at`,
+       FROM workspaces w WHERE ${notBlocked("w.id")} w.owner_id = ?1 ORDER BY w.personal DESC, w.created_at`,
   );
 
   const boards = (
     await all(
       `SELECT id, name, status, parent_id, node_id, workspace_id, description, labels, pinned, position,
               home_view, created_at, updated_at
-         FROM boards WHERE workspace_id IN ${OWNED_WS} ORDER BY created_at`,
+         FROM boards WHERE workspace_id IN ${EXPORT_WS} ORDER BY created_at`,
     )
   ).map((b) => ({ ...b, labels: parseJson(b.labels) ?? [], pinned: !!b.pinned }));
 
   const nodes = await all(
     `SELECT n.id, n.board_id, n.type, n.title, n.body, n.doc, n.x, n.y, n.w, n.h, n.data, n.created_at, n.updated_at
-       FROM nodes n WHERE n.board_id IN ${OWNED_BOARDS} ORDER BY n.created_at`,
+       FROM nodes n WHERE n.board_id IN ${EXPORT_BOARDS} ORDER BY n.created_at`,
   );
   const cards = nodes.map((n) => ({ ...n, doc: parseJson(n.doc), data: parseJson(n.data) ?? {} }));
 
@@ -154,13 +164,13 @@ async function build(env: AccountEnv, who: Who, zip: ZipWriter): Promise<void> {
   const links = await all(
     `SELECT e.id, e.source_id, e.target_id, e.label, e.source_handle, e.target_handle, e.created_at
        FROM edges e
-      WHERE e.source_id IN ${OWNED_NODES} AND e.target_id IN ${OWNED_NODES}
+      WHERE e.source_id IN ${EXPORT_NODES} AND e.target_id IN ${EXPORT_NODES}
       ORDER BY e.created_at`,
   );
 
   const fileRows = await all(
     `SELECT f.id, f.node_id, f.name, f.size, f.content_type, f.description, f.uploaded_at, f.uploaded_by, f.r2_key
-       FROM files f WHERE f.node_id IN ${OWNED_NODES} ORDER BY f.node_id, f.position, f.uploaded_at`,
+       FROM files f WHERE f.node_id IN ${EXPORT_NODES} ORDER BY f.node_id, f.position, f.uploaded_at`,
   );
 
   const versions = (
@@ -168,7 +178,7 @@ async function build(env: AccountEnv, who: Who, zip: ZipWriter): Promise<void> {
       `SELECT id, node_id, board_id, workspace_id, seq, node_type, op, title, payload_key IS NOT NULL AS has_payload,
               payload_bytes, content_hash, restored_from, pinned, label, actor_user_id, actor_client_name,
               actor_via, status, created_at, sealed_at, status_changed_at
-         FROM versions WHERE workspace_id IN ${OWNED_WS} ORDER BY node_id, seq`,
+         FROM versions WHERE workspace_id IN ${EXPORT_WS} ORDER BY node_id, seq`,
     )
   ).map(({ actor_user_id, has_payload, pinned, ...v }) => ({
     ...v,
@@ -193,20 +203,20 @@ async function build(env: AccountEnv, who: Who, zip: ZipWriter): Promise<void> {
     ...(
       await all(
         `SELECT board_id AS id, role, COUNT(*) AS people FROM board_shares
-          WHERE board_id IN ${OWNED_BOARDS} GROUP BY board_id, role`,
+          WHERE board_id IN ${EXPORT_BOARDS} GROUP BY board_id, role`,
       )
     ).map((r) => ({ kind: "mindmap", ...r })),
     ...(
       await all(
         `SELECT node_id AS id, role, COUNT(*) AS people FROM artefact_grants
-          WHERE node_id IN ${OWNED_NODES} GROUP BY node_id, role`,
+          WHERE node_id IN ${EXPORT_NODES} GROUP BY node_id, role`,
       )
     ).map((r) => ({ kind: "artefact", ...r })),
     ...(
       await all(
         `SELECT target_id AS id, COUNT(*) AS links FROM shares
           WHERE grant_type = 'link' AND target_type = 'node' AND revoked = 0
-            AND target_id IN ${OWNED_NODES} GROUP BY target_id`,
+            AND target_id IN ${EXPORT_NODES} GROUP BY target_id`,
       )
     ).map((r) => ({ kind: "artefact", ...r })),
   ];
@@ -302,7 +312,10 @@ async function build(env: AccountEnv, who: Who, zip: ZipWriter): Promise<void> {
 /**
  * Workspaces this account owns that other active people are still in. Deleting
  * the account would delete them, content and all, so it is refused until each
- * is transferred to another member or emptied.
+ * is transferred to another member, emptied, or closed. A closed workspace is
+ * not in the way: its people have already lost access, and the owner chose that
+ * knowing deleting the account deletes it for good (the 30 days to reopen it
+ * end with the account).
  *
  * Nothing here relies on `workspaces.owner_id ... ON DELETE CASCADE`: the
  * `users` row is never deleted (only marked), and the workspace rows go by name
@@ -312,7 +325,7 @@ export async function deletionBlockers(db: D1Database, userId: string): Promise<
   const rows = await db
     .prepare(
       `SELECT w.id, w.name FROM workspaces w
-        WHERE w.owner_id = ?1
+        WHERE w.owner_id = ?1 AND w.status = 'active'
           AND EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id
                        WHERE m.workspace_id = w.id AND m.user_id <> ?1 AND u.status = 'active')
         ORDER BY w.created_at`,
@@ -401,6 +414,7 @@ export async function closeAccount(db: D1Database, userId: string): Promise<void
     // worth keeping.
     one(`UPDATE oauth_tokens SET revoked = 1 WHERE user_id = ?`, userId),
     one(`DELETE FROM oauth_codes WHERE user_id = ?`, userId),
+    one(`UPDATE email_tokens SET status = 'revoked', updated_at = ?1 WHERE user_id = ?2 AND status = 'active'`, at, userId),
     // Every way in that a link or a grant gives: links on their artefacts and
     // mindmaps, grants of either to anyone, and whatever was shared *to* them.
     one(

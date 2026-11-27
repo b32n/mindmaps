@@ -1,0 +1,41 @@
+# Sixth local runtime for the end-to-end suite: outbound email ON (captured) and
+# Cloudflare Turnstile ON, against a local stand-in for Siteverify
+# (e2e/support/fake-turnstile.mjs), whose address playwright.config.ts passes in
+# with --var as TURNSTILE_VERIFY_URL. Never deployed.
+#
+# The secret is a plain var here only because this is a throwaway local runtime;
+# on a real install it is a Worker secret (`wrangler secret put`), never in a file.
+
+name = "mindmaps-e2e-turnstile"
+main = "worker/src/index.ts"
+compatibility_date = "2026-09-01"
+
+[assets]
+directory = "./web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/oauth/*", "/.well-known/*", "/s/*", "/f/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mindmaps-e2e-turnstile"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "worker/migrations"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "mindmaps-e2e-turnstile"
+
+[[r2_buckets]]
+binding = "ARTEFACTS"
+bucket_name = "mindmaps-e2e-turnstile"
+
+[vars]
+# Per-client rate limits read this header, which the suite sends only where it tests them (docs/EMAIL.md).
+CLIENT_IP_HEADER = "x-e2e-client-ip"
+ALLOW_SIGNUPS = "true"
+MAIL_FROM = "mindmaps@mail.example.test"
+MAIL_FROM_NAME = "mindmaps"
+MAIL_TRANSPORT = "capture"
+HASH_PROBE = "1"
+TURNSTILE_SITE_KEY = "e2e-turnstile-site"
+TURNSTILE_SECRET_KEY = "e2e-turnstile-secret"

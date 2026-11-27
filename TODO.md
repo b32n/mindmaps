@@ -72,8 +72,14 @@ admitted on `/brain` under "What is missing".
 
 - [ ] **Trash is keyed by who deleted.** An editor deleting a card on a shared
       mindmap is the only person who can restore it; the owner cannot see it.
-- [ ] **No workspace rename, delete, or leave button.** Leaving works over the
-      API (the member DELETE route allows self-removal).
+- [ ] **A closed workspace is never purged.** Closing is soft and the owner can
+      reopen for 30 days (`CLOSE_RETENTION_MS`); after that it just stays closed.
+      A sweep that deletes the content of long-closed workspaces is a follow-up.
+- [ ] **Invitations are not tied to a verified address.** Invites must be accepted
+      now, but anyone can register an invited address and accept it. Needs email
+      verification before accept (and, later, verified-domain and SSO policy).
+- [ ] **A mindmap or artefact shared with an existing account is still added
+      without an accept step.** One thing, not a workspace, but the same shape.
 - [ ] **`boards.position` and `pinned` are shared columns**, so two people
       dragging the same mindmap fight over one value. Wants a
       `board_prefs(user_id, board_id, position, pinned)` table and a merge rule.

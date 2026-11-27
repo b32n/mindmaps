@@ -144,10 +144,10 @@ test.describe("the workspace owner", () => {
     expect((await res.json()).name).toBe("New workspace");
   });
 
-  test("workspaces cannot be renamed or deleted: the API has no such routes", async ({ account, request }) => {
+  test("workspaces can be renamed and closed but never deleted: there is no delete route", async ({ account, request }) => {
     void account;
     const ws = await createWorkspace(request, "Permanent");
-    expect((await request.patch(`/api/workspaces/${ws.id}`, { data: { name: "x" } })).status()).toBe(404);
+    expect((await request.patch(`/api/workspaces/${ws.id}`, { data: { name: "x" } })).status()).toBe(200);
     expect((await request.delete(`/api/workspaces/${ws.id}`)).status()).toBe(404);
   });
 });

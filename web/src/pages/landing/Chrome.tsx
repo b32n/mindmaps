@@ -84,6 +84,8 @@ export function LandingFooter() {
         >
           MCP
         </a>
+        <Link to="/privacy">Privacy</Link>
+        <Link to="/terms">Terms</Link>
         <Link to="/register">Get started</Link>
       </nav>
     </footer>
