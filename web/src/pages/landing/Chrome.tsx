@@ -77,6 +77,12 @@ export function LandingFooter() {
       <span>mindmaps · a memory you and your agents share</span>
       <nav>
         <Link to="/brain">The brain</Link>
+        <a href="https://github.com/b32n/mindmaps" target="_blank" rel="noreferrer noopener">
+          Source
+        </a>
+        <a href="https://github.com/b32n/mindmaps/blob/main/INSTALL.md" target="_blank" rel="noreferrer noopener">
+          Self-host
+        </a>
         <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noreferrer noopener">
           MCP
         </a>
