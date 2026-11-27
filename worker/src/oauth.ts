@@ -37,6 +37,8 @@
 import { ensurePersonalWorkspace, workspacesFor, type WorkspaceRow } from "./access";
 import { blockedWorkspaces } from "./scope";
 import { defaultConnectWorkspace } from "./organisation";
+import type { ModeEnv } from "./mode";
+import { policyFor } from "./policy";
 import { SESSION_COOKIE, readCookie, userForToken } from "./auth";
 
 const CODE_TTL_MS = 60_000; // codes are used within seconds; a minute is generous
@@ -282,7 +284,7 @@ interface ClientRow {
  * *before* we are willing to send the browser anywhere. Redirecting errors to
  * an unvalidated URI is the classic open-redirect in OAuth implementations.
  */
-export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?: string } & OriginEnv): Promise<Response> {
+export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?: string } & OriginEnv & ModeEnv): Promise<Response> {
   const url = new URL(req.url);
   const q = url.searchParams;
 
@@ -354,11 +356,14 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
   // The workspaces this person can pick from, Personal first. Created if it is
   // somehow missing, so there is always at least the one to default to.
   await ensurePersonalWorkspace(env.DB, user.id);
+  // Personal mode has no team spaces to pick from: the consent page does not ask,
+  // and connects straight to the personal home (policy.ts).
+  const { teamSpaces } = policyFor(env);
   // An organisation that requires SSO is not offered to a session that did not
   // come through it (scope.ts): the connection would be refused its data anyway,
   // and saying so now is kinder than a token that cannot do anything there.
   const locked = new Set(await blockedWorkspaces(env.DB, user.email, user.sso_workspace_id));
-  const everything = await workspacesFor(env.DB, user.id);
+  const everything = await workspacesFor(env.DB, user.id, teamSpaces);
   const workspaces = everything.filter((w) => !locked.has(w.id));
   const lockedNames = everything.filter((w) => locked.has(w.id)).map((w) => w.name);
   // Personal, unless this is an org-mode instance and the person is in its
@@ -372,7 +377,8 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
     // which is Personal; anything the person does not belong to is refused
     // rather than quietly replaced, so a tampered form cannot aim a token at
     // someone else's workspace or at one that does not exist.
-    const chosen = new URLSearchParams(await req.text()).get("workspace") ?? "";
+    const posted = new URLSearchParams(await req.text()).get("workspace") ?? "";
+    const chosen = teamSpaces ? posted : "";
     if (chosen && locked.has(chosen))
       return errorPage(
         "Single sign-on required",
@@ -409,7 +415,7 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
     return back({ code });
   }
 
-  return consentPage(client.client_name, user.email, requested, url.search, workspaces, home?.id, lockedNames);
+  return consentPage(client.client_name, user.email, requested, url.search, teamSpaces ? workspaces : null, home?.id, lockedNames);
 }
 
 // ---------------------------------------------------------------------------
@@ -677,7 +683,8 @@ function consentPage(
   email: string,
   scopes: string[],
   search: string,
-  workspaces: WorkspaceRow[],
+  /** null: no picker at all (personal mode) */
+  workspaces: WorkspaceRow[] | null,
   homeId?: string,
   lockedNames: string[] = [],
 ) {
@@ -690,7 +697,7 @@ function consentPage(
      <p>It's asking for access to your mindmaps. It will never see your password.</p>
      <div class="who">Signed in as ${esc(email)}</div>
      <ul>${items}</ul>
-     ${workspacePicker(workspaces, homeId)}
+     ${workspaces ? workspacePicker(workspaces, homeId) : ""}
      ${lockedNames.length ? `<p class="hint">${esc(lockedNames.join(", "))} requires single sign-on, so it is not offered here. Sign in to mindmaps with SSO and connect again to use ${lockedNames.length > 1 ? "them" : "it"}.</p>` : ""}
      <form method="POST" action="/oauth/authorize${esc(search)}">
        <div class="row">

@@ -97,6 +97,13 @@ wherever it is, gated by the person's role on it as before. Tokens issued before
 this existed have no workspace and keep their old behaviour: create in Personal,
 read across everything reachable, until the person connects again.
 
+In **personal** mode (`MINDMAPS_MODE`, see docs/MODES.md) none of this is offered:
+the consent page has no picker and connects to the personal home, the tools have
+no `workspace` argument, and `list_mindmaps`, `search`, `recall` and
+`create_mindmap` work in the personal home plus whatever was shared with the
+person. A token connected to a team space earlier keeps working there once the
+mode is switched back. org and multitenant are as described above.
+
 ### Read
 
 | Tool | Returns |

@@ -74,8 +74,8 @@ test.describe("personal: nothing to create", () => {
     void account;
     await page.goto("/app");
     await expect(page.locator(".rail")).toBeVisible();
-    await page.locator(".ws-trigger").click();
-    await expect(page.locator(".ws-menu")).toBeVisible();
+    // personal mode has no workspace menu at all, so neither entry can be offered
+    await expect(page.locator(".ws-trigger")).toHaveCount(0);
     await expect(page.getByRole("menuitem", { name: "New workspace" })).toHaveCount(0);
     await expect(page.getByRole("menuitem", { name: "Create organisation" })).toHaveCount(0);
   });

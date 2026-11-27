@@ -37,9 +37,10 @@ to multitenant.
 
 The installer asks whether this install is for **personal** use (you, plus the
 people you invite) or an **org** (a team or company). It is stored as
-`MINDMAPS_MODE` and can be changed later. For now it only records the choice;
-see [docs/MODES.md](./docs/MODES.md) for what each mode means, how to set or
-change it, and what is not enforced yet.
+`MINDMAPS_MODE` and can be changed later. Personal has no team spaces (it hides
+them; nothing is deleted, and switching back shows them again); sharing works in
+every mode. See [docs/MODES.md](./docs/MODES.md) for what each mode does and how
+to set or change it.
 
 - **Deploy button** installs are `personal`: that is the default committed in
   `wrangler.toml`.

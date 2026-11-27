@@ -75,6 +75,19 @@ with `PUBLIC_ORIGIN`, `APP_ORIGIN` and `MINDBOX_ORIGIN`. The configured hosts
 configuration. `e2e/support/hosts.ts` holds the addresses; `e2e/support/urls.ts`
 holds the checks shared by all three configs.
 
+## The mode Workers
+
+One Worker per `MINDMAPS_MODE` setting (`personal`, `org`, `multitenant`, empty,
+and an invalid one), on the ports after the four above (`E2E_MODE_PORT` moves the
+first). `e2e/modes/` holds the specs: `mode.spec.ts` (what is exposed),
+`personal.spec.ts` (what personal hides, and that sharing is untouched),
+`unchanged.spec.ts` (every other mode keeps team spaces) and `switch.spec.ts`.
+That last one starts and stops its own Worker on the port after the mode Workers
+(`switchWorker` in `hosts.ts`), because it runs one database under org, then
+personal, then multitenant, then org again (`serve.mjs` with `E2E_KEEP_STATE=1`
+keeps the state dir). It cleans up after itself; if a run is killed, stop the
+Worker on that port by its PID.
+
 ## The sign-up-closed instance
 
 The Worker's real default is closed: the first account on an empty database is
