@@ -252,33 +252,39 @@ export function BoardApp() {
     if (!org) return <div className="boot">Loading…</div>;
     if (org.state === "setup" || onboarding)
       return (
-        <OrganisationSetup
-          info={org}
-          onCreated={(w) => {
-            setOnboarding(true);
-            setWorkspaces((xs) => (xs.some((x) => x.id === w.id) ? xs : [...xs, w]));
-            setWsId(w.id);
-          }}
-          onDone={() => {
-            // Leave the page only once the new state has landed, or it shows the first step again for a moment.
-            void Promise.all([api.organisation().then(setOrg), refreshAll()]).finally(() => setOnboarding(false));
-          }}
-        />
+        <>
+          <VerifyBanner />
+          <OrganisationSetup
+            info={org}
+            onCreated={(w) => {
+              setOnboarding(true);
+              setWorkspaces((xs) => (xs.some((x) => x.id === w.id) ? xs : [...xs, w]));
+              setWsId(w.id);
+            }}
+            onDone={() => {
+              // Leave the page only once the new state has landed, or it shows the first step again for a moment.
+              void Promise.all([api.organisation().then(setOrg), refreshAll()]).finally(() => setOnboarding(false));
+            }}
+          />
+        </>
       );
     if (org.state === "waiting" || (org.state === "outside" && org.gated))
       return (
-        <OrganisationWaiting
-          info={org}
-          invites={invites}
-          onAnswered={(invite, accepted) => {
-            setInvites((xs) => xs.filter((x) => x.token !== invite.token));
-            if (accepted) {
-              refreshOrg();
-              void refreshAll();
-              if (invite.target_type === "workspace") setWsId(invite.target_id);
-            }
-          }}
-        />
+        <>
+          <VerifyBanner />
+          <OrganisationWaiting
+            info={org}
+            invites={invites}
+            onAnswered={(invite, accepted) => {
+              setInvites((xs) => xs.filter((x) => x.token !== invite.token));
+              if (accepted) {
+                refreshOrg();
+                void refreshAll();
+                if (invite.target_type === "workspace") setWsId(invite.target_id);
+              }
+            }}
+          />
+        </>
       );
   }
 

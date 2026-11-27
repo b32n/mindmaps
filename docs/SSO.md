@@ -43,10 +43,12 @@ Policy applies to **verified domains only**.
   whose address is proven**, is offered a **Join** button (a banner in the app) and
   joins with the default role the admin chose (viewer or editor). It is an explicit
   step, never silent. *Proven* means the session came through Google or through
-  this organisation's SSO. Password-only accounts are unproven: anyone can type
-  an address into a password form. They are told that proving it would unlock a
-  join, and nothing more (the organisation is not named). When email verification
-  from the email-setup work lands, a verified address will count as proven too.
+  this organisation's SSO, or that the address was confirmed by the emailed link
+  (or a completed password reset) where the instance sends email. An address that
+  was only there before verification existed (`grandfathered`) is not proof.
+  Accounts with none of these are unproven: anyone can type an address into a
+  password form. They are told that proving it would unlock a join, and nothing
+  more (the organisation is not named).
 - **Restrict invites.** Optional. Invitations may only go to addresses on a
   verified domain. The owner and admins are never locked out by it.
 
@@ -70,6 +72,16 @@ A person is matched to an existing account by email, or an account is created
 subject to the mode's sign-up rules (in org mode, someone their provider vouches
 for on a verified domain may have an account; having one joins nothing, that is
 **Join** or an invitation). The provider's subject is stored in a link table.
+
+The provider vouches for the address (`email_verified` must be true), so signing in
+this way **confirms it**: the account is marked verified, and can accept
+invitations. Where the instance sends email (docs/EMAIL.md), one more rule applies
+when the address already belongs to an account that was never confirmed: someone
+may have made it by typing in an address that is not theirs. Its **password is
+removed and its sessions are ended**, so the account goes to the person the
+provider says holds the address (the rule Google sign-in follows too). Without
+email nobody can confirm an address, so "unconfirmed" says nothing and the account
+is left alone.
 
 ### Enforce SSO
 

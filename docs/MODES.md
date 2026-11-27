@@ -19,9 +19,9 @@ exposes it as `useMode()` (and as `data-mindmaps-mode` on `<html>`), and the MCP
 
 | | personal | org | multitenant (and unset) |
 |---|---|---|---|
-| Workspace switcher, "New workspace", People for a team space | hidden | as before | as before |
+| Workspace switcher, "New workspace", People for a team space | hidden | the organisation's workspace; no "New workspace" once it exists | as before |
 | `GET /api/workspaces` | your personal home only | as before | as before |
-| `POST /api/workspaces` | 403 `team_spaces_disabled` | as before | as before |
+| `POST /api/workspaces` | 403 `team_spaces_disabled` | the first account makes the organisation; after that 409 `organisation_exists` | as before |
 | A mindmap created into a named workspace | 403 `team_spaces_disabled` | as before | as before |
 | Inviting someone into a team space | 403 `team_spaces_disabled` | as before | as before |
 | Mindmap list, artefact list, recall (app and MCP), `search` | the personal home, plus what was shared with you | as before | as before |
@@ -72,7 +72,13 @@ What "hidden" covers, exactly:
   `workspace` argument is gone; `create_mindmap` writes to the personal home) are
   all refused or ignored. An agent connected to a team space before the switch
   keeps working, in the personal home, and goes back to the team space when the
-  mode is switched back.
+  mode is switched back. Moving a mindmap *into* a team space
+  (`POST /api/boards/:id/move`) is refused the same way; moving one out to the
+  personal home still works.
+- **Invitations to a team space are not offered.** `GET /api/invites` leaves them
+  out and accepting one answers 403 `team_spaces_disabled`; the invitation itself
+  is untouched and is offered again when the mode is switched back. An invitation
+  to a single mindmap is not a team space and works as ever.
 - **A mindmap already shared with someone keeps working for them**, even when it
   sits in a hidden team space. Sharing is not removed or weakened by hiding: the
   person it was shared with still has it in their list, opens it by its id, and
