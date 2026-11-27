@@ -213,7 +213,9 @@ test.describe("a public link", () => {
     await selectCell(theirs, "B2", "10");
     await expect(formulaBar(theirs)).toHaveValue("10");
     expect(writes).toEqual([]);
-    expect(JSON.stringify(await (await page.request.get(`/api/artefacts/${sheet.id}`)).json())).not.toContain("999");
+    // ids are random UUIDs and can contain "999" by chance, so look at everything but them
+    const stored = JSON.stringify(await (await page.request.get(`/api/artefacts/${sheet.id}`)).json());
+    expect(stored.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "")).not.toContain("999");
     await visitor.close();
   });
 

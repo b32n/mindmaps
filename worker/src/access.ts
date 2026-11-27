@@ -215,8 +215,17 @@ export interface WorkspaceRow {
   role: Role;
 }
 
-/** Every workspace this user can open, personal first. */
-export async function workspacesFor(db: D1Database, userId: string): Promise<WorkspaceRow[]> {
+/**
+ * Every workspace this user can open, personal first.
+ *
+ * `teamSpaces: false` leaves out every shared workspace (personal mode hides
+ * them; see policy.ts). The rows are untouched, only not listed.
+ */
+export async function workspacesFor(
+  db: D1Database,
+  userId: string,
+  teamSpaces = true,
+): Promise<WorkspaceRow[]> {
   const rows = await db
     .prepare(
       `SELECT w.id, w.name, w.owner_id, w.personal,
@@ -225,9 +234,9 @@ export async function workspacesFor(db: D1Database, userId: string): Promise<Wor
                           WHERE m.workspace_id = w.id AND m.user_id = ?1)
               END AS role
          FROM workspaces w
-        WHERE w.owner_id = ?1
+        WHERE (w.owner_id = ?1
            OR EXISTS (SELECT 1 FROM workspace_members m
-                       WHERE m.workspace_id = w.id AND m.user_id = ?1)
+                       WHERE m.workspace_id = w.id AND m.user_id = ?1))${teamSpaces ? "" : "\n          AND w.personal = 1"}
         ORDER BY w.personal DESC, w.created_at`,
     )
     .bind(userId)
