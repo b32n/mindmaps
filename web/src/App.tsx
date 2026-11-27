@@ -10,7 +10,9 @@ import { TrashDialog } from "./TrashDialog";
 import { ArtefactsView } from "./ArtefactsView";
 import { MembersPanel } from "./MembersPanel";
 import { CloseWorkspace, RenameWorkspace } from "./WorkspaceAdmin";
+import { PendingInvites } from "./PendingInvites";
 import { WorkspaceMenu } from "./WorkspaceMenu";
+import { useModePolicy } from "./policy";
 import { Recall } from "./Recall";
 import { IconGear, IconLayers, IconPeople, IconTrash, IconGrip, IconLogout, IconMap, IconMore, IconPlus } from "./ui/Icons";
 
@@ -74,6 +76,7 @@ export function BoardApp() {
    * than a place, and a board's address should not change because of which
    * workspace you happened to have selected when you copied the link.
    */
+  const { teamSpaces } = useModePolicy();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [wsId, setWsId] = useState<string | null>(
     () => localStorage.getItem("mindmaps.workspace"),
@@ -169,7 +172,7 @@ export function BoardApp() {
     const b = await api.createBoard({
       name,
       description: description || null,
-      workspace_id: wsId ?? undefined,
+      workspace_id: teamSpaces ? (wsId ?? undefined) : undefined,
     });
     setBoards((bs) => [b, ...bs]);
     open(b.id);
@@ -331,27 +334,39 @@ export function BoardApp() {
           <kbd>⌘K</kbd>
         </button>
 
-        <WorkspaceMenu
-          workspaces={workspaces}
-          currentId={wsId}
-          onSwitch={setWsId}
-          onCreated={(w) => {
-            setWorkspaces((xs) => [...xs, w]);
-            setWsId(w.id);
-          }}
-          onManage={setWsDialog}
-          invites={invites}
-          onLeft={() => void refreshAll()}
-          onReopened={() => void refreshAll()}
-          onAnswered={(invite, accepted) => {
-            setInvites((xs) => xs.filter((x) => x.token !== invite.token));
-            if (accepted) {
-              void refreshAll();
-              // A workspace you just joined is where you want to be.
-              if (invite.target_type === "workspace") setWsId(invite.target_id);
-            }
-          }}
-        />
+        {teamSpaces && (
+          <WorkspaceMenu
+            workspaces={workspaces}
+            currentId={wsId}
+            onSwitch={setWsId}
+            onCreated={(w) => {
+              setWorkspaces((xs) => [...xs, w]);
+              setWsId(w.id);
+            }}
+            onManage={setWsDialog}
+            invites={invites}
+            onLeft={() => void refreshAll()}
+            onReopened={() => void refreshAll()}
+            onAnswered={(invite, accepted) => {
+              setInvites((xs) => xs.filter((x) => x.token !== invite.token));
+              if (accepted) {
+                void refreshAll();
+                // A workspace you just joined is where you want to be.
+                if (invite.target_type === "workspace") setWsId(invite.target_id);
+              }
+            }}
+          />
+        )}
+
+        {!teamSpaces && (
+          <PendingInvites
+            invites={invites}
+            onAnswered={(invite, accepted) => {
+              setInvites((xs) => xs.filter((x) => x.token !== invite.token));
+              if (accepted) void refreshAll();
+            }}
+          />
+        )}
 
         <div className="rail-list">
           {shown.map((b) => (

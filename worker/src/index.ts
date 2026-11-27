@@ -13,7 +13,7 @@ import { removeCards } from "./semantic";
 import { closeWorkspace, moveBoard, moveBoardVectors, renameWorkspace, reopenWorkspace } from "./lifecycle";
 import { reapTrash, untrashNode, type TrashEnv } from "./r2trash";
 import {
-  BOARD_READABLE, NODE_READABLE, boardRole, canAdmin, canWrite, ensurePersonalWorkspace,
+  BOARD_READABLE, IN_BOARD_WORKSPACE, IN_WORKSPACE, NODE_READABLE, boardRole, canAdmin, canWrite, ensurePersonalWorkspace,
   closedWorkspacesFor, nodeRole, workspaceRole, workspacesFor, type Role,
 } from "./access";
 import { mindboxOrigin, shareUrl } from "./links";
@@ -41,6 +41,7 @@ import { blocksToMarkdown, parseDoc } from "./markdown";
 import { createStarterBoard } from "./starter";
 import { deleteAccount, deletionBlockers, exportAccount, exportFilename, finishDeletions, type AccountEnv } from "./account";
 import { modeProblem, readMode } from "./mode";
+import { TEAM_SPACES_DISABLED, policyFor } from "./policy";
 import {
   createOrganisation, createSharedWorkspace, isOrganisationWorkspace, organisationFor, workspaceCreationRefusal,
 } from "./organisation";
@@ -427,6 +428,9 @@ async function route(
     // never got a position. Dragging is an explicit statement about where
     // something belongs, so it must not be undone by touching a card, and
     // pinning is a second such statement that outranks it.
+    // Personal mode lists the personal home and what was shared with you, and
+    // leaves the team spaces out (policy.ts); everywhere else, everything readable.
+    const homeOnly = !policyFor(env).teamSpaces;
     const { results } = await env.DB.prepare(
       // `shared_with` counts people given this one mindmap directly. Workspace
       // members are deliberately not counted: everything in a workspace is
@@ -435,10 +439,10 @@ async function route(
       `SELECT b.*,
               (SELECT COUNT(*) FROM board_shares bs WHERE bs.board_id = b.id) AS shared_with
          FROM boards b
-        WHERE b.parent_id IS NULL AND ${BOARD_READABLE("b")}
+        WHERE b.parent_id IS NULL AND ${BOARD_READABLE("b")}${homeOnly ? ` AND ${IN_BOARD_WORKSPACE("b", 2, 1)}` : ""}
         ORDER BY b.pinned DESC, b.position IS NULL, b.position ASC, b.updated_at DESC`,
     )
-      .bind(user.id)
+      .bind(...(homeOnly ? [user.id, user.id] : [user.id]))
       .all();
     return json(env, results.map(hydrateBoard));
   }
@@ -459,7 +463,9 @@ async function route(
     // The workspace the user is looking at, so recall stays one vector query
     // and never mixes work with personal context. Absent means "everywhere",
     // which is what an agent gets.
-    const ws = url.searchParams.get("workspace");
+    // Personal mode has one place to be: the personal home (whose id is the
+    // user's), plus what was shared in. A workspace named here is ignored.
+    const ws = policyFor(env).teamSpaces ? url.searchParams.get("workspace") : user.id;
     const result = await rankRecall(env, user.id, q, scope || null, 1, ws || null);
     return json(env, result);
   }
@@ -550,6 +556,7 @@ async function route(
      */
     let workspaceId = await ensurePersonalWorkspace(env.DB, user.id);
     if (body.workspace_id && body.workspace_id !== workspaceId) {
+      if (!policyFor(env).teamSpaces) return json(env, TEAM_SPACES_DISABLED, 403);
       const role = await workspaceRole(env.DB, user.id, String(body.workspace_id));
       if (!canWrite(role))
         return json(env, { error: "You cannot add mindmaps to that workspace." }, 403);
@@ -694,10 +701,11 @@ async function route(
 
   if (a === "workspaces" && !b && m === "GET") {
     await ensurePersonalWorkspace(env.DB, user.id);
-    return json(env, await workspacesFor(env.DB, user.id));
+    return json(env, await workspacesFor(env.DB, user.id, policyFor(env).teamSpaces));
   }
 
   if (a === "workspaces" && !b && m === "POST") {
+    if (!policyFor(env).teamSpaces) return json(env, TEAM_SPACES_DISABLED, 403);
     // What mode this instance is in decides whether a shared workspace may be
     // made this way at all (organisation.ts).
     const no = await workspaceCreationRefusal(env);
@@ -723,7 +731,7 @@ async function route(
   // The owner's closed workspaces, for reopening. Before the `:id` routes below
   // so "closed" is not read as an id.
   if (a === "workspaces" && b === "closed" && !c && m === "GET") {
-    return json(env, await closedWorkspacesFor(env.DB, user.id));
+    return json(env, policyFor(env).teamSpaces ? await closedWorkspacesFor(env.DB, user.id) : []);
   }
 
   // Owners and admins rename; only the owner closes and reopens. Rules and the
@@ -776,6 +784,12 @@ async function route(
     }
 
     if (m === "POST") {
+      // No new people into a hidden team space. Sharing a mindmap or an artefact
+      // is a different route and is never touched by the mode.
+      if (target === "workspace" && !policyFor(env).teamSpaces) {
+        const space = await env.DB.prepare(`SELECT personal FROM workspaces WHERE id = ?`).bind(b).first<{ personal: number }>();
+        if (space && !space.personal) return json(env, TEAM_SPACES_DISABLED, 403);
+      }
       if (!(await canGrant(env, user.id, target, b)))
         return json(env, { error: "You cannot share that." }, 403);
       const body = await req.json<any>().catch(() => ({}));
@@ -871,16 +885,17 @@ async function route(
   // forgotten. `data` carries the counts, so the list describes each one
   // without reading a single R2 object.
   if (a === "artefacts" && !b && m === "GET") {
+    const homeOnly = !policyFor(env).teamSpaces;
     const rows = await env.DB.prepare(
       `SELECT n.id, n.type, n.title, n.data, n.updated_at,
               b.id AS board_id, b.name AS board_name
          FROM nodes n
          JOIN boards b ON b.id = n.board_id
-        WHERE ${NODE_READABLE("n", "b")} AND n.type IN (${ARTEFACT_SQL})
+        WHERE ${NODE_READABLE("n", "b")}${homeOnly ? ` AND ${IN_WORKSPACE("b", "n", 2, 1)}` : ""} AND n.type IN (${ARTEFACT_SQL})
         ORDER BY n.updated_at DESC
         LIMIT 300`,
     )
-      .bind(user.id)
+      .bind(...(homeOnly ? [user.id, user.id] : [user.id]))
       .all<any>();
     return json(
       env,

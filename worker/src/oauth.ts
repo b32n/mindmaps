@@ -36,6 +36,8 @@
 
 import { ensurePersonalWorkspace, workspacesFor, type WorkspaceRow } from "./access";
 import { defaultConnectWorkspace } from "./organisation";
+import type { ModeEnv } from "./mode";
+import { policyFor } from "./policy";
 import { SESSION_COOKIE, readCookie, userForToken } from "./auth";
 
 const CODE_TTL_MS = 60_000; // codes are used within seconds; a minute is generous
@@ -281,7 +283,7 @@ interface ClientRow {
  * *before* we are willing to send the browser anywhere. Redirecting errors to
  * an unvalidated URI is the classic open-redirect in OAuth implementations.
  */
-export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?: string } & OriginEnv): Promise<Response> {
+export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?: string } & OriginEnv & ModeEnv): Promise<Response> {
   const url = new URL(req.url);
   const q = url.searchParams;
 
@@ -353,7 +355,10 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
   // The workspaces this person can pick from, Personal first. Created if it is
   // somehow missing, so there is always at least the one to default to.
   await ensurePersonalWorkspace(env.DB, user.id);
-  const workspaces = await workspacesFor(env.DB, user.id);
+  // Personal mode has no team spaces to pick from: the consent page does not ask,
+  // and connects straight to the personal home (policy.ts).
+  const { teamSpaces } = policyFor(env);
+  const workspaces = await workspacesFor(env.DB, user.id, teamSpaces);
   // Personal, unless this is an org-mode instance and the person is in its
   // organisation: then the organisation (see organisation.ts).
   const homeId = await defaultConnectWorkspace(env, workspaces.map((w) => w.id));
@@ -365,7 +370,8 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
     // which is Personal; anything the person does not belong to is refused
     // rather than quietly replaced, so a tampered form cannot aim a token at
     // someone else's workspace or at one that does not exist.
-    const chosen = new URLSearchParams(await req.text()).get("workspace") ?? "";
+    const posted = new URLSearchParams(await req.text()).get("workspace") ?? "";
+    const chosen = teamSpaces ? posted : "";
     const workspace = chosen
       ? workspaces.find((w) => w.id === chosen)
       : home;
@@ -393,7 +399,7 @@ export async function authorize(req: Request, env: { DB: D1Database; APP_ORIGIN?
     return back({ code });
   }
 
-  return consentPage(client.client_name, user.email, requested, url.search, workspaces, home?.id);
+  return consentPage(client.client_name, user.email, requested, url.search, teamSpaces ? workspaces : null, home?.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -656,7 +662,8 @@ function consentPage(
   email: string,
   scopes: string[],
   search: string,
-  workspaces: WorkspaceRow[],
+  /** null: no picker at all (personal mode) */
+  workspaces: WorkspaceRow[] | null,
   homeId?: string,
 ) {
   const items = scopes
@@ -668,7 +675,7 @@ function consentPage(
      <p>It's asking for access to your mindmaps. It will never see your password.</p>
      <div class="who">Signed in as ${esc(email)}</div>
      <ul>${items}</ul>
-     ${workspacePicker(workspaces, homeId)}
+     ${workspaces ? workspacePicker(workspaces, homeId) : ""}
      <form method="POST" action="/oauth/authorize${esc(search)}">
        <div class="row">
          <a class="btn" href="/oauth/deny">Cancel</a>
